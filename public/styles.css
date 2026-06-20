@@ -49,6 +49,8 @@
   --shadow-lg: 0 12px 28px -4px rgba(0,0,0,0.4);
   --card-bg: rgba(180,145,80,0.025);
   --card-bg-hover: rgba(180,145,80,0.055);
+  --select-list-bg: #272118;
+  --select-list-bg-active: #322a1f;
 }
 
 html {
@@ -100,6 +102,8 @@ html[data-theme="light"] {
   --shadow-lg: 0 16px 36px -12px rgba(32,24,14,0.24);
   --card-bg: rgba(255,255,255,0.5);
   --card-bg-hover: rgba(255,255,255,0.75);
+  --select-list-bg: var(--surface);
+  --select-list-bg-active: var(--surface-hover);
 }
 
 * { box-sizing: border-box; margin: 0; }
@@ -817,7 +821,7 @@ form.is-dirty button[type="submit"]::after {
   height: 40px;
 }
 .topbar-search select option {
-  background: var(--surface);
+  background-color: var(--select-list-bg);
   color: var(--text);
 }
 
@@ -1051,17 +1055,55 @@ input, select, textarea {
   font-size: 14px;
   transition: border-color 0.15s ease;
 }
+select {
+  accent-color: var(--accent-hover);
+}
+select option,
+select optgroup {
+  background-color: var(--select-list-bg);
+  color: var(--text);
+}
+select option:checked {
+  background-color: var(--select-list-bg-active);
+  color: var(--text);
+}
+
+/* Chrome/Edge 135+: web-rendered picker — полный контроль hover/focus (issue #5) */
+@supports (appearance: base-select) {
+  select,
+  select::picker(select) {
+    appearance: base-select;
+  }
+  select::picker(select) {
+    background: var(--select-list-bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-lg);
+    padding: 4px;
+    color-scheme: dark;
+  }
+  html[data-theme="light"] select::picker(select) {
+    color-scheme: light;
+  }
+  select option {
+    padding: 8px 10px;
+    border-radius: calc(var(--radius) - 2px);
+  }
+  select option:hover,
+  select option:focus,
+  select option:focus-visible {
+    background-color: var(--select-list-bg-active);
+    color: var(--text);
+    outline: none;
+  }
+  select option::checkmark {
+    color: var(--link);
+  }
+}
 input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); }
 input:focus-visible, select:focus-visible, textarea:focus-visible {
   outline: 2px solid color-mix(in srgb, var(--accent) 65%, transparent);
   outline-offset: 2px;
-}
-
-/* Native select popup list — dark theme (issue #5) */
-html:not([data-theme="light"]) select option,
-html:not([data-theme="light"]) select optgroup {
-  background-color: var(--surface);
-  color: var(--text);
 }
 
 /* ── Section titles ── */
@@ -5076,7 +5118,7 @@ html[data-theme="light"] .cover-fallback-overlay {
   font-size: 14px; outline: none;
 }
 .modal-form input:focus, .modal-form select:focus { border-color: var(--accent); }
-.modal-form select option { background: var(--surface); color: var(--text); }
+.modal-form select option { background-color: var(--select-list-bg); color: var(--text); }
 .modal-form-submit {
   align-self: flex-start; padding: 8px 20px;
   border: none; border-radius: 999px;
