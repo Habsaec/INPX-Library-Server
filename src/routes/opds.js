@@ -16,7 +16,11 @@ import {
   getSeriesBooksOpds,
   opdsSearchAuthors,
   searchCatalog,
+  getBookmarks,
+  getFavoriteAuthorsLight,
+  getFavoriteSeriesLight,
 } from '../inpx.js';
+import { getUserShelves, getShelfById, getShelfBooks } from '../db.js';
 import {
   renderOpdsRoot,
   renderOpdsOpenSearch,
@@ -38,14 +42,134 @@ function formatAuthorForOpds(author) {
 export function registerOpdsRoutes(app, deps) {
   const { baseUrl } = deps;
 
+  function buildUserOpdsEntries(username) {
+    if (!username) return [];
+    return [
+      {
+        id: 'user-library',
+        title: t('opds.user.myLibrary'),
+        href: '/opds/user',
+        content: t('opds.user.bookmarksDesc')
+      }
+    ];
+  }
+
   app.get('/opds', requireOpdsAuth, (req, res) => {
     res.type('application/atom+xml; charset=utf-8');
-    res.send(renderOpdsRoot(baseUrl(req)));
+    res.send(renderOpdsRoot(baseUrl(req), { userEntries: buildUserOpdsEntries(req.user?.username) }));
   });
 
   app.get('/opds/root', requireOpdsAuth, (req, res) => {
     res.type('application/atom+xml; charset=utf-8');
-    res.send(renderOpdsRoot(baseUrl(req)));
+    res.send(renderOpdsRoot(baseUrl(req), { userEntries: buildUserOpdsEntries(req.user?.username) }));
+  });
+
+  app.get('/opds/user', requireOpdsAuth, (req, res) => {
+    const username = req.user?.username;
+    if (!username) {
+      return res.type('application/atom+xml; charset=utf-8')
+        .send(renderOpdsSectionFeed(baseUrl(req), { id: 'user', title: t('opds.user.myLibrary'), selfPath: '/opds/user', entries: [] }));
+    }
+    const entries = [
+      {
+        id: 'user-bookmarks',
+        title: t('opds.user.bookmarks'),
+        href: '/opds/user/bookmarks',
+        content: t('opds.user.bookmarksDesc')
+      },
+      {
+        id: 'user-shelves',
+        title: t('opds.user.shelves'),
+        href: '/opds/user/shelves',
+        content: t('opds.user.shelvesDesc')
+      },
+      {
+        id: 'user-fav-authors',
+        title: t('opds.user.favoriteAuthors'),
+        href: '/opds/user/favorite-authors',
+        content: t('opds.user.favoriteAuthorsDesc')
+      },
+      {
+        id: 'user-fav-series',
+        title: t('opds.user.favoriteSeries'),
+        href: '/opds/user/favorite-series',
+        content: t('opds.user.favoriteSeriesDesc')
+      },
+    ];
+    res.type('application/atom+xml; charset=utf-8');
+    res.send(renderOpdsSectionFeed(baseUrl(req), { id: 'user', title: t('opds.user.myLibrary'), selfPath: '/opds/user', entries }));
+  });
+
+  app.get('/opds/user/bookmarks', requireOpdsAuth, async (req, res) => {
+    const username = req.user?.username;
+    if (!username) return res.status(401).type('text/plain').send(t('api.auth.unauthorized'));
+    const items = getBookmarks(username, 'date');
+    await attachFlibustaAnnotationsFromShards(items);
+    res.type('application/atom+xml; charset=utf-8');
+    res.send(renderOpdsBooksFeed(baseUrl(req), {
+      id: 'user-bookmarks',
+      title: t('opds.user.bookmarks'),
+      selfPath: '/opds/user/bookmarks',
+      items
+    }));
+  });
+
+  app.get('/opds/user/shelves', requireOpdsAuth, (req, res) => {
+    const username = req.user?.username;
+    if (!username) return res.status(401).type('text/plain').send(t('api.auth.unauthorized'));
+    const shelves = getUserShelves(username);
+    const entries = shelves.map((shelf) => ({
+      id: `shelf-${shelf.id}`,
+      title: shelf.name,
+      href: `/opds/user/shelves/${shelf.id}`,
+      content: countLabel('book', shelf.bookCount)
+    }));
+    res.type('application/atom+xml; charset=utf-8');
+    res.send(renderOpdsSectionFeed(baseUrl(req), { id: 'user-shelves', title: t('opds.user.shelves'), selfPath: '/opds/user/shelves', entries }));
+  });
+
+  app.get('/opds/user/shelves/:id', requireOpdsAuth, async (req, res) => {
+    const username = req.user?.username;
+    if (!username) return res.status(401).type('text/plain').send(t('api.auth.unauthorized'));
+    const shelfId = Number(req.params.id);
+    if (!Number.isFinite(shelfId) || shelfId < 1) return res.status(404).type('text/plain').send(t('shelf.notFound'));
+    const shelf = getShelfById(shelfId, username);
+    if (!shelf) return res.status(404).type('text/plain').send(t('shelf.notFound'));
+    const items = getShelfBooks(shelf.id, username);
+    await attachFlibustaAnnotationsFromShards(items);
+    res.type('application/atom+xml; charset=utf-8');
+    res.send(renderOpdsBooksFeed(baseUrl(req), {
+      id: `user-shelf-${shelf.id}`,
+      title: shelf.name,
+      selfPath: req.originalUrl,
+      items
+    }));
+  });
+
+  app.get('/opds/user/favorite-authors', requireOpdsAuth, (req, res) => {
+    const username = req.user?.username;
+    if (!username) return res.status(401).type('text/plain').send(t('api.auth.unauthorized'));
+    const authors = getFavoriteAuthorsLight(username, 500);
+    const entries = authors.map((a) => ({
+      id: `fav-author-${a.name}`,
+      title: formatAuthorForOpds(a.displayName || a.name),
+      href: `/opds/author?author=${encodeURIComponent('=' + a.name)}`,
+    }));
+    res.type('application/atom+xml; charset=utf-8');
+    res.send(renderOpdsSectionFeed(baseUrl(req), { id: 'user-fav-authors', title: t('opds.user.favoriteAuthors'), selfPath: '/opds/user/favorite-authors', entries }));
+  });
+
+  app.get('/opds/user/favorite-series', requireOpdsAuth, async (req, res) => {
+    const username = req.user?.username;
+    if (!username) return res.status(401).type('text/plain').send(t('api.auth.unauthorized'));
+    const series = getFavoriteSeriesLight(username, 500);
+    const entries = series.map((s) => ({
+      id: `fav-series-${s.name}`,
+      title: s.displayName || s.name,
+      href: `/opds/series?series=${encodeURIComponent('=' + s.name)}`,
+    }));
+    res.type('application/atom+xml; charset=utf-8');
+    res.send(renderOpdsSectionFeed(baseUrl(req), { id: 'user-fav-series', title: t('opds.user.favoriteSeries'), selfPath: '/opds/user/favorite-series', entries }));
   });
 
   app.get('/opds/opensearch', requireOpdsAuth, (req, res) => {

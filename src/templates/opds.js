@@ -107,17 +107,18 @@ function renderOpdsBookEntries(baseUrl, items, { includeContent = false } = {}) 
   }).join('');
 }
 
-export function renderOpdsRoot(baseUrl) {
+export function renderOpdsRoot(baseUrl, { userEntries = [] } = {}) {
+  const catalogEntries = [
+    { id: 'author', title: t('opds.nav.authors'), href: '/opds/author' },
+    { id: 'series', title: t('opds.nav.series'), href: '/opds/series' },
+    { id: 'title', title: t('opds.nav.books'), href: '/opds/title' },
+    { id: 'genre', title: t('opds.nav.genres'), href: '/opds/genre' }
+  ];
   return renderOpdsNavigation(baseUrl, {
     id: 'root',
     title: siteTitleForDisplay(),
     selfPath: '/opds',
-    entries: [
-      { id: 'author', title: t('opds.nav.authors'), href: '/opds/author' },
-      { id: 'series', title: t('opds.nav.series'), href: '/opds/series' },
-      { id: 'title', title: t('opds.nav.books'), href: '/opds/title' },
-      { id: 'genre', title: t('opds.nav.genres'), href: '/opds/genre' }
-    ]
+    entries: [...userEntries, ...catalogEntries]
   });
 }
 

@@ -16,7 +16,11 @@ import {
   getSeriesBooksOpds,
   opdsSearchAuthors,
   searchCatalog,
+  getBookmarks,
+  getFavoriteAuthorsLight,
+  getFavoriteSeriesLight,
 } from '../inpx.js';
+import { getUserShelves, getShelfById, getShelfBooks } from '../db.js';
 import {
   renderOpds2Root,
   renderOpds2NavigationFeed,
@@ -41,10 +45,110 @@ function formatAuthorForOpds(author) {
 export function registerOpdsV2Routes(app, deps) {
   const { baseUrl } = deps;
 
+  function buildUserV2NavEntries(username) {
+    if (!username) return [];
+    return [
+      { href: '/opds/v2/user', title: t('opds.user.myLibrary'), type: 'application/opds+json' }
+    ];
+  }
+
   // Root navigation
   app.get('/opds/v2', requireOpdsAuth, (req, res) => {
     res.type(OPDS_JSON);
-    res.send(renderOpds2Root(baseUrl(req)));
+    res.send(renderOpds2Root(baseUrl(req), { userEntries: buildUserV2NavEntries(req.user?.username) }));
+  });
+
+  // User library root
+  app.get('/opds/v2/user', requireOpdsAuth, (req, res) => {
+    const username = req.user?.username;
+    if (!username) {
+      return res.status(401).type(OPDS_JSON).send(JSON.stringify({ metadata: { title: t('opds.user.myLibrary') }, links: [] }));
+    }
+    const entries = [
+      { href: '/opds/v2/user/bookmarks', title: t('opds.user.bookmarks'), type: 'application/opds+json', description: t('opds.user.bookmarksDesc') },
+      { href: '/opds/v2/user/shelves', title: t('opds.user.shelves'), type: 'application/opds+json', description: t('opds.user.shelvesDesc') },
+      { href: '/opds/v2/user/favorite-authors', title: t('opds.user.favoriteAuthors'), type: 'application/opds+json', description: t('opds.user.favoriteAuthorsDesc') },
+      { href: '/opds/v2/user/favorite-series', title: t('opds.user.favoriteSeries'), type: 'application/opds+json', description: t('opds.user.favoriteSeriesDesc') },
+    ];
+    res.type(OPDS_JSON);
+    res.send(renderOpds2NavigationFeed(baseUrl(req), { title: t('opds.user.myLibrary'), selfPath: '/opds/v2/user', entries }));
+  });
+
+  // User bookmarks
+  app.get('/opds/v2/user/bookmarks', requireOpdsAuth, async (req, res) => {
+    const username = req.user?.username;
+    if (!username) return res.status(401).type(OPDS_JSON).send(JSON.stringify({ error: t('api.auth.unauthorized') }));
+    const items = getBookmarks(username, 'date');
+    await attachFlibustaAnnotationsFromShards(items);
+    res.type(OPDS_JSON);
+    res.send(renderOpds2PublicationsFeed(baseUrl(req), {
+      title: t('opds.user.bookmarks'),
+      selfPath: '/opds/v2/user/bookmarks',
+      items,
+      total: items.length
+    }));
+  });
+
+  // User shelves list
+  app.get('/opds/v2/user/shelves', requireOpdsAuth, (req, res) => {
+    const username = req.user?.username;
+    if (!username) return res.status(401).type(OPDS_JSON).send(JSON.stringify({ error: t('api.auth.unauthorized') }));
+    const shelves = getUserShelves(username);
+    const entries = shelves.map((s) => ({
+      href: `/opds/v2/user/shelves/${s.id}`,
+      title: s.name,
+      type: 'application/opds+json',
+      properties: { numberOfItems: s.bookCount }
+    }));
+    res.type(OPDS_JSON);
+    res.send(renderOpds2NavigationFeed(baseUrl(req), { title: t('opds.user.shelves'), selfPath: '/opds/v2/user/shelves', entries }));
+  });
+
+  // Single shelf books
+  app.get('/opds/v2/user/shelves/:id', requireOpdsAuth, async (req, res) => {
+    const username = req.user?.username;
+    if (!username) return res.status(401).type(OPDS_JSON).send(JSON.stringify({ error: t('api.auth.unauthorized') }));
+    const shelfId = Number(req.params.id);
+    if (!Number.isFinite(shelfId) || shelfId < 1) return res.status(404).type(OPDS_JSON).send(JSON.stringify({ error: t('shelf.notFound') }));
+    const shelf = getShelfById(shelfId, username);
+    if (!shelf) return res.status(404).type(OPDS_JSON).send(JSON.stringify({ error: t('shelf.notFound') }));
+    const items = getShelfBooks(shelf.id, username);
+    await attachFlibustaAnnotationsFromShards(items);
+    res.type(OPDS_JSON);
+    res.send(renderOpds2PublicationsFeed(baseUrl(req), {
+      title: shelf.name,
+      selfPath: req.originalUrl,
+      items,
+      total: items.length
+    }));
+  });
+
+  // Favourite authors
+  app.get('/opds/v2/user/favorite-authors', requireOpdsAuth, (req, res) => {
+    const username = req.user?.username;
+    if (!username) return res.status(401).type(OPDS_JSON).send(JSON.stringify({ error: t('api.auth.unauthorized') }));
+    const authors = getFavoriteAuthorsLight(username, 500);
+    const entries = authors.map((a) => ({
+      href: `/opds/v2/authors?prefix=${encodeURIComponent('=' + a.name)}`,
+      title: formatAuthorForOpds(a.displayName || a.name),
+      type: 'application/opds+json'
+    }));
+    res.type(OPDS_JSON);
+    res.send(renderOpds2NavigationFeed(baseUrl(req), { title: t('opds.user.favoriteAuthors'), selfPath: '/opds/v2/user/favorite-authors', entries }));
+  });
+
+  // Favourite series
+  app.get('/opds/v2/user/favorite-series', requireOpdsAuth, (req, res) => {
+    const username = req.user?.username;
+    if (!username) return res.status(401).type(OPDS_JSON).send(JSON.stringify({ error: t('api.auth.unauthorized') }));
+    const series = getFavoriteSeriesLight(username, 500);
+    const entries = series.map((s) => ({
+      href: `/opds/v2/series?prefix=${encodeURIComponent('=' + s.name)}`,
+      title: s.displayName || s.name,
+      type: 'application/opds+json'
+    }));
+    res.type(OPDS_JSON);
+    res.send(renderOpds2NavigationFeed(baseUrl(req), { title: t('opds.user.favoriteSeries'), selfPath: '/opds/v2/user/favorite-series', entries }));
   });
 
   // Authors navigation (prefix-based)

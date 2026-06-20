@@ -19,16 +19,17 @@ function baseLinks(baseUrl, selfPath) {
   ];
 }
 
-export function renderOpds2Root(baseUrl) {
+export function renderOpds2Root(baseUrl, { userEntries = [] } = {}) {
+  const catalogNav = [
+    { href: '/opds/v2/authors', title: t('opds.nav.authors'), type: 'application/opds+json' },
+    { href: '/opds/v2/series', title: t('opds.nav.series'), type: 'application/opds+json' },
+    { href: '/opds/v2/titles', title: t('opds.nav.books'), type: 'application/opds+json' },
+    { href: '/opds/v2/genres', title: t('opds.nav.genres'), type: 'application/opds+json' }
+  ];
   return JSON.stringify({
     metadata: { title: siteTitleForDisplay() },
     links: baseLinks(baseUrl, '/opds/v2'),
-    navigation: [
-      { href: '/opds/v2/authors', title: t('opds.nav.authors'), type: 'application/opds+json' },
-      { href: '/opds/v2/series', title: t('opds.nav.series'), type: 'application/opds+json' },
-      { href: '/opds/v2/titles', title: t('opds.nav.books'), type: 'application/opds+json' },
-      { href: '/opds/v2/genres', title: t('opds.nav.genres'), type: 'application/opds+json' }
-    ]
+    navigation: [...userEntries, ...catalogNav]
   });
 }
 
