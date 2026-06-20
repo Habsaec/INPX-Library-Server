@@ -1121,7 +1121,7 @@ export function renderAdminSources({ user, stats, indexStatus, sources = [], fla
   return pageShell({ title: t('admin.sources.title'), content, user, stats, indexStatus, breadcrumbs: [{ label: t('admin.sources.title') }], mode: 'admin', currentPath: '/admin/sources', csrfToken });
 }
 
-export function renderAdminSmtp({ user, stats, indexStatus, smtp = {}, flash = '', csrfToken = '' }) {
+export function renderAdminSmtp({ user, stats, indexStatus, smtp = {}, flash = '', passwordResetEnabled = false, publicBaseUrl = '', csrfToken = '' }) {
   const content = `
     ${flash ? renderAlert('success', flash) : ''}
     <div class="admin-card">
@@ -1161,6 +1161,28 @@ export function renderAdminSmtp({ user, stats, indexStatus, smtp = {}, flash = '
         <div class="admin-actions-row" style="margin-top:6px;">
           <button type="submit">${escapeHtml(t('admin.save'))}</button>
           <button type="submit" name="test" value="1">${escapeHtml(t('admin.smtp.test'))}</button>
+        </div>
+      </form>
+    </div>
+    <div class="admin-card">
+      <div class="admin-card-title">${escapeHtml(t('admin.smtp.passwordResetTitle'))}</div>
+      <div class="admin-card-subtitle">${escapeHtml(t('admin.smtp.passwordResetHint'))}</div>
+      <form method="POST" action="/admin/settings/password-reset" data-track-dirty>
+        ${csrfHiddenField(csrfToken)}
+        <div class="admin-field-group" style="flex-direction:row;align-items:center;gap:10px;">
+          <label class="admin-checkbox-label" style="text-transform:none;letter-spacing:0;">
+            <input type="hidden" name="enabled" value="0">
+            <input type="checkbox" name="enabled" value="1" ${passwordResetEnabled ? 'checked' : ''} style="accent-color:var(--accent);width:16px;height:16px;">
+            ${escapeHtml(t('admin.smtp.passwordResetEnabled'))}
+          </label>
+        </div>
+        <div class="admin-field-group">
+          <label>${escapeHtml(t('admin.smtp.publicBaseUrl'))}</label>
+          <input type="url" name="publicBaseUrl" value="${escapeHtml(publicBaseUrl || '')}" placeholder="https://books.example.com" autocomplete="off">
+          <span class="admin-field-hint">${escapeHtml(t('admin.smtp.publicBaseUrlHint'))}</span>
+        </div>
+        <div class="admin-actions-row">
+          <button type="submit">${escapeHtml(t('admin.save'))}</button>
         </div>
       </form>
     </div>`;

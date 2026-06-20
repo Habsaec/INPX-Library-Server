@@ -5,6 +5,7 @@
 import { config } from '../config.js';
 
 const loginAttempts = new Map();
+const passwordResetAttempts = new Map();
 const MAX_TRACKED_CLIENTS = 10_000;
 
 /** Extract a client identifier from the request.
@@ -47,12 +48,48 @@ export function clearLoginAttempts(req) {
   loginAttempts.delete(getClientKey(req));
 }
 
+function getAttemptState(map, key) {
+  const now = Date.now();
+  const existing = map.get(key);
+  if (!existing || now - existing.firstAttemptAt > config.loginWindowMs) {
+    const fresh = { count: 0, firstAttemptAt: now };
+    map.set(key, fresh);
+    return fresh;
+  }
+  return existing;
+}
+
+function registerAttempt(map, key) {
+  if (map.size > MAX_TRACKED_CLIENTS) {
+    pruneExpiredEntries();
+    if (map.size > MAX_TRACKED_CLIENTS) return;
+  }
+  const state = getAttemptState(map, key);
+  state.count += 1;
+  map.set(key, state);
+}
+
+export function isPasswordResetRateLimited(req) {
+  const key = getClientKey(req);
+  const state = getAttemptState(passwordResetAttempts, key);
+  return state.count >= config.loginMaxAttempts;
+}
+
+export function registerPasswordResetAttempt(req) {
+  registerAttempt(passwordResetAttempts, getClientKey(req));
+}
+
 /** Remove expired entries. Called periodically and on overflow. */
 export function pruneExpiredEntries() {
   const now = Date.now();
   for (const [key, state] of loginAttempts) {
     if (now - state.firstAttemptAt > config.loginWindowMs) {
       loginAttempts.delete(key);
+    }
+  }
+  for (const [key, state] of passwordResetAttempts) {
+    if (now - state.firstAttemptAt > config.loginWindowMs) {
+      passwordResetAttempts.delete(key);
     }
   }
 }

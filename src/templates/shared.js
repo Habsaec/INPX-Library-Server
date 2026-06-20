@@ -1153,10 +1153,51 @@ export function renderMaintenance({ user, stats, csrfToken = '' }) {
   });
 }
 
-export function renderLoginScreen({ title, subtitle, action, error = '', extraHtml = '', hideForm = false, submitLabel, passwordAutocomplete = 'current-password', captchaHtml = '', headExtra = '' }) {
+export function renderLoginScreen({
+  title,
+  subtitle,
+  action,
+  error = '',
+  successMessage = '',
+  extraHtml = '',
+  hideForm = false,
+  submitLabel,
+  passwordAutocomplete = 'current-password',
+  captchaHtml = '',
+  headExtra = '',
+  hidePasswordField = false,
+  hideUsernameField = false,
+  usernameLabel,
+  usernameName = 'username',
+  usernameType = 'text',
+  usernameAutocomplete = 'username',
+  hiddenFieldsHtml = '',
+  confirmPasswordField = false,
+  passwordLabel
+}) {
   const submit = submitLabel || t('login.submit');
+  const userLabel = usernameLabel || t('login.username');
+  const passLabel = passwordLabel || t('login.password');
   const htmlLang = getLocale() === 'en' ? 'en' : 'ru';
   const siteDisplay = siteTitleForDisplay();
+  const userFieldId = usernameName === 'username' ? 'username' : 'login-field-user';
+  const formFields = hideForm ? '' : `<div class="vertical-form">
+        ${hideUsernameField ? '' : `<div>
+          <label for="${userFieldId}">${escapeHtml(userLabel)}</label>
+          <input id="${userFieldId}" name="${escapeHtml(usernameName)}" type="${escapeHtml(usernameType)}" autocomplete="${escapeHtml(usernameAutocomplete)}">
+        </div>`}
+        ${hidePasswordField ? '' : `<div>
+          <label for="password">${escapeHtml(passLabel)}</label>
+          <input id="password" type="password" name="password" autocomplete="${passwordAutocomplete}">
+        </div>`}
+        ${confirmPasswordField ? `<div>
+          <label for="confirmPassword">${escapeHtml(t('passwordReset.confirmPassword'))}</label>
+          <input id="confirmPassword" type="password" name="confirmPassword" autocomplete="new-password">
+        </div>` : ''}
+        ${hiddenFieldsHtml}
+        ${captchaHtml}
+        <button type="submit">${escapeHtml(submit)}</button>
+      </div>`;
   return `<!doctype html>
 <html lang="${htmlLang}">
 <head>
@@ -1193,18 +1234,8 @@ export function renderLoginScreen({ title, subtitle, action, error = '', extraHt
         <p>${escapeHtml(subtitle)}</p>
       </div>
       ${error ? renderAlert('error', error) : ''}
-      ${hideForm ? '' : `<div class="vertical-form">
-        <div>
-          <label for="username">${escapeHtml(t('login.username'))}</label>
-          <input id="username" name="username" autocomplete="username">
-        </div>
-        <div>
-          <label for="password">${escapeHtml(t('login.password'))}</label>
-          <input id="password" type="password" name="password" autocomplete="${passwordAutocomplete}">
-        </div>
-        ${captchaHtml}
-        <button type="submit">${escapeHtml(submit)}</button>
-      </div>`}
+      ${successMessage ? renderAlert('success', successMessage) : ''}
+      ${formFields}
       ${extraHtml}
     </${hideForm ? 'div' : 'form'}>
   </div>

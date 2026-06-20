@@ -109,6 +109,8 @@ export const config = {
   smtpUser: process.env.SMTP_USER || '',
   smtpPass: process.env.SMTP_PASS || '',
   smtpFrom: process.env.SMTP_FROM || '',
+  /** Базовый URL сайта для ссылок в письмах (восстановление пароля). Перекрывается настройкой в админке. */
+  publicBaseUrl: (process.env.PUBLIC_BASE_URL || '').trim().replace(/\/+$/, ''),
   /** Путь к 7za / 7z для .7z архивов; пусто — из npm `7zip-bin`. */
   sevenZipPath: (process.env.SEVEN_ZIP_PATH || '').trim(),
   /** Дублировать события (как в админке «События») в stdout/stderr для Docker. false / 0 — отключить. */

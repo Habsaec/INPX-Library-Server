@@ -5,7 +5,7 @@ import express from 'express';
 import { config } from '../config.js';
 import { runWithLocaleLang, resolveLocale, t, tp, countLabel, translateKnownErrorMessage, setDefaultLocale } from '../i18n.js';
 import { ApiErrorCode, apiFail } from '../api-errors.js';
-import { requireAdminWeb, requireAdminApi } from '../middleware/auth.js';
+import { requireAdminWeb, requireAdminApi, invalidateSessionUserCache } from '../middleware/auth.js';
 import { getCachedPageData, clearPageDataCache } from '../services/cache.js';
 import { invalidateAllRecommendations } from '../services/recommendations.js';
 import { verifySmtpConnection } from '../services/email.js';
@@ -23,6 +23,7 @@ import {
   setSetting, getSetting, encryptValue, decryptValue, getSources, getSourceById,
   addSource, updateSource, deleteSourceProgressive, forceDetachSourceRowUnsafe,
   getSmtpSettings, setSmtpSettings, getTelegramSettings, setTelegramSettings, resolveTelegramTokenForAdmin, hasAdminUser, listUsers, countAdminUsers,
+  isPasswordResetEnabled, getPublicBaseUrlSetting, setPasswordResetSettings,
   getUserByUsername, upsertUser, updateUser, deleteUser, blockUser, unblockUser, setUserTelegramId, setUserTelegramBotAllowed, setUserEreaderEmailAllowed, setUserEreaderEmail, getEreaderEmail,
   db, getDistinctLanguages, getDistinctGenres, rebuildActiveBooksView, refreshCatalogBookCounts,
   getSuppressedBooks, unsuppressBook, unsuppressAll, getScheduleLog
@@ -574,8 +575,23 @@ export function registerAdminRoutes(app, deps) {
     res.send(renderAdminSmtp({
       user: req.user, stats: getCachedStats(), indexStatus: getIndexStatus(),
       smtp: getSmtpSettings(), flash: String(req.query.flash || ''),
+      passwordResetEnabled: isPasswordResetEnabled(),
+      publicBaseUrl: getPublicBaseUrlSetting(),
       csrfToken: req.csrfToken || ''
     }));
+  });
+
+  app.post('/admin/settings/password-reset', requireAdminWeb, (req, res) => {
+    try {
+      const last = (v) => Array.isArray(v) ? v[v.length - 1] : v;
+      const enabled = last(req.body.enabled) === '1';
+      const publicBaseUrl = String(req.body.publicBaseUrl || '').trim().replace(/\/+$/, '');
+      setPasswordResetSettings({ enabled, publicBaseUrl });
+      logSystemEvent('info', 'admin', enabled ? 'password reset enabled' : 'password reset disabled', { admin: req.user.username });
+      res.redirect('/admin/smtp?flash=' + encodeURIComponent(t('admin.smtp.passwordResetSaved')));
+    } catch (error) {
+      res.redirect('/admin/smtp?flash=' + encodeURIComponent(translateKnownErrorMessage(error.message)));
+    }
   });
 
   app.post('/admin/smtp', requireAdminWeb, async (req, res) => {
@@ -950,6 +966,7 @@ export function registerAdminRoutes(app, deps) {
         return res.redirect('/admin/users?flash=' + encodeURIComponent(t('validation.userNotFound')));
       }
       updateUser({ username, password, role });
+      if (password) invalidateSessionUserCache(username);
       const rawTelegramId = readAdminUserField(req.body, username, 'accountTelegramId')
         || readAdminUserField(req.body, username, 'telegramId');
       const prevTelegramId = String(existing.telegramId ?? '').trim();
