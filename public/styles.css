@@ -51,7 +51,12 @@
   --card-bg-hover: rgba(180,145,80,0.055);
 }
 
+html {
+  color-scheme: dark;
+}
+
 html[data-theme="light"] {
+  color-scheme: light;
   --bg: #f5f1e8;
   --bg-side: #ece4d6;
   --surface: #fffdf8;
@@ -1050,6 +1055,13 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 input:focus-visible, select:focus-visible, textarea:focus-visible {
   outline: 2px solid color-mix(in srgb, var(--accent) 65%, transparent);
   outline-offset: 2px;
+}
+
+/* Native select popup list — dark theme (issue #5) */
+html:not([data-theme="light"]) select option,
+html:not([data-theme="light"]) select optgroup {
+  background-color: var(--surface);
+  color: var(--text);
 }
 
 /* ── Section titles ── */
