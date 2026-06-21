@@ -32,7 +32,7 @@ const {
   LEGACY_SURFACE_LIGHT,
 } = await import('../src/services/ui-customization.js');
 
-const { initDb, setSetting } = await import('../src/db.js');
+const { initDb, setSetting, getSetting } = await import('../src/db.js');
 initDb();
 
 function resetUiDir() {
@@ -91,6 +91,8 @@ test('getThemeCssVars applies theme palette without custom background', () => {
 
 test('getThemeCssVars injects background vars without custom theme colors', () => {
   invalidateUiCustomizationCache();
+  resetUiThemeColors();
+  resetUiThemeSliders();
   const uiDir = path.join(config.dataDir, 'ui');
   fs.mkdirSync(uiDir, { recursive: true });
   fs.writeFileSync(path.join(uiDir, 'background.webp'), Buffer.from('RIFF    WEBPVP8 '));

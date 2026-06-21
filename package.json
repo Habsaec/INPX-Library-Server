@@ -11,7 +11,7 @@
   "scripts": {
     "prestart": "node scripts/build-assets.js --if-stale",
     "start": "node src/server-entry.js",
-    "test": "node --test test/",
+    "test": "node --test test/*.test.js",
     "dev": "node --watch src/server-entry.js",
     "build:assets": "node scripts/build-assets.js",
     "build:assets:watch": "node scripts/build-assets.js --watch",

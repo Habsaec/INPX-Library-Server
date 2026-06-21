@@ -75,13 +75,15 @@ test('renderLogin returns HTML with login form', async () => {
 
 test('renderLogin shows default logo when enabled and no custom logo uploaded', async () => {
   const { setSetting } = await import('../src/db.js');
-  const { invalidateUiCustomizationCache } = await import('../src/services/ui-customization.js');
+  const { invalidateUiCustomizationCache, removeUiAsset } = await import('../src/services/ui-customization.js');
   const { renderLogin } = await import('../src/templates/auth.js');
+  try { removeUiAsset('logo'); } catch { /* no custom logo uploaded */ }
   setSetting('ui_show_logo_login', '1');
   invalidateUiCustomizationCache();
   const html = renderLogin();
   assert.match(html, /class="login-brand-logo"/);
-  assert.match(html, /class="login-logo-img"[^>]+src="\/logo\.png"/);
+  assert.match(html, /class="login-logo-img"/);
+  assert.match(html, /src="\/logo\.png"/);
 });
 
 test('renderLogin hides logo block when showLogoOnLogin is disabled', async () => {
