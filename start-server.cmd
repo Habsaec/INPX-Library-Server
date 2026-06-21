@@ -20,14 +20,26 @@ if not exist "node_modules\" (
   goto :fail
 )
 
-:: --- Rebuild native modules if Node.js version changed ---
+:: --- Rebuild native modules if Node.js version changed or broken ---
 setlocal enabledelayedexpansion
 set "PREV_VER="
 if exist "node_modules\.node_version" set /p PREV_VER=<"node_modules\.node_version"
 for /f "tokens=*" %%V in ('node -v') do set "CUR_VER=%%V"
-if not "!PREV_VER!"=="!CUR_VER!" (
-  echo  Node.js version changed (!PREV_VER! -^> !CUR_VER!^), rebuilding native modules...
-  call npm rebuild
+set "NEED_REBUILD=0"
+if not "!PREV_VER!"=="!CUR_VER!" set "NEED_REBUILD=1"
+node -e "require('better-sqlite3')" >nul 2>&1
+if errorlevel 1 set "NEED_REBUILD=1"
+if "!NEED_REBUILD!"=="1" (
+  if not "!PREV_VER!"=="!CUR_VER!" (
+    echo  Node.js version changed (!PREV_VER! -^> !CUR_VER!^), rebuilding native modules...
+  ) else (
+    echo  Native modules need rebuild for !CUR_VER!...
+  )
+  if exist "%~dp0runtime\npm.cmd" (
+    call "%~dp0runtime\npm.cmd" rebuild
+  ) else (
+    call npm rebuild
+  )
   if errorlevel 1 (
     echo  ERROR: npm rebuild failed. Try running install.cmd again.
     goto :fail
