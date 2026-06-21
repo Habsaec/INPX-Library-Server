@@ -315,3 +315,30 @@ For performance-sensitive changes:
 
 * consider huge library scenarios
 * consider low RAM environments
+
+---
+
+## Git and Branch Workflow
+
+Default integration branch for all agent work: **`dev`**.
+
+Unless the user **explicitly** asks for a new branch, a pull request branch, or a release merge:
+
+* **Do not** run `git checkout -b`, especially not `cursor/*` branches
+* **Do not** follow diff-tab / UI actions that auto-create branches (e.g. “create branch and commit”) — commit on the current branch instead, usually `dev`
+* **Do not** switch branches while there are uncommitted changes; commit or stash first (use `git stash push -u` if there are untracked files)
+
+After a logical chunk of work (or when the user ends a session), offer to commit on `dev` if there are uncommitted changes. Do not push unless asked.
+
+Do **not** modify `install.cmd`, `start-server.cmd`, or other Windows launcher scripts unless the user explicitly requests it or the task is specifically about startup/install.
+
+### Native modules (Windows)
+
+Production startup uses **`runtime\node.exe`** (Node 20) via `start-server.cmd` / `install.cmd`.
+
+* Do not run `npm rebuild` with a different Node (e.g. Cursor’s system Node 22) without telling the user to run `install.cmd` afterward
+* If tests fail with `better-sqlite3` / `NODE_MODULE_VERSION`, the fix is rebuild under the same Node as `runtime\node.exe` — usually by running **`install.cmd`**, not by inventing new rebuild scripts
+
+### Recovering work
+
+Before assuming work is lost, check: `git branch -a`, `git stash list`, `git reflog`, and uncommitted files on `dev`.
