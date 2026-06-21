@@ -59,6 +59,8 @@ goto :end
 :err_start
 echo.
 echo  ERROR: Server failed to start.
+echo  Try: stop-server.cmd  then  start-server.cmd
+echo  Log:  data\server.log
 goto :end
 
 :fail

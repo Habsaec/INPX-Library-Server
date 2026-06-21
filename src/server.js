@@ -38,6 +38,7 @@ import {
 import { getOnlineUserCount, pruneOfflineUsers } from './services/online-tracker.js';
 import { createPerfMetricsMiddleware, getPerfSnapshot } from './services/perf-metrics.js';
 import { getCachedPageData, clearPageDataCache } from './services/cache.js';
+import { getPublicUiSettingsJson, serveUiAsset } from './services/ui-customization.js';
 import { logSystemEvent } from './services/system-events.js';
 
 import { mirrorIndexingLogsToDataFile, appendIndexDiaryLine } from './services/file-log.js';
@@ -80,6 +81,7 @@ import {
   renderAdminTelegram,
   renderAdminUpdate,
   renderAdminSources,
+  renderAdminAppearance,
   renderReader,
   renderMaintenance,
   setSiteName,
@@ -663,6 +665,16 @@ app.use(browseLimiter);
 registerHealthRoutes(app, { getCachedStats, getServiceValidation, getPerfSnapshot });
 registerBrowseApiRoutes(app);
 
+app.get('/custom/ui/:asset', (req, res) => {
+  if (!serveUiAsset(String(req.params.asset || ''), res)) {
+    res.status(404).end();
+  }
+});
+
+app.get('/api/settings/ui', (req, res) => {
+  res.json(getPublicUiSettingsJson());
+});
+
 app.use(express.static(config.publicDir, {
   maxAge: '365d',
   immutable: true,
@@ -699,7 +711,8 @@ app.use((req, res, next) => {
     p.startsWith('/health') ||
     p === '/set-lang' ||
     p === '/manifest.webmanifest' ||
-    p === '/sw.js'
+    p === '/sw.js' ||
+    p.startsWith('/custom/ui/')
   ) return next();
   // Only intercept GET/HEAD HTML requests
   if (req.method !== 'GET' && req.method !== 'HEAD') return next();
@@ -944,7 +957,8 @@ registerAdminRoutes(app, {
   isTelegramBotRunning,
   templates: {
     renderOperations, renderAdminUsers, renderAdminUpdate, renderAdminSmtp,
-    renderAdminTelegram, renderAdminEvents, renderAdminSources, renderAdminDuplicates, renderAdminContent
+    renderAdminTelegram, renderAdminEvents, renderAdminSources, renderAdminDuplicates, renderAdminContent,
+    renderAdminAppearance
   }
 });
 
@@ -1087,6 +1101,14 @@ async function bootstrap() {
     console.log(`Library root: ${getLibraryRoot()}`);
     logSystemEvent('info', 'server', 'server started', { port: config.port, libraryRoot: getLibraryRoot() });
     warmSharedPageCaches();
+  });
+  httpServer.on('error', (err) => {
+    if (err?.code === 'EADDRINUSE') {
+      console.error(`[FATAL] Порт ${config.port} уже занят. Остановите другой экземпляр: npm run server:stop`);
+    } else {
+      console.error('[FATAL] Не удалось запустить HTTP-сервер:', err?.message || err);
+    }
+    process.exit(1);
   });
   app.set('httpServer', httpServer);
 

@@ -4138,6 +4138,174 @@ function attachUpdateUpload() {
   }
 }
 
+function attachUiAppearanceUpload() {
+  const page = document.querySelector('[data-ui-appearance-page]');
+  if (!page) return;
+
+  async function uploadUiAsset(asset, file, statusEl) {
+    if (!file) return;
+    if (statusEl) statusEl.textContent = uiT('admin.ui.uploading');
+    try {
+      const csrf = getCsrfTokenFromPage();
+      const resp = await fetch(`/api/admin/ui/upload?asset=${encodeURIComponent(asset)}`, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: {
+          'Content-Type': file.type || 'application/octet-stream',
+          ...(csrf ? { 'X-CSRF-Token': csrf } : {}),
+          ...(file.name ? { 'X-Ui-Asset-Name': file.name } : {}),
+        },
+        body: file,
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error(data.error || uiT('admin.ui.uploadFailed'));
+      showToast(uiT('admin.ui.uploadOk'), 'success');
+      document.querySelectorAll('form.is-dirty').forEach((form) => form.classList.remove('is-dirty'));
+      location.reload();
+    } catch (error) {
+      if (statusEl) statusEl.textContent = uiT('admin.ui.uploadAutoHint');
+      showToast(error.message || uiT('admin.ui.uploadFailed'), 'error');
+    }
+  }
+
+  page.querySelectorAll('input[data-ui-asset]').forEach((input) => {
+    const asset = input.dataset.uiAsset;
+    const statusEl = page.querySelector(`[data-ui-upload-status="${asset}"]`);
+    input.addEventListener('change', () => {
+      const file = input.files?.[0];
+      if (file) uploadUiAsset(asset, file, statusEl);
+    });
+  });
+
+  page.querySelectorAll('input[type="range"]').forEach((input) => {
+    const valueEl = page.querySelector(`[data-ui-range-value="${input.name}"]`);
+    if (!valueEl) return;
+    const sync = () => {
+      valueEl.textContent = input.value;
+      if (input.name === 'surfaceOpacity') {
+        ['dark', 'light'].forEach((theme) => syncGlassPreview(theme));
+      }
+    };
+    input.addEventListener('input', sync);
+    sync();
+  });
+
+  function previewGlassFillOpacity(hex, surfaceOpacity, isLight) {
+    const opacity = Number(surfaceOpacity);
+    const base = Number.isFinite(opacity) ? opacity : 88;
+    if (!isLight) return base;
+    return Math.max(0, base - 14);
+  }
+
+  function buildPreviewPanelBackground(hex, surfaceOpacity, isLight) {
+    const panelOpacity = previewGlassFillOpacity(hex, surfaceOpacity, isLight);
+    const surface = String(hex || '').trim();
+    if (!/^#[0-9a-fA-F]{6}$/.test(surface)) {
+      return `color-mix(in srgb, ${surface || '#f7f4ef'} ${panelOpacity}%, transparent)`;
+    }
+    return `color-mix(in srgb, ${surface} ${panelOpacity}%, transparent)`;
+  }
+
+  function derivePreviewPalette(hex, surfaceOpacity) {
+    const h = String(hex || '').replace('#', '');
+    if (h.length !== 6) return { text: '#ece6dc', muted: '#a89888', link: '#d4ac5c' };
+    const r = parseInt(h.slice(0, 2), 16);
+    const g = parseInt(h.slice(2, 4), 16);
+    const b = parseInt(h.slice(4, 6), 16);
+    const linear = [r, g, b].map((c) => {
+      c /= 255;
+      return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+    });
+    const lum = 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2];
+    const isDark = lum < 0.45;
+    const mixHex = (aHex, bHex, weightB) => {
+      const w = Math.min(1, Math.max(0, weightB));
+      const ar = parseInt(aHex.slice(1, 3), 16);
+      const ag = parseInt(aHex.slice(3, 5), 16);
+      const ab = parseInt(aHex.slice(5, 7), 16);
+      const br = parseInt(bHex.slice(1, 3), 16);
+      const bg = parseInt(bHex.slice(3, 5), 16);
+      const bb = parseInt(bHex.slice(5, 7), 16);
+      const toHex = (v) => Math.min(255, Math.max(0, Math.round(v))).toString(16).padStart(2, '0');
+      return `#${toHex(ar * (1 - w) + br * w)}${toHex(ag * (1 - w) + bg * w)}${toHex(ab * (1 - w) + bb * w)}`;
+    };
+    const base = {
+      text: isDark ? '#ece6dc' : '#2a2218',
+      muted: isDark ? '#a89888' : '#6e5e4c',
+      link: isDark ? '#d4ac5c' : '#8b5a12',
+    };
+    const opacity = Number(surfaceOpacity);
+    if (isDark || !Number.isFinite(opacity) || opacity >= 58) return base;
+    const factor = (58 - opacity) / 58;
+    return {
+      text: mixHex(base.text, '#000000', factor * 0.22),
+      muted: mixHex(base.muted, '#000000', factor * 0.12),
+      link: base.link,
+    };
+  }
+
+  function readSurfaceOpacity() {
+    const input = page.querySelector('#ui-surface-opacity');
+    const value = Number(input?.value);
+    return Number.isFinite(value) ? value : 88;
+  }
+
+  function syncGlassPreview(theme) {
+    const panel = page.querySelector(`[data-ui-glass-preview-panel="${theme}"]`);
+    const glassInput = page.querySelector(`[data-ui-glass-color="${theme}"]`);
+    if (!panel || !glassInput) return;
+    const surfaceOpacity = readSurfaceOpacity();
+    const derived = derivePreviewPalette(glassInput.value, surfaceOpacity);
+    panel.style.background = buildPreviewPanelBackground(glassInput.value, surfaceOpacity, theme === 'light');
+    const autoFieldByRole = {
+      text: theme === 'dark' ? 'glassTextAutoDark' : 'glassTextAutoLight',
+      muted: theme === 'dark' ? 'glassMutedAutoDark' : 'glassMutedAutoLight',
+      link: theme === 'dark' ? 'glassLinkAutoDark' : 'glassLinkAutoLight',
+    };
+    page.querySelectorAll(`[data-ui-glass-pick-input][data-ui-glass-pick-theme="${theme}"]`).forEach((input) => {
+      const role = input.dataset.uiGlassPickInput;
+      const auto = input.dataset.uiGlassAuto === '1';
+      if (auto) input.value = derived[role] || input.value;
+      const span = input.closest('.ui-glass-preview-pick')?.querySelector('span');
+      if (role === 'text') {
+        panel.style.color = input.value;
+        panel.style.textShadow = '';
+      } else if (span) {
+        span.style.color = input.value;
+      }
+    });
+    Object.entries(autoFieldByRole).forEach(([role, fieldName]) => {
+      const input = page.querySelector(`[data-ui-glass-pick-input="${role}"][data-ui-glass-pick-theme="${theme}"]`);
+      const autoEl = page.querySelector(`[name="${fieldName}"]`);
+      if (autoEl && input) autoEl.value = input.dataset.uiGlassAuto === '1' ? '1' : '0';
+    });
+  }
+
+  function syncGlassHex(input) {
+    if (!input?.name) return;
+    const hexEl = page.querySelector(`[data-ui-glass-hex="${input.name}"]`);
+    if (hexEl) hexEl.textContent = input.value;
+  }
+
+  page.querySelectorAll('[data-ui-glass-color]').forEach((input) => {
+    input.addEventListener('input', () => {
+      syncGlassHex(input);
+      syncGlassPreview(input.dataset.uiGlassColor);
+    });
+  });
+  page.querySelectorAll('[data-ui-glass-pick-input]').forEach((input) => {
+    input.addEventListener('input', () => {
+      input.dataset.uiGlassAuto = '0';
+      syncGlassPreview(input.dataset.uiGlassPickTheme);
+    });
+  });
+  ['dark', 'light'].forEach((theme) => {
+    syncGlassPreview(theme);
+    const glassInput = page.querySelector(`[data-ui-glass-color="${theme}"]`);
+    if (glassInput) syncGlassHex(glassInput);
+  });
+}
+
 function attachAccountNavSelect() {
   document.querySelectorAll('[data-account-nav-select]').forEach((sel) => {
     if (sel.dataset.bound === '1') return;
@@ -5024,6 +5192,7 @@ attachAddToShelfButtons();
 attachSendToEreader();
 attachSendBatchToEreader();
 attachUpdateUpload();
+attachUiAppearanceUpload();
 attachProfileRemoveActions();
 attachAccountNavSelect();
 attachAdminRecaptchaDisclosure();
@@ -5055,8 +5224,14 @@ function attachDirtyFormTracking() {
       const dirty = getState() !== initial;
       form.classList.toggle('is-dirty', dirty);
     };
-    form.addEventListener('input', check);
-    form.addEventListener('change', check);
+    const bindDirtyEvents = (el) => {
+      el.addEventListener('input', check);
+      el.addEventListener('change', check);
+    };
+    bindDirtyEvents(form);
+    if (form.id) {
+      document.querySelectorAll(`[form="${CSS.escape(form.id)}"]`).forEach(bindDirtyEvents);
+    }
     /* При сабмите снимаем «грязный» флаг: иначе beforeunload, который стреляет
        перед уходом на POST/redirect, увидит .is-dirty и покажет «Покинуть страницу?».
        Если сабмит провалится — сервер отдаст redirect с flash, страница перерендерится,

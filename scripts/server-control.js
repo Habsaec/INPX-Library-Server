@@ -11,6 +11,8 @@ const command = String(process.argv[2] || 'status').toLowerCase();
 const explicitPort = Number(process.argv[3] || 0);
 const targetPort = Number.isInteger(explicitPort) && explicitPort > 0 ? explicitPort : config.port;
 const statePath = path.join(config.dataDir, `server-process-${targetPort}.json`);
+const serverLogPath = path.join(config.dataDir, 'server.log');
+const STARTUP_TIMEOUT_MS = 20000;
 
 function ensureStateDir() {
   fs.mkdirSync(config.dataDir, { recursive: true });
@@ -124,6 +126,48 @@ function getLiveState() {
   return state;
 }
 
+function readServerLogTail(maxLines = 10) {
+  try {
+    if (!fs.existsSync(serverLogPath)) return '';
+    const lines = fs.readFileSync(serverLogPath, 'utf8').split(/\r?\n/).filter(Boolean);
+    return lines.slice(-maxLines).join('\n');
+  } catch {
+    return '';
+  }
+}
+
+async function waitForServerListen(pid, port, { timeoutMs = STARTUP_TIMEOUT_MS } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!isProcessAlive(pid)) {
+      return { ok: false, reason: 'process-exited' };
+    }
+    const portPid = findPidByPort(port);
+    if (portPid === pid) {
+      return { ok: true };
+    }
+    await delay(250);
+  }
+  if (!isProcessAlive(pid)) {
+    return { ok: false, reason: 'process-exited' };
+  }
+  return { ok: false, reason: 'listen-timeout' };
+}
+
+function formatStartFailure(reason) {
+  const tail = readServerLogTail();
+  const logHint = tail
+    ? `\nLast log lines (${path.relative(config.rootDir, serverLogPath)}):\n${tail}`
+    : `\nSee ${path.relative(config.rootDir, serverLogPath)} for details.`;
+  if (reason === 'process-exited') {
+    return `Server process exited during startup.${logHint}`;
+  }
+  if (reason === 'listen-timeout') {
+    return `Server did not open port ${targetPort} in time.${logHint}`;
+  }
+  return `Server failed to start.${logHint}`;
+}
+
 async function startServer() {
   const active = getLiveState();
   if (active) {
@@ -131,13 +175,34 @@ async function startServer() {
     return;
   }
 
+  const blockedPid = findPidByPort(targetPort);
+  if (blockedPid) {
+    throw new Error(
+      `Port ${targetPort} is already in use by PID ${blockedPid}. ` +
+      'Run stop-server.cmd or restart-server.cmd, then try again.'
+    );
+  }
+
+  ensureStateDir();
+  fs.appendFileSync(serverLogPath, `\n--- start ${new Date().toISOString()} ---\n`);
+  const logFd = fs.openSync(serverLogPath, 'a');
+
   const child = spawn(process.execPath, [path.join('src', 'server-entry.js')], {
     cwd: config.rootDir,
     detached: true,
-    stdio: 'ignore',
+    stdio: ['ignore', logFd, logFd],
     env: { ...process.env, PORT: String(targetPort) }
   });
+  try {
+    fs.closeSync(logFd);
+  } catch {
+    /* ignore */
+  }
   child.unref();
+
+  if (!child.pid) {
+    throw new Error('Failed to spawn server process.');
+  }
 
   writeState({
     pid: child.pid,
@@ -146,6 +211,23 @@ async function startServer() {
     rootDir: config.rootDir,
     script: path.join(config.rootDir, 'src', 'server-entry.js')
   });
+
+  const ready = await waitForServerListen(child.pid, targetPort);
+  if (!ready.ok) {
+    removeState();
+    if (isProcessAlive(child.pid)) {
+      if (process.platform === 'win32') {
+        spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+      } else {
+        try {
+          process.kill(child.pid);
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+    throw new Error(formatStartFailure(ready.reason));
+  }
 
   console.log(`Server started on http://localhost:${targetPort} (PID ${child.pid}).`);
 }

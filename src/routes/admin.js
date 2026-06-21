@@ -20,6 +20,13 @@ import {
   beginUpdate, endUpdate, runUpdateFromZip
 } from '../services/self-update.js';
 import {
+  getUiCustomization, saveUiAsset, removeUiAsset, saveUiSettings,
+  resetUiThemeColors, resetUiThemeSliders,
+  resetUiThemeShape, resetUiThemeTypography,
+  saveUiShapeSettings, saveUiTypographySettings,
+  getPublicUiSettingsJson
+} from '../services/ui-customization.js';
+import {
   setSetting, getSetting, encryptValue, decryptValue, getSources, getSourceById,
   addSource, updateSource, deleteSourceProgressive, forceDetachSourceRowUnsafe,
   getSmtpSettings, setSmtpSettings, getTelegramSettings, setTelegramSettings, resolveTelegramTokenForAdmin, hasAdminUser, listUsers, countAdminUsers,
@@ -54,6 +61,11 @@ function lastFormFieldValue(value) {
 function isFormFlagEnabled(value) {
   const raw = lastFormFieldValue(value);
   return raw === '1' || raw === 1 || raw === true;
+}
+
+function uiAdminFlashMessage(error) {
+  const msg = String(error?.message || '');
+  return msg.startsWith('admin.') ? t(msg) : translateKnownErrorMessage(msg);
 }
 
 // Self-update состояние и логика вынесены в services/self-update.js.
@@ -111,7 +123,8 @@ export function registerAdminRoutes(app, deps) {
     isTelegramBotRunning,
     templates: {
       renderOperations, renderAdminUsers, renderAdminUpdate, renderAdminSmtp,
-      renderAdminTelegram, renderAdminEvents, renderAdminSources, renderAdminDuplicates, renderAdminContent
+      renderAdminTelegram, renderAdminEvents, renderAdminSources, renderAdminDuplicates, renderAdminContent,
+      renderAdminAppearance
     }
   } = deps;
 
@@ -542,7 +555,6 @@ export function registerAdminRoutes(app, deps) {
     res.send(renderOperations({
       user: req.user, stats, indexStatus: getIndexStatus(),
       operations: getOperationsSnapshot(), flash: String(req.query.flash || ''),
-      siteName: getSetting('site_name') || '', homeSubtitle: getSetting('home_subtitle') || '',
       defaultLocale: getSetting('default_locale') || 'auto',
       csrfToken: req.csrfToken || ''
     }));
@@ -591,6 +603,136 @@ export function registerAdminRoutes(app, deps) {
       res.redirect('/admin/smtp?flash=' + encodeURIComponent(t('admin.smtp.passwordResetSaved')));
     } catch (error) {
       res.redirect('/admin/smtp?flash=' + encodeURIComponent(translateKnownErrorMessage(error.message)));
+    }
+  });
+
+  app.get('/admin/appearance', requireAdminWeb, (req, res) => {
+    res.send(renderAdminAppearance({
+      user: req.user, stats: getCachedStats(), indexStatus: getIndexStatus(),
+      ui: getUiCustomization(),
+      siteName: getSetting('site_name') || '',
+      homeSubtitle: getSetting('home_subtitle') || '',
+      flash: String(req.query.flash || ''),
+      csrfToken: req.csrfToken || ''
+    }));
+  });
+
+  app.post('/admin/settings/ui', requireAdminWeb, (req, res) => {
+    try {
+      const name = String(req.body.siteName || '').trim();
+      setSetting('site_name', name);
+      setSiteName(name);
+      const subtitle = String(req.body.homeSubtitle ?? '').trim();
+      setSetting('home_subtitle', subtitle);
+      saveUiSettings({
+        bgBlur: lastFormFieldValue(req.body.bgBlur),
+        bgOverlay: lastFormFieldValue(req.body.bgOverlay),
+        surfaceOpacity: lastFormFieldValue(req.body.surfaceOpacity),
+        surfaceBlur: lastFormFieldValue(req.body.surfaceBlur),
+        glassColorDark: lastFormFieldValue(req.body.glassColorDark),
+        glassColorLight: lastFormFieldValue(req.body.glassColorLight),
+        glassTextDark: lastFormFieldValue(req.body.glassTextDark),
+        glassTextLight: lastFormFieldValue(req.body.glassTextLight),
+        glassTextAutoDark: isFormFlagEnabled(req.body.glassTextAutoDark),
+        glassTextAutoLight: isFormFlagEnabled(req.body.glassTextAutoLight),
+        glassMutedDark: lastFormFieldValue(req.body.glassMutedDark),
+        glassMutedLight: lastFormFieldValue(req.body.glassMutedLight),
+        glassMutedAutoDark: isFormFlagEnabled(req.body.glassMutedAutoDark),
+        glassMutedAutoLight: isFormFlagEnabled(req.body.glassMutedAutoLight),
+        glassLinkDark: lastFormFieldValue(req.body.glassLinkDark),
+        glassLinkLight: lastFormFieldValue(req.body.glassLinkLight),
+        glassLinkAutoDark: isFormFlagEnabled(req.body.glassLinkAutoDark),
+        glassLinkAutoLight: isFormFlagEnabled(req.body.glassLinkAutoLight),
+        showLogoOnLogin: isFormFlagEnabled(req.body.showLogoOnLogin),
+      });
+      saveUiShapeSettings({
+        radiusPreset: lastFormFieldValue(req.body.radiusPreset),
+        shadowPreset: lastFormFieldValue(req.body.shadowPreset),
+      });
+      saveUiTypographySettings({
+        fontSize: lastFormFieldValue(req.body.fontSize),
+        density: lastFormFieldValue(req.body.density),
+        fontFamily: lastFormFieldValue(req.body.fontFamily),
+      });
+      clearPageDataCache();
+      logSystemEvent('info', 'settings', 'ui appearance settings updated', {
+        actor: req.user.username,
+        siteName: name || '(default)',
+        homeSubtitle: subtitle || '(default)',
+      });
+      res.redirect('/admin/appearance?flash=' + encodeURIComponent(t('admin.ui.flashSaved')));
+    } catch (error) {
+      res.redirect('/admin/appearance?flash=' + encodeURIComponent(uiAdminFlashMessage(error)));
+    }
+  });
+
+  app.post('/admin/settings/ui/remove', requireAdminWeb, (req, res) => {
+    try {
+      const asset = String(req.body.asset || '').trim();
+      removeUiAsset(asset);
+      clearPageDataCache();
+      logSystemEvent('info', 'settings', 'ui asset removed', { actor: req.user.username, asset });
+      res.redirect('/admin/appearance?flash=' + encodeURIComponent(t('admin.ui.flashRemoved')));
+    } catch (error) {
+      res.redirect('/admin/appearance?flash=' + encodeURIComponent(uiAdminFlashMessage(error)));
+    }
+  });
+
+  app.post('/admin/settings/ui/reset/sliders', requireAdminWeb, (req, res) => {
+    try {
+      resetUiThemeSliders();
+      clearPageDataCache();
+      logSystemEvent('info', 'settings', 'ui theme sliders reset', { actor: req.user.username });
+      res.redirect('/admin/appearance?flash=' + encodeURIComponent(t('admin.ui.flashResetSliders')));
+    } catch (error) {
+      res.redirect('/admin/appearance?flash=' + encodeURIComponent(uiAdminFlashMessage(error)));
+    }
+  });
+
+  app.post('/admin/settings/ui/reset/colors', requireAdminWeb, (req, res) => {
+    try {
+      resetUiThemeColors();
+      clearPageDataCache();
+      logSystemEvent('info', 'settings', 'ui theme colors reset', { actor: req.user.username });
+      res.redirect('/admin/appearance?flash=' + encodeURIComponent(t('admin.ui.flashResetColors')));
+    } catch (error) {
+      res.redirect('/admin/appearance?flash=' + encodeURIComponent(uiAdminFlashMessage(error)));
+    }
+  });
+
+  app.post('/admin/settings/ui/reset/shape', requireAdminWeb, (req, res) => {
+    try {
+      resetUiThemeShape();
+      clearPageDataCache();
+      logSystemEvent('info', 'settings', 'ui theme shape reset', { actor: req.user.username });
+      res.redirect('/admin/appearance?flash=' + encodeURIComponent(t('admin.ui.flashResetShape')));
+    } catch (error) {
+      res.redirect('/admin/appearance?flash=' + encodeURIComponent(uiAdminFlashMessage(error)));
+    }
+  });
+
+  app.post('/admin/settings/ui/reset/typography', requireAdminWeb, (req, res) => {
+    try {
+      resetUiThemeTypography();
+      clearPageDataCache();
+      logSystemEvent('info', 'settings', 'ui theme typography reset', { actor: req.user.username });
+      res.redirect('/admin/appearance?flash=' + encodeURIComponent(t('admin.ui.flashResetTypography')));
+    } catch (error) {
+      res.redirect('/admin/appearance?flash=' + encodeURIComponent(uiAdminFlashMessage(error)));
+    }
+  });
+
+  app.post('/api/admin/ui/upload', requireAdminApi, express.raw({ type: '*/*', limit: '5mb' }), async (req, res) => {
+    const asset = String(req.query.asset || req.headers['x-ui-asset'] || '').trim();
+    try {
+      const buffer = Buffer.isBuffer(req.body) ? req.body : Buffer.from(req.body || []);
+      const originalName = String(req.headers['x-ui-asset-name'] || req.query.name || '').trim();
+      await saveUiAsset(asset, buffer, { originalName });
+      clearPageDataCache();
+      logSystemEvent('info', 'settings', 'ui asset uploaded', { actor: req.user.username, asset, size: buffer.length });
+      res.json({ ok: true, ui: getPublicUiSettingsJson() });
+    } catch (error) {
+      return apiFail(res, 400, ApiErrorCode.VALIDATION, uiAdminFlashMessage(error));
     }
   });
 
@@ -678,11 +820,6 @@ export function registerAdminRoutes(app, deps) {
 
   app.post('/admin/settings/site-name', requireAdminWeb, (req, res) => {
     try {
-      const name = String(req.body.siteName || '').trim();
-      setSetting('site_name', name);
-      setSiteName(name);
-      const subtitle = String(req.body.homeSubtitle ?? '').trim();
-      setSetting('home_subtitle', subtitle);
       /* Язык интерфейса по умолчанию для гостей без Accept-Language / lang-cookie.
          Принимает 'ru' | 'en' | 'auto'. Применяется в i18n.resolveLocale —
          критично для OPDS-клиентов вроде KOReader, которые не шлют Accept-Language. */
@@ -691,7 +828,7 @@ export function registerAdminRoutes(app, deps) {
       setSetting('default_locale', locale);
       setDefaultLocale(locale);
       clearPageDataCache();
-      logSystemEvent('info', 'settings', 'site settings updated', { actor: req.user.username, siteName: name || '(default)', homeSubtitle: subtitle || '(default)', defaultLocale: locale });
+      logSystemEvent('info', 'settings', 'default locale updated', { actor: req.user.username, defaultLocale: locale });
       res.redirect('/admin?flash=' + encodeURIComponent(t('admin.flash.siteNameUpdated')));
     } catch (error) {
       res.redirect('/admin?flash=' + encodeURIComponent(translateKnownErrorMessage(error.message)));

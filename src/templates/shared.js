@@ -23,6 +23,7 @@ import {
   formatLocaleDateLong,
   serializeClientI18n
 } from '../i18n.js';
+import { getUiCustomization, getThemeCssVars, hasUiThemeColorsConfigured, hasUiThemeSlidersConfigured, hasUiThemeShapeConfigured, hasUiThemeTypographyConfigured } from '../services/ui-customization.js';
 
 export { t, tp, getLocale, plural, countLabel, formatLocaleInt, formatLocaleDateShort, formatLocaleDateTimeShort, formatLocaleDateLong, serializeClientI18n };
 export { formatAuthorLabel, formatGenreLabel, formatLanguageLabel, parseGenreCodes };
@@ -997,12 +998,72 @@ export function renderHomeShelf({ title, href, items, type = 'books', facetBaseP
     </section>`;
 }
 
+function renderBrandLogoImg(className = 'brand-logo') {
+  const ui = getUiCustomization();
+  const src = ui.logoUrl || '/logo.png';
+  return `<img src="${escapeHtml(src)}" alt="" class="${className}" onerror="if(this.dataset.fallback!=='1'){this.dataset.fallback='1';this.src='/logo.png'}else{this.style.display='none'}">`;
+}
+
+export function renderFaviconLinks() {
+  const ui = getUiCustomization();
+  const icon = ui.faviconUrl || '/favicon.png';
+  const apple = ui.faviconAppleUrl || '/favicon-192.png';
+  return `<link rel="icon" href="${escapeHtml(icon)}" type="image/png">
+  <link rel="apple-touch-icon" href="${escapeHtml(apple)}">`;
+}
+
+function renderWebFontLinks() {
+  const ui = getUiCustomization();
+  const families = [];
+  if (ui.fontFamily === 'inter') {
+    families.push('Inter:wght@400;500;600;700');
+  }
+  families.push('Lora:ital,wght@0,400;0,600;1,400;1,600');
+  const familyQuery = families.map((f) => `family=${f}`).join('&');
+  return `<link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?${familyQuery}&display=swap" rel="stylesheet">`;
+}
+
+function renderUiFontFaceStyle() {
+  const ui = getUiCustomization();
+  if (ui.fontFamily !== 'custom' || !ui.customFontUrl || !ui.customFontFormat) return '';
+  const name = String(ui.customFontName || 'Custom Font').replace(/["\\]/g, '').trim().slice(0, 64) || 'Custom Font';
+  return `<style>@font-face{font-family:'${name}';src:url('${ui.customFontUrl}') format('${ui.customFontFormat}');font-display:swap;font-weight:400;font-style:normal;}</style>`;
+}
+
+function renderUiCustomizationStyle() {
+  const vars = getThemeCssVars();
+  if (!vars.length) return '';
+  return `<style>:root{${vars.join(';')}}</style>`;
+}
+
+function uiHtmlRootAttrs() {
+  const ui = getUiCustomization();
+  let attrs = '';
+  if (hasUiThemeColorsConfigured()) attrs += ' data-ui-theme="1"';
+  if (hasUiThemeSlidersConfigured() || hasUiThemeColorsConfigured() || ui.hasBackground) {
+    attrs += ' data-ui-sliders="1"';
+  }
+  if (ui.hasBackground) attrs += ' data-ui-bg="1"';
+  if (hasUiThemeShapeConfigured()) attrs += ' data-ui-shape="1"';
+  if (hasUiThemeTypographyConfigured()) attrs += ' data-ui-typography="1"';
+  return attrs;
+}
+
+function renderLoginLogoBlock() {
+  const ui = getUiCustomization();
+  if (!ui.showLogoOnLogin) return '';
+  const src = ui.logoUrl || '/logo.png';
+  return `<div class="login-brand-logo"><img src="${escapeHtml(src)}" alt="" class="login-logo-img" onerror="if(this.dataset.fallback!=='1'){this.dataset.fallback='1';this.src='/logo.png'}else{this.parentElement.style.display='none'}"></div>`;
+}
+
 function renderUserSidebar({ query = '', field = 'all', stats, user = null, currentPath = '/' }) {
   return `
     <aside class="sidebar" aria-label="${escapeHtml(t('aria.sidebar'))}">
       <div class="brand">
         <a href="/" class="brand-home-link" title="${escapeHtml(t('nav.home'))}">
-          <img src="/logo.png" alt="" class="brand-logo" onerror="this.style.display='none'">
+          ${renderBrandLogoImg()}
           <h2>${escapeHtml(siteTitleForDisplay())}</h2>
         </a>
       </div>
@@ -1022,7 +1083,7 @@ function renderAdminSidebar(currentPath = '/admin') {
       <div class="sidebar-admin-scroll">
         <div class="brand">
           <a href="/" class="brand-home-link" title="${escapeHtml(t('nav.library'))}">
-            <img src="/logo.png" alt="" class="brand-logo" onerror="this.style.display='none'">
+            ${renderBrandLogoImg()}
             <h2>${escapeHtml(siteTitleForDisplay())}</h2>
           </a>
           <p class="admin-sidebar-badge">${escapeHtml(t('admin.badge'))}</p>
@@ -1036,6 +1097,7 @@ function renderAdminSidebar(currentPath = '/admin') {
           ${link('/admin/users', t('admin.nav.users'))}
           ${link('/admin/smtp', t('admin.nav.smtp'))}
           ${link('/admin/telegram', t('admin.nav.telegram'))}
+          ${link('/admin/appearance', t('admin.nav.appearance'))}
           ${link('/admin/events', t('admin.nav.events'))}
           ${link('/admin/update', t('admin.nav.backup'))}
         </div>
@@ -1055,7 +1117,7 @@ export function pageShell({ title, content, user, query = '', field = 'all', sta
   const htmlLang = getLocale() === 'en' ? 'en' : 'ru';
   const siteDisplay = siteTitleForDisplay();
   return `<!doctype html>
-<html lang="${htmlLang}">
+<html lang="${htmlLang}"${uiHtmlRootAttrs()}>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -1074,14 +1136,13 @@ export function pageShell({ title, content, user, query = '', field = 'all', sta
       }
     })();
   </script>
-  <link rel="icon" href="/favicon.png" type="image/png">
+  ${renderFaviconLinks()}
   <link rel="manifest" href="/manifest.webmanifest">
   <meta name="theme-color" content="#1a1a2e">
-  <link rel="apple-touch-icon" href="/favicon-192.png">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Lora:ital,wght@0,400;0,600;1,400;1,600&display=swap" rel="stylesheet">
+  ${renderWebFontLinks()}
+  ${renderUiFontFaceStyle()}
   <link rel="stylesheet" href="/${CSS_ASSET_FILE}?v=${STATIC_ASSET_VERSION}">
+  ${renderUiCustomizationStyle()}
   <style>
     .spinner{display:block;width:36px;height:36px;border:4px solid rgba(255,255,255,.15);border-top-color:var(--accent-hover,#a1671b);border-radius:50%;animation:spin .7s linear infinite;}
     html[data-theme="light"] .spinner{border-color:rgba(0,0,0,.12);border-top-color:var(--accent-hover,#a1671b);}
@@ -1199,7 +1260,7 @@ export function renderLoginScreen({
         <button type="submit">${escapeHtml(submit)}</button>
       </div>`;
   return `<!doctype html>
-<html lang="${htmlLang}">
+<html lang="${htmlLang}"${uiHtmlRootAttrs()}>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -1217,8 +1278,11 @@ export function renderLoginScreen({
       }
     })();
   </script>
-  <link rel="icon" href="/favicon.png" type="image/png">
+  ${renderFaviconLinks()}
+  ${renderWebFontLinks()}
+  ${renderUiFontFaceStyle()}
   <link rel="stylesheet" href="/${CSS_ASSET_FILE}?v=${STATIC_ASSET_VERSION}">
+  ${renderUiCustomizationStyle()}
   <style>
     .spinner{display:block;width:36px;height:36px;border:4px solid rgba(255,255,255,.15);border-top-color:var(--accent-hover,#a1671b);border-radius:50%;animation:spin .7s linear infinite;}
     html[data-theme="light"] .spinner{border-color:rgba(0,0,0,.12);border-top-color:var(--accent-hover,#a1671b);}
@@ -1229,6 +1293,7 @@ export function renderLoginScreen({
 <body>
   <div class="login-shell">
     <${hideForm ? 'div' : 'form'} class="login-card"${hideForm ? '' : ` method="post" action="${action}"`}>
+      ${renderLoginLogoBlock()}
       <div class="brand" style="margin-bottom:20px;">
         <h2>${escapeHtml(title)}</h2>
         <p>${escapeHtml(subtitle)}</p>

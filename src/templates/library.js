@@ -13,7 +13,7 @@ import {
   renderListRemoveBtn, bookIdDataAttr,
   firstAuthorValue, uniqueBooksById, batchSelectInputAttrs, safeDomIdPart,
   browseTotalLine, canDownloadInUi, canSendToEmailInUi, renderAuthorLinks, renderSeriesLinks,
-  STATIC_ASSET_VERSION, siteTitleForDisplay, READ_CHECK_SVG,
+  STATIC_ASSET_VERSION, siteTitleForDisplay, READ_CHECK_SVG, renderFaviconLinks,
   bookPagePath, readPagePath, apiBookPath,
   t, tp, getLocale, plural, countLabel, formatLocaleInt,
   formatLocaleDateLong, serializeClientI18n,
@@ -1005,7 +1005,7 @@ export function renderReader({ book, details, user, csrfToken = '' }) {
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 ${csrfToken ? `<meta name="csrf-token" content="${escapeHtml(csrfToken)}">` : ''}
 <title>${escapeHtml(siteTitleForDisplay())} \u2014 ${escapeHtml(title)}</title>
-<link rel="icon" href="/favicon.png" type="image/png">
+${renderFaviconLinks()}
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="/reader.css">

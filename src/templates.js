@@ -37,7 +37,8 @@ export {
   renderAdminDuplicates,
   renderAdminSources,
   renderAdminSmtp,
-  renderAdminTelegram
+  renderAdminTelegram,
+  renderAdminAppearance
 } from './templates/admin.js';
 
 // OPDS templates
