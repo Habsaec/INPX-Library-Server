@@ -4153,7 +4153,8 @@ function attachUiAppearanceUpload() {
         headers: {
           'Content-Type': file.type || 'application/octet-stream',
           ...(csrf ? { 'X-CSRF-Token': csrf } : {}),
-          ...(file.name ? { 'X-Ui-Asset-Name': file.name } : {}),
+          // HTTP header values must be ISO-8859-1; Cyrillic filenames break Headers().
+          ...(asset === 'font' && file.name ? { 'X-Ui-Asset-Name': encodeURIComponent(file.name) } : {}),
         },
         body: file,
       });
@@ -4304,6 +4305,16 @@ function attachUiAppearanceUpload() {
     const glassInput = page.querySelector(`[data-ui-glass-color="${theme}"]`);
     if (glassInput) syncGlassHex(glassInput);
   });
+
+  function syncDynamicBaseColorInputs() {
+    const dynamic = page.querySelector('[name="dynamicThemeFromBg"]')?.checked;
+    page.querySelectorAll('[data-ui-glass-color]').forEach((input) => {
+      input.disabled = Boolean(dynamic);
+    });
+  }
+
+  page.querySelector('[name="dynamicThemeFromBg"]')?.addEventListener('change', syncDynamicBaseColorInputs);
+  syncDynamicBaseColorInputs();
 }
 
 function attachAccountNavSelect() {

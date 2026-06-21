@@ -349,7 +349,7 @@ export function renderAdminUpdate({ user, stats = {}, indexStatus = {}, operatio
   return pageShell({ title: t('admin.nav.backup'), content, user, stats, indexStatus, breadcrumbs: [{ label: t('admin.nav.backup') }], mode: 'admin', currentPath: '/admin/update', csrfToken });
 }
 
-export function renderAdminUsers({ user, stats, indexStatus, users = [], flash = '', adminCount = 0, registrationEnabled = false, recaptchaSiteKey = '', recaptchaSecretKey = '', allowAnonymousBrowse = false, allowAnonymousDownload = false, allowAnonymousOpds = false, csrfToken = '' }) {
+export function renderAdminUsers({ user, stats, indexStatus, users = [], flash = '', adminCount = 0, registrationEnabled = false, recaptchaSiteKey = '', recaptchaSecretKey = '', allowAnonymousBrowse = false, allowAnonymousDownload = false, allowAnonymousOpds = false, passwordResetEnabled = false, publicBaseUrl = '', csrfToken = '' }) {
   const admins = users.filter((account) => account.role === 'admin');
   const regularUsers = users.filter((account) => account.role !== 'admin');
   const fmtDate = (d) => formatLocaleDateShort(d);
@@ -434,6 +434,29 @@ export function renderAdminUsers({ user, stats, indexStatus, users = [], flash =
   `).join('');
   const content = `
     ${flash ? renderAlert('success', flash) : ''}
+
+    <div class="admin-card">
+      <div class="admin-card-title">${escapeHtml(t('admin.smtp.passwordResetTitle'))}</div>
+      <div class="admin-card-subtitle">${escapeHtml(t('admin.smtp.passwordResetHint'))}</div>
+      <form method="POST" action="/admin/settings/password-reset" data-track-dirty>
+        ${csrfHiddenField(csrfToken)}
+        <div class="admin-field-group" style="flex-direction:row;align-items:center;gap:10px;">
+          <label class="admin-checkbox-label" style="text-transform:none;letter-spacing:0;">
+            <input type="hidden" name="enabled" value="0">
+            <input type="checkbox" name="enabled" value="1" ${passwordResetEnabled ? 'checked' : ''} style="accent-color:var(--accent);width:16px;height:16px;">
+            ${escapeHtml(t('admin.smtp.passwordResetEnabled'))}
+          </label>
+        </div>
+        <div class="admin-field-group">
+          <label>${escapeHtml(t('admin.smtp.publicBaseUrl'))}</label>
+          <input type="url" name="publicBaseUrl" value="${escapeHtml(publicBaseUrl || '')}" placeholder="https://books.example.com" autocomplete="off">
+          <span class="admin-field-hint">${escapeHtml(t('admin.smtp.publicBaseUrlHint'))}</span>
+        </div>
+        <div class="admin-actions-row">
+          <button type="submit">${escapeHtml(t('admin.save'))}</button>
+        </div>
+      </form>
+    </div>
 
     <div class="admin-card">
       <form method="post" action="/admin/settings/anonymous-access" class="admin-action-item" data-track-dirty>
@@ -1112,7 +1135,7 @@ export function renderAdminSources({ user, stats, indexStatus, sources = [], fla
   return pageShell({ title: t('admin.sources.title'), content, user, stats, indexStatus, breadcrumbs: [{ label: t('admin.sources.title') }], mode: 'admin', currentPath: '/admin/sources', csrfToken });
 }
 
-export function renderAdminSmtp({ user, stats, indexStatus, smtp = {}, flash = '', passwordResetEnabled = false, publicBaseUrl = '', csrfToken = '' }) {
+export function renderAdminSmtp({ user, stats, indexStatus, smtp = {}, flash = '', csrfToken = '' }) {
   const content = `
     ${flash ? renderAlert('success', flash) : ''}
     <div class="admin-card">
@@ -1152,28 +1175,6 @@ export function renderAdminSmtp({ user, stats, indexStatus, smtp = {}, flash = '
         <div class="admin-actions-row" style="margin-top:6px;">
           <button type="submit">${escapeHtml(t('admin.save'))}</button>
           <button type="submit" name="test" value="1">${escapeHtml(t('admin.smtp.test'))}</button>
-        </div>
-      </form>
-    </div>
-    <div class="admin-card">
-      <div class="admin-card-title">${escapeHtml(t('admin.smtp.passwordResetTitle'))}</div>
-      <div class="admin-card-subtitle">${escapeHtml(t('admin.smtp.passwordResetHint'))}</div>
-      <form method="POST" action="/admin/settings/password-reset" data-track-dirty>
-        ${csrfHiddenField(csrfToken)}
-        <div class="admin-field-group" style="flex-direction:row;align-items:center;gap:10px;">
-          <label class="admin-checkbox-label" style="text-transform:none;letter-spacing:0;">
-            <input type="hidden" name="enabled" value="0">
-            <input type="checkbox" name="enabled" value="1" ${passwordResetEnabled ? 'checked' : ''} style="accent-color:var(--accent);width:16px;height:16px;">
-            ${escapeHtml(t('admin.smtp.passwordResetEnabled'))}
-          </label>
-        </div>
-        <div class="admin-field-group">
-          <label>${escapeHtml(t('admin.smtp.publicBaseUrl'))}</label>
-          <input type="url" name="publicBaseUrl" value="${escapeHtml(publicBaseUrl || '')}" placeholder="https://books.example.com" autocomplete="off">
-          <span class="admin-field-hint">${escapeHtml(t('admin.smtp.publicBaseUrlHint'))}</span>
-        </div>
-        <div class="admin-actions-row">
-          <button type="submit">${escapeHtml(t('admin.save'))}</button>
         </div>
       </form>
     </div>`;
@@ -1298,10 +1299,10 @@ export function renderAdminAppearance({ user, stats, indexStatus, ui = {}, siteN
       <div class="ui-color-field">
         <label for="${glassId}">${escapeHtml(t('admin.ui.glassBaseColor'))}</label>
         <div class="ui-color-field-row">
-          <input type="color" id="${glassId}" name="${glassName}" form="ui-main-form" value="${escapeHtml(palette.surface)}" data-ui-glass-color="${theme}">
+          <input type="color" id="${glassId}" name="${glassName}" form="ui-main-form" value="${escapeHtml(palette.surface)}" data-ui-glass-color="${theme}"${ui.dynamicThemeFromBg ? ' disabled title="' + escapeHtml(t('admin.ui.glassBaseColorLocked')) + '"' : ''}>
           <code data-ui-glass-hex="${glassName}">${escapeHtml(palette.surface)}</code>
         </div>
-        <span class="admin-field-hint">${escapeHtml(t('admin.ui.glassBaseColorHint'))}</span>
+        <span class="admin-field-hint">${escapeHtml(ui.dynamicThemeFromBg ? t('admin.ui.glassBaseColorLockedHint') : t('admin.ui.glassBaseColorHint'))}</span>
       </div>
     </div>`;
   };
@@ -1338,6 +1339,33 @@ export function renderAdminAppearance({ user, stats, indexStatus, ui = {}, siteN
     html += '</select>';
     return html;
   };
+
+  const selectFontSize = (value) => {
+    const current = Number(value);
+    let html = `<select id="ui-font-size" name="fontSize" form="ui-main-form" class="admin-preset-select">`;
+    for (let px = MIN_FONT_SIZE_PX; px <= MAX_FONT_SIZE_PX; px += 1) {
+      html += `<option value="${px}"${current === px ? ' selected' : ''}>${px} px</option>`;
+    }
+    html += '</select>';
+    return html;
+  };
+
+  const fontUploadField = `
+    <div class="admin-field-group">
+      <label for="ui-font-input">${escapeHtml(t('admin.ui.fontCustomTitle'))}</label>
+      <div class="ui-font-upload-toolbar">
+        <label for="ui-font-input" class="button ui-font-upload-btn ui-asset-pick-btn">${escapeHtml(t('admin.ui.fontUploadBtn'))}</label>
+        <input type="file" id="ui-font-input" data-ui-asset="font" accept=".woff2,.woff,.ttf,.otf,font/woff2,font/woff,application/font-woff,application/x-font-ttf,application/x-font-opentype" hidden>
+        <form method="post" action="/admin/settings/ui/remove" class="ui-asset-remove-form"${ui.hasCustomFont ? '' : ' hidden'}>
+          ${csrfHiddenField(csrfToken)}
+          <input type="hidden" name="asset" value="font">
+          <button type="submit" class="button-danger">${escapeHtml(t('admin.ui.remove'))}</button>
+        </form>
+      </div>
+      <div class="ui-font-upload-preview">${fontPreview}</div>
+      <p class="ui-asset-block-status muted" data-ui-upload-status="font">${escapeHtml(t('admin.ui.uploadAutoHint'))}</p>
+      <span class="admin-field-hint">${escapeHtml(t('admin.ui.fontCustomHint'))}</span>
+    </div>`;
 
   const content = `
     ${flash ? renderAlert('success', flash) : ''}
@@ -1378,6 +1406,8 @@ export function renderAdminAppearance({ user, stats, indexStatus, ui = {}, siteN
       <div class="admin-card">
         <div class="admin-card-title">${escapeHtml(t('admin.ui.sectionEffects'))}</div>
         <div class="admin-card-subtitle">${escapeHtml(t('admin.ui.sectionEffectsHint'))}</div>
+        ${ui.hasBackground ? `
+        <div class="admin-section-label">${escapeHtml(t('admin.ui.sectionBackgroundOverlay'))}</div>
         <div class="admin-form-grid admin-form-grid--gap-12">
           <div class="admin-field-group">
             <label for="ui-bg-blur">${escapeHtml(t('admin.ui.bgBlur'))}</label>
@@ -1389,6 +1419,11 @@ export function renderAdminAppearance({ user, stats, indexStatus, ui = {}, siteN
             <input type="range" id="ui-bg-overlay" name="bgOverlay" form="ui-main-form" min="0" max="80" step="1" value="${ui.bgContrast}">
             <span class="admin-field-hint">${escapeHtml(t('admin.ui.bgOverlayHint'))} <strong data-ui-range-value="bgOverlay">${ui.bgContrast}</strong></span>
           </div>
+        </div>
+        <hr class="admin-divider">
+        ` : ''}
+        <div class="admin-section-label">${escapeHtml(t('admin.ui.sectionPanels'))}</div>
+        <div class="admin-form-grid admin-form-grid--gap-12">
           <div class="admin-field-group">
             <label for="ui-surface-opacity">${escapeHtml(t('admin.ui.surfaceOpacity'))}</label>
             <input type="range" id="ui-surface-opacity" name="surfaceOpacity" form="ui-main-form" min="0" max="100" step="1" value="${ui.surfaceOpacity}">
@@ -1407,6 +1442,15 @@ export function renderAdminAppearance({ user, stats, indexStatus, ui = {}, siteN
       <div class="admin-card">
         <div class="admin-card-title">${escapeHtml(t('admin.ui.sectionColors'))}</div>
         <div class="admin-card-subtitle">${escapeHtml(t('admin.ui.glassSectionHint'))}</div>
+        <div class="admin-field-group admin-field-group--compact">
+          <label class="admin-checkbox-label ui-asset-checkbox">
+            <input type="checkbox" name="dynamicThemeFromBg" value="1" form="ui-main-form" ${ui.dynamicThemeFromBg ? 'checked' : ''} ${ui.hasBackground ? '' : 'disabled'}>
+            ${escapeHtml(t('admin.ui.dynamicThemeFromBg'))}
+          </label>
+          <span class="admin-field-hint">${escapeHtml(t('admin.ui.dynamicThemeFromBgHint'))}</span>
+          ${ui.hasBackground ? `<div class="admin-card-reset admin-card-reset--inline"><button type="submit" form="ui-refresh-bg-palette-form" class="button button-secondary">${escapeHtml(t('admin.ui.refreshBgPalette'))}</button></div>` : ''}
+        </div>
+        <hr class="admin-divider">
         <div class="ui-glass-theme-grid">
           ${glassThemeCard('dark', ui.themePair.dark, t('admin.ui.glassThemeDark'), ui.surfaceOpacity, ui)}
           ${glassThemeCard('light', ui.themePair.light, t('admin.ui.glassThemeLight'), ui.surfaceOpacity, ui)}
@@ -1452,43 +1496,38 @@ export function renderAdminAppearance({ user, stats, indexStatus, ui = {}, siteN
       <div class="admin-card">
         <div class="admin-card-title">${escapeHtml(t('admin.ui.sectionTypography'))}</div>
         <div class="admin-card-subtitle">${escapeHtml(t('admin.ui.sectionTypographyHint'))}</div>
-        <div class="admin-form-grid admin-form-grid--gap-12">
-          <div class="admin-field-group">
-            <label for="ui-fontFamily">${escapeHtml(t('admin.ui.fontFamily'))}</label>
-            ${selectPreset('fontFamily', ui.fontFamily, ['inter', 'system', 'serif', 'georgia', 'custom'], {
-              inter: t('admin.ui.fontFamilyInter'),
-              system: t('admin.ui.fontFamilySystem'),
-              serif: t('admin.ui.fontFamilySerif'),
-              georgia: t('admin.ui.fontFamilyGeorgia'),
-              custom: t('admin.ui.fontFamilyCustom'),
-            })}
-            <span class="admin-field-hint">${escapeHtml(t('admin.ui.fontFamilyHint'))}</span>
+        <div class="admin-typography-fields">
+          <div class="admin-form-grid admin-form-grid--gap-12 admin-form-grid--align-start">
+            <div class="admin-field-group">
+              <label for="ui-fontFamily">${escapeHtml(t('admin.ui.fontFamily'))}</label>
+              ${selectPreset('fontFamily', ui.fontFamily, ['inter', 'system', 'serif', 'georgia', 'custom'], {
+                inter: t('admin.ui.fontFamilyInter'),
+                system: t('admin.ui.fontFamilySystem'),
+                serif: t('admin.ui.fontFamilySerif'),
+                georgia: t('admin.ui.fontFamilyGeorgia'),
+                custom: t('admin.ui.fontFamilyCustom'),
+              })}
+              <span class="admin-field-hint">${escapeHtml(t('admin.ui.fontFamilyHint'))}</span>
+            </div>
+            ${fontUploadField}
           </div>
-          <div class="admin-field-group">
-            <label for="ui-font-size">${escapeHtml(t('admin.ui.fontScale'))}</label>
-            <input type="range" id="ui-font-size" name="fontSize" form="ui-main-form" min="${MIN_FONT_SIZE_PX}" max="${MAX_FONT_SIZE_PX}" step="1" value="${ui.fontSize}">
-            <span class="admin-field-hint">${escapeHtml(t('admin.ui.fontScaleHint'))} <strong data-ui-range-value="fontSize">${ui.fontSize}</strong> px</span>
-          </div>
-          <div class="admin-field-group">
-            <label for="ui-density">${escapeHtml(t('admin.ui.density'))}</label>
-            ${selectPreset('density', ui.density, ['compact', 'normal', 'comfortable'], {
-              compact: t('admin.ui.densityCompact'),
-              normal: t('admin.ui.densityNormal'),
-              comfortable: t('admin.ui.densityComfortable'),
-            })}
-            <span class="admin-field-hint">${escapeHtml(t('admin.ui.densityHint'))}</span>
+          <div class="admin-form-grid admin-form-grid--gap-12">
+            <div class="admin-field-group">
+              <label for="ui-font-size">${escapeHtml(t('admin.ui.fontScale'))}</label>
+              ${selectFontSize(ui.fontSize)}
+              <span class="admin-field-hint">${escapeHtml(t('admin.ui.fontScaleHint'))}</span>
+            </div>
+            <div class="admin-field-group">
+              <label for="ui-density">${escapeHtml(t('admin.ui.density'))}</label>
+              ${selectPreset('density', ui.density, ['compact', 'normal', 'comfortable'], {
+                compact: t('admin.ui.densityCompact'),
+                normal: t('admin.ui.densityNormal'),
+                comfortable: t('admin.ui.densityComfortable'),
+              })}
+              <span class="admin-field-hint">${escapeHtml(t('admin.ui.densityHint'))}</span>
+            </div>
           </div>
         </div>
-        <hr class="admin-divider">
-        ${assetBlock(
-          'font',
-          t('admin.ui.fontCustomTitle'),
-          t('admin.ui.fontCustomHint'),
-          fontPreview,
-          ui.hasCustomFont,
-          '',
-          '.woff2,.woff,.ttf,.otf,font/woff2,font/woff,application/font-woff,application/x-font-ttf,application/x-font-opentype',
-        )}
         ${ui.hasCustomThemeTypography ? `<div class="admin-card-reset"><button type="submit" form="ui-reset-typography-form" class="button-danger">${escapeHtml(t('admin.ui.resetTypography'))}</button></div>` : ''}
       </div>
 
@@ -1502,6 +1541,7 @@ export function renderAdminAppearance({ user, stats, indexStatus, ui = {}, siteN
       <form id="ui-reset-colors-form" method="post" action="/admin/settings/ui/reset/colors" hidden>${csrfHiddenField(csrfToken)}</form>
       <form id="ui-reset-shape-form" method="post" action="/admin/settings/ui/reset/shape" hidden>${csrfHiddenField(csrfToken)}</form>
       <form id="ui-reset-typography-form" method="post" action="/admin/settings/ui/reset/typography" hidden>${csrfHiddenField(csrfToken)}</form>
+      <form id="ui-refresh-bg-palette-form" method="post" action="/admin/settings/ui/refresh-bg-palette" hidden>${csrfHiddenField(csrfToken)}</form>
 
       <!-- Кнопка сохранения -->
       <div class="admin-appearance-save">

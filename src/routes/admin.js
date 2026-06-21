@@ -24,6 +24,7 @@ import {
   resetUiThemeColors, resetUiThemeSliders,
   resetUiThemeShape, resetUiThemeTypography,
   saveUiShapeSettings, saveUiTypographySettings,
+  refreshBgThemePaletteFromFile,
   getPublicUiSettingsJson
 } from '../services/ui-customization.js';
 import {
@@ -66,6 +67,30 @@ function isFormFlagEnabled(value) {
 function uiAdminFlashMessage(error) {
   const msg = String(error?.message || '');
   return msg.startsWith('admin.') ? t(msg) : translateKnownErrorMessage(msg);
+}
+
+function readUiAssetOriginalName(raw) {
+  const value = String(raw || '').trim();
+  if (!value) return '';
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+const uiUploadRawParser = express.raw({ type: '*/*', limit: '5mb' });
+
+function parseUiUploadBody(req, res, next) {
+  uiUploadRawParser(req, res, (err) => {
+    if (err) {
+      if (err.type === 'entity.too.large' || err.status === 413) {
+        return apiFail(res, 400, ApiErrorCode.VALIDATION, t('admin.ui.errorTooLarge'));
+      }
+      return next(err);
+    }
+    next();
+  });
 }
 
 // Self-update состояние и логика вынесены в services/self-update.js.
@@ -572,6 +597,8 @@ export function registerAdminRoutes(app, deps) {
       allowAnonymousBrowse: getSetting('allow_anonymous_browse') === '1',
       allowAnonymousDownload: getSetting('allow_anonymous_download') === '1',
       allowAnonymousOpds: getSetting('allow_anonymous_opds') === '1',
+      passwordResetEnabled: isPasswordResetEnabled(),
+      publicBaseUrl: getPublicBaseUrlSetting(),
       csrfToken: req.csrfToken || ''
     }));
   });
@@ -587,8 +614,6 @@ export function registerAdminRoutes(app, deps) {
     res.send(renderAdminSmtp({
       user: req.user, stats: getCachedStats(), indexStatus: getIndexStatus(),
       smtp: getSmtpSettings(), flash: String(req.query.flash || ''),
-      passwordResetEnabled: isPasswordResetEnabled(),
-      publicBaseUrl: getPublicBaseUrlSetting(),
       csrfToken: req.csrfToken || ''
     }));
   });
@@ -600,9 +625,9 @@ export function registerAdminRoutes(app, deps) {
       const publicBaseUrl = String(req.body.publicBaseUrl || '').trim().replace(/\/+$/, '');
       setPasswordResetSettings({ enabled, publicBaseUrl });
       logSystemEvent('info', 'admin', enabled ? 'password reset enabled' : 'password reset disabled', { admin: req.user.username });
-      res.redirect('/admin/smtp?flash=' + encodeURIComponent(t('admin.smtp.passwordResetSaved')));
+      res.redirect('/admin/users?flash=' + encodeURIComponent(t('admin.smtp.passwordResetSaved')));
     } catch (error) {
-      res.redirect('/admin/smtp?flash=' + encodeURIComponent(translateKnownErrorMessage(error.message)));
+      res.redirect('/admin/users?flash=' + encodeURIComponent(translateKnownErrorMessage(error.message)));
     }
   });
 
@@ -617,18 +642,20 @@ export function registerAdminRoutes(app, deps) {
     }));
   });
 
-  app.post('/admin/settings/ui', requireAdminWeb, (req, res) => {
+  app.post('/admin/settings/ui', requireAdminWeb, async (req, res) => {
     try {
       const name = String(req.body.siteName || '').trim();
       setSetting('site_name', name);
       setSiteName(name);
       const subtitle = String(req.body.homeSubtitle ?? '').trim();
       setSetting('home_subtitle', subtitle);
+      const dynamicThemeFromBg = isFormFlagEnabled(req.body.dynamicThemeFromBg);
       saveUiSettings({
         bgBlur: lastFormFieldValue(req.body.bgBlur),
         bgOverlay: lastFormFieldValue(req.body.bgOverlay),
         surfaceOpacity: lastFormFieldValue(req.body.surfaceOpacity),
         surfaceBlur: lastFormFieldValue(req.body.surfaceBlur),
+        dynamicThemeFromBg,
         glassColorDark: lastFormFieldValue(req.body.glassColorDark),
         glassColorLight: lastFormFieldValue(req.body.glassColorLight),
         glassTextDark: lastFormFieldValue(req.body.glassTextDark),
@@ -645,6 +672,9 @@ export function registerAdminRoutes(app, deps) {
         glassLinkAutoLight: isFormFlagEnabled(req.body.glassLinkAutoLight),
         showLogoOnLogin: isFormFlagEnabled(req.body.showLogoOnLogin),
       });
+      if (dynamicThemeFromBg) {
+        await refreshBgThemePaletteFromFile();
+      }
       saveUiShapeSettings({
         radiusPreset: lastFormFieldValue(req.body.radiusPreset),
         shadowPreset: lastFormFieldValue(req.body.shadowPreset),
@@ -711,6 +741,18 @@ export function registerAdminRoutes(app, deps) {
     }
   });
 
+  app.post('/admin/settings/ui/refresh-bg-palette', requireAdminWeb, async (req, res) => {
+    try {
+      saveUiSettings({ dynamicThemeFromBg: true });
+      await refreshBgThemePaletteFromFile({ resetTypography: true });
+      clearPageDataCache();
+      logSystemEvent('info', 'settings', 'ui background palette refreshed', { actor: req.user.username });
+      res.redirect('/admin/appearance?flash=' + encodeURIComponent(t('admin.ui.flashBgPaletteRefreshed')));
+    } catch (error) {
+      res.redirect('/admin/appearance?flash=' + encodeURIComponent(uiAdminFlashMessage(error)));
+    }
+  });
+
   app.post('/admin/settings/ui/reset/typography', requireAdminWeb, (req, res) => {
     try {
       resetUiThemeTypography();
@@ -722,11 +764,11 @@ export function registerAdminRoutes(app, deps) {
     }
   });
 
-  app.post('/api/admin/ui/upload', requireAdminApi, express.raw({ type: '*/*', limit: '5mb' }), async (req, res) => {
+  app.post('/api/admin/ui/upload', requireAdminApi, parseUiUploadBody, async (req, res) => {
     const asset = String(req.query.asset || req.headers['x-ui-asset'] || '').trim();
     try {
       const buffer = Buffer.isBuffer(req.body) ? req.body : Buffer.from(req.body || []);
-      const originalName = String(req.headers['x-ui-asset-name'] || req.query.name || '').trim();
+      const originalName = readUiAssetOriginalName(req.headers['x-ui-asset-name'] || req.query.name);
       await saveUiAsset(asset, buffer, { originalName });
       clearPageDataCache();
       logSystemEvent('info', 'settings', 'ui asset uploaded', { actor: req.user.username, asset, size: buffer.length });

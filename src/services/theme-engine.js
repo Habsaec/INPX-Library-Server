@@ -125,7 +125,7 @@ export function buildThemePalette(surfaceHex, textHex = '') {
     : `color-mix(in srgb, ${surface} 40%, white 60%)`;
   const coverA = isDark ? mixHex(surface, '#000000', 0.2) : mixHex(surface, '#ffffff', 0.15);
   const coverB = isDark ? mixHex(surface, '#000000', 0.45) : mixHex(surface, '#000000', 0.08);
-  const bgOverlayColor = isDark ? mixHex(surface, '#000000', 0.62) : mixHex(surface, '#ffffff', 0.42);
+  const bgOverlayColor = surface;
 
   return {
     surface,

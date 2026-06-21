@@ -26,6 +26,7 @@ import {
   resolveFontFamilyStack,
   UI_FONT_FAMILY_PRESETS,
 } from './theme-engine.js';
+import { extractThemeFromImageFile } from './bg-theme-extractor.js';
 
 export {
   DEFAULT_GLASS_DARK,
@@ -50,7 +51,7 @@ export {
 
 const UI_DIR = path.join(config.dataDir, 'ui');
 const BG_OVERLAY_MAX = 80;
-const BG_OVERLAY_DEFAULT_STRENGTH = 40;
+const BG_OVERLAY_DEFAULT_STRENGTH = 0;
 
 function bgContrastFromOverlayStrength(strength) {
   return BG_OVERLAY_MAX - strength;
@@ -185,12 +186,66 @@ function readSurfaceOpacity() {
   return 88;
 }
 
+function resolveThemeSurface(mode, glassColorFromForm) {
+  const isDark = mode === 'dark';
+  const fallback = isDark ? LEGACY_SURFACE_DARK : LEGACY_SURFACE_LIGHT;
+  if (hasUiDynamicThemeFromBg() && hasExtractedBgPalette()) {
+    const key = isDark ? 'ui_bg_palette_dark' : 'ui_bg_palette_light';
+    return normalizeHexColor(getSetting(key), fallback);
+  }
+  if (glassColorFromForm !== undefined && glassColorFromForm !== '') {
+    return normalizeHexColor(glassColorFromForm, fallback);
+  }
+  const raw = getSetting(isDark ? 'ui_glass_color_dark' : 'ui_glass_color_light');
+  return normalizeHexColor(raw || fallback, fallback);
+}
+
+function clearManualGlassSurfaceColors() {
+  setSetting('ui_glass_color_dark', '');
+  setSetting('ui_glass_color_light', '');
+}
+
+function clearExtractedBgPalette() {
+  setSetting('ui_bg_palette_dark', '');
+  setSetting('ui_bg_palette_light', '');
+}
+
+export function hasUiDynamicThemeFromBg() {
+  return getSetting('ui_dynamic_theme_from_bg') === '1';
+}
+
+export function hasExtractedBgPalette() {
+  return getSetting('ui_bg_palette_dark') !== '' && getSetting('ui_bg_palette_light') !== '';
+}
+
+function clearManualGlassTypographyColors() {
+  setSetting('ui_glass_text_dark', '');
+  setSetting('ui_glass_text_light', '');
+  setSetting('ui_glass_muted_dark', '');
+  setSetting('ui_glass_muted_light', '');
+  setSetting('ui_glass_link_dark', '');
+  setSetting('ui_glass_link_light', '');
+}
+
+export async function refreshBgThemePaletteFromFile({ resetTypography = false } = {}) {
+  ensureUiDir();
+  const filePath = path.join(UI_DIR, 'background.webp');
+  if (!fs.existsSync(filePath)) throw new Error('admin.ui.errorNoBackground');
+  const palette = await extractThemeFromImageFile(filePath);
+  setSetting('ui_bg_palette_dark', palette.darkSurface);
+  setSetting('ui_bg_palette_light', palette.lightSurface);
+  if (resetTypography) clearManualGlassTypographyColors();
+  invalidateUiCustomizationCache();
+  return palette;
+}
+
 /** Saved appearance theme settings (independent of custom background image). */
 export function hasUiThemeConfigured() {
   return hasUiThemeColorsConfigured() || hasUiThemeSlidersConfigured();
 }
 
 export function hasUiThemeColorsConfigured() {
+  if (hasUiDynamicThemeFromBg() && hasExtractedBgPalette()) return true;
   const textDark = getSetting('ui_glass_text_dark');
   const textLight = getSetting('ui_glass_text_light');
   if (textDark !== '' || textLight !== '') return true;
@@ -207,17 +262,25 @@ export function hasUiThemeColorsConfigured() {
   return false;
 }
 
+const UI_BACKGROUND_SLIDER_KEYS = ['ui_bg_blur', 'ui_bg_overlay'];
+const UI_PANEL_SLIDER_KEYS = [
+  'ui_surface_opacity',
+  'ui_surface_blur',
+  'ui_panel_opacity',
+  'ui_topbar_opacity',
+  'ui_sidebar_opacity',
+];
+
+export function hasUiBackgroundSlidersConfigured() {
+  return UI_BACKGROUND_SLIDER_KEYS.some((key) => getSetting(key) !== '');
+}
+
+export function hasUiPanelSlidersConfigured() {
+  return UI_PANEL_SLIDER_KEYS.some((key) => getSetting(key) !== '');
+}
+
 export function hasUiThemeSlidersConfigured() {
-  const keys = [
-    'ui_bg_blur',
-    'ui_bg_overlay',
-    'ui_surface_opacity',
-    'ui_surface_blur',
-    'ui_panel_opacity',
-    'ui_topbar_opacity',
-    'ui_sidebar_opacity',
-  ];
-  return keys.some((key) => getSetting(key) !== '');
+  return hasUiBackgroundSlidersConfigured() || hasUiPanelSlidersConfigured();
 }
 
 export function hasUiThemeShapeConfigured() {
@@ -233,14 +296,11 @@ export function hasUiThemeTypographyConfigured() {
 }
 
 export function resetUiThemeColors() {
+  setSetting('ui_dynamic_theme_from_bg', '');
+  clearExtractedBgPalette();
   setSetting('ui_glass_color_dark', '');
   setSetting('ui_glass_color_light', '');
-  setSetting('ui_glass_text_dark', '');
-  setSetting('ui_glass_text_light', '');
-  setSetting('ui_glass_muted_dark', '');
-  setSetting('ui_glass_muted_light', '');
-  setSetting('ui_glass_link_dark', '');
-  setSetting('ui_glass_link_light', '');
+  clearManualGlassTypographyColors();
   invalidateUiCustomizationCache();
 }
 
@@ -327,19 +387,29 @@ export function getUiCustomization() {
   const glassMutedLightRaw = getSetting('ui_glass_muted_light');
   const glassLinkDarkRaw = getSetting('ui_glass_link_dark');
   const glassLinkLightRaw = getSetting('ui_glass_link_light');
-  const displayDark = glassColorDarkRaw
-    ? normalizeHexColor(glassColorDarkRaw, LEGACY_SURFACE_DARK)
-    : LEGACY_SURFACE_DARK;
-  const displayLight = glassColorLightRaw
-    ? normalizeHexColor(glassColorLightRaw, LEGACY_SURFACE_LIGHT)
-    : LEGACY_SURFACE_LIGHT;
+  const dynamicThemeFromBg = hasUiDynamicThemeFromBg() && hasExtractedBgPalette();
+  const paletteDarkRaw = getSetting('ui_bg_palette_dark');
+  const paletteLightRaw = getSetting('ui_bg_palette_light');
+  let displayDark;
+  let displayLight;
+  if (dynamicThemeFromBg) {
+    displayDark = normalizeHexColor(paletteDarkRaw, LEGACY_SURFACE_DARK);
+    displayLight = normalizeHexColor(paletteLightRaw, LEGACY_SURFACE_LIGHT);
+  } else {
+    displayDark = glassColorDarkRaw
+      ? normalizeHexColor(glassColorDarkRaw, LEGACY_SURFACE_DARK)
+      : LEGACY_SURFACE_DARK;
+    displayLight = glassColorLightRaw
+      ? normalizeHexColor(glassColorLightRaw, LEGACY_SURFACE_LIGHT)
+      : LEGACY_SURFACE_LIGHT;
+  }
   const themePair = buildThemePair(
     displayDark,
     displayLight,
     glassTextDarkRaw,
     glassTextLightRaw,
   );
-  if (hasUiThemeColorsConfigured()) {
+  if (hasUiThemeColorsConfigured() && !glassTextLightRaw) {
     themePair.light = adjustLightTextForGlassOpacity(themePair.light, surfaceOpacity);
   }
   applyGlassPaletteOverrides(themePair.dark, { mutedRaw: glassMutedDarkRaw, linkRaw: glassLinkDarkRaw });
@@ -389,17 +459,19 @@ export function getUiCustomization() {
     hasCustomThemeSliders: hasUiThemeSlidersConfigured(),
     hasCustomThemeShape: hasUiThemeShapeConfigured(),
     hasCustomThemeTypography: hasUiThemeTypographyConfigured(),
+    dynamicThemeFromBg,
+    hasExtractedBgPalette: hasExtractedBgPalette(),
   };
 }
 
 export function getThemeCssVars() {
   const ui = getUiCustomization();
   const colors = hasUiThemeColorsConfigured();
-  const sliders = hasUiThemeSlidersConfigured();
+  const panelSliders = hasUiPanelSlidersConfigured();
   const shape = hasUiThemeShapeConfigured();
   const typography = hasUiThemeTypographyConfigured();
-  const panels = sliders || colors || ui.hasBackground;
-  if (!colors && !panels && !ui.hasBackground && !shape && !typography) return [];
+  const panelGlass = panelSliders;
+  if (!colors && !panelGlass && !ui.hasBackground && !shape && !typography) return [];
   const vars = [];
   if (colors) {
     vars.push(...themePairToCssVars(ui.themePair));
@@ -409,7 +481,7 @@ export function getThemeCssVars() {
       `--ui-theme-light-bg-overlay-color:${ui.themePair.light.bgOverlayColor}`,
     );
   }
-  if (panels) {
+  if (panelGlass) {
     vars.push(
       `--ui-surface-opacity:${ui.surfaceOpacity}`,
       `--ui-surface-blur:${ui.surfaceBlur}px`,
@@ -456,7 +528,14 @@ export function saveUiSettings({
   glassLinkAutoDark,
   glassLinkAutoLight,
   showLogoOnLogin,
+  dynamicThemeFromBg,
 } = {}) {
+  if (dynamicThemeFromBg !== undefined) {
+    const enabled = dynamicThemeFromBg === true || dynamicThemeFromBg === '1' || dynamicThemeFromBg === 1;
+    setSetting('ui_dynamic_theme_from_bg', enabled ? '1' : '0');
+    if (enabled) clearManualGlassSurfaceColors();
+  }
+  const dynamicActive = getSetting('ui_dynamic_theme_from_bg') === '1';
   if (bgBlur !== undefined) {
     setSetting('ui_bg_blur', String(clampInt(bgBlur, 0, 24, 0)));
   }
@@ -469,11 +548,11 @@ export function saveUiSettings({
   if (surfaceBlur !== undefined) {
     setSetting('ui_surface_blur', String(clampInt(surfaceBlur, 0, 24, 0)));
   }
-  if (glassColorDark !== undefined) {
+  if (!dynamicActive && glassColorDark !== undefined) {
     const palette = buildThemePair(glassColorDark, DEFAULT_GLASS_LIGHT).dark;
     setSetting('ui_glass_color_dark', palette.surface);
   }
-  if (glassColorLight !== undefined) {
+  if (!dynamicActive && glassColorLight !== undefined) {
     const palette = buildThemePair(DEFAULT_GLASS_DARK, glassColorLight).light;
     setSetting('ui_glass_color_light', palette.surface);
   }
@@ -482,8 +561,8 @@ export function saveUiSettings({
     if (auto) {
       setSetting('ui_glass_text_dark', '');
     } else if (glassTextDark !== undefined) {
-      const surface = glassColorDark !== undefined ? glassColorDark : getSetting('ui_glass_color_dark');
-      const palette = buildThemePair(surface || DEFAULT_GLASS_DARK, DEFAULT_GLASS_LIGHT, glassTextDark, '');
+      const surface = resolveThemeSurface('dark', dynamicActive ? undefined : glassColorDark);
+      const palette = buildThemePair(surface, DEFAULT_GLASS_LIGHT, glassTextDark, '');
       setSetting('ui_glass_text_dark', palette.dark.text);
     }
   }
@@ -492,8 +571,8 @@ export function saveUiSettings({
     if (auto) {
       setSetting('ui_glass_text_light', '');
     } else if (glassTextLight !== undefined) {
-      const surface = glassColorLight !== undefined ? glassColorLight : getSetting('ui_glass_color_light');
-      const palette = buildThemePair(DEFAULT_GLASS_DARK, surface || DEFAULT_GLASS_LIGHT, '', glassTextLight);
+      const surface = resolveThemeSurface('light', dynamicActive ? undefined : glassColorLight);
+      const palette = buildThemePair(DEFAULT_GLASS_DARK, surface, '', glassTextLight);
       setSetting('ui_glass_text_light', palette.light.text);
     }
   }
@@ -607,6 +686,9 @@ export async function saveUiAsset(asset, buffer, options = {}) {
       .webp({ quality: 82 })
       .toBuffer();
     fs.writeFileSync(path.join(UI_DIR, 'background.webp'), out);
+    if (hasUiDynamicThemeFromBg()) {
+      await refreshBgThemePaletteFromFile();
+    }
   }
 
   invalidateUiCustomizationCache();
@@ -649,6 +731,11 @@ export function removeUiAsset(asset) {
       /* ignore missing */
     }
   }
+  if (asset === 'background') {
+    clearExtractedBgPalette();
+    if (hasUiDynamicThemeFromBg()) setSetting('ui_dynamic_theme_from_bg', '0');
+  }
+  invalidateUiCustomizationCache();
 }
 
 export function serveUiAsset(asset, res) {
@@ -697,5 +784,6 @@ export function getPublicUiSettingsJson() {
     density: ui.density,
     fontFamily: ui.fontFamily,
     customFontUrl: ui.customFontUrl,
+    dynamicThemeFromBg: ui.dynamicThemeFromBg,
   };
 }

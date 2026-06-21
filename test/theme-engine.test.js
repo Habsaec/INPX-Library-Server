@@ -24,11 +24,12 @@ test('buildThemePalette derives contrasting text and harmonized link', () => {
   assert.notEqual(light.link, dark.link);
 });
 
-test('buildThemePalette derives bg overlay color from surface hue', () => {
+test('buildThemePalette uses surface color for bg overlay tint', () => {
   const warm = buildThemePalette('#2a1f14');
   const cool = buildThemePalette('#142028');
+  assert.equal(warm.bgOverlayColor, warm.surface);
+  assert.equal(cool.bgOverlayColor, cool.surface);
   assert.notEqual(warm.bgOverlayColor, cool.bgOverlayColor);
-  assert.match(warm.bgOverlayColor, /^#[0-9a-f]{6}$/);
 });
 
 test('buildThemePair emits css vars for both modes', () => {

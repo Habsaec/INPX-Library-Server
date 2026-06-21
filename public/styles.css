@@ -219,9 +219,10 @@ a.table-row-link:active {
   z-index: 100;
 }
 .sidebar .brand { padding: 0 16px 16px; border-bottom: 1px solid var(--sidebar-brand-border); }
-.sidebar .brand-logo { display: block; max-width: 100%; max-height: 48px; margin-bottom: 8px; object-fit: contain; transition: transform 0.2s ease; }
+.sidebar .brand-home-link { text-align: center; }
+.sidebar .brand-logo { display: block; max-width: 100%; max-height: 48px; margin: 0 auto 8px; object-fit: contain; transition: transform 0.2s ease; }
 .sidebar .brand-home-link:hover .brand-logo { transform: scale(1.02); }
-.sidebar .brand h1, .sidebar .brand h2 { font-size: 14px; font-weight: 600; color: var(--text); }
+.sidebar .brand h1, .sidebar .brand h2 { font-size: 14px; font-weight: 600; color: var(--text); text-align: center; }
 .sidebar .brand p { display: none; }
 
 .sidebar.sidebar-admin {
@@ -1435,13 +1436,14 @@ html[data-theme="light"] .premium-hero-card::after {
   margin-top: 8px;
 }
 .premium-hero-card .button-primary {
-  background: var(--ui-glass-accent-bg, var(--link));
-  border-color: var(--ui-glass-accent-border, var(--link));
+  background: var(--link);
+  border-color: var(--link);
   color: #1a1612;
+  font-weight: 600;
 }
 .premium-hero-card .button-primary:hover {
-  background: var(--ui-glass-accent-hover-bg, var(--link-hover));
-  border-color: var(--ui-glass-accent-hover-bg, var(--link-hover));
+  background: var(--link-hover);
+  border-color: var(--link-hover);
   color: #1a1612;
 }
 html[data-theme="light"] .premium-hero-card .button-primary {
@@ -5580,10 +5582,11 @@ html[data-ui-bg="1"] body::after {
   pointer-events: none;
 }
 html[data-ui-bg="1"][data-theme="dark"] body::after {
-  background: color-mix(in srgb, var(--ui-theme-dark-bg-overlay-color, #000000) calc(var(--ui-bg-overlay, 40) * 1%), transparent);
+  /* Overlay strength (--ui-bg-overlay 0–80) is independent of panel glass; tint comes from theme. */
+  background: color-mix(in srgb, var(--ui-theme-dark-bg-overlay-color, #1a1612) calc(min(100, var(--ui-bg-overlay, 0) * 100 / 80) * 1%), transparent);
 }
 html[data-ui-bg="1"][data-theme="light"] body::after {
-  background: color-mix(in srgb, var(--ui-theme-light-bg-overlay-color, #ffffff) calc(var(--ui-bg-overlay, 40) * 0.78 * 1%), transparent);
+  background: color-mix(in srgb, var(--ui-theme-light-bg-overlay-color, #fffdf8) calc(min(100, var(--ui-bg-overlay, 0) * 100 / 80) * 1%), transparent);
 }
 html[data-ui-theme="1"][data-theme="dark"] {
   --ui-glass-bg: var(--ui-theme-dark-surface, #141210);
@@ -5668,9 +5671,6 @@ html[data-ui-sliders="1"] {
   --ui-glass-accent-border: color-mix(in srgb, var(--link) calc(var(--ui-glass-fill-opacity) * 1%), transparent);
   --ui-glass-accent-hover-bg: color-mix(in srgb, var(--link-hover) calc(var(--ui-glass-fill-opacity) * 1%), transparent);
 }
-html[data-ui-sliders="1"][data-theme="light"] {
-  --ui-glass-fill-opacity: max(0, calc(var(--ui-surface-opacity, 88) - 14));
-}
 html[data-ui-sliders="1"] .search-suggest-dropdown .suggest-item:hover,
 html[data-ui-sliders="1"] .search-suggest-dropdown .suggest-item.suggest-active,
 html[data-ui-sliders="1"] .download-menu-popover .download-format-link:hover,
@@ -5686,7 +5686,6 @@ html[data-ui-sliders="1"] select option:focus-visible {
 html[data-ui-sliders="1"] .sidebar,
 html[data-ui-sliders="1"] .topbar,
 html[data-ui-sliders="1"] .topbar.topbar-admin,
-html[data-ui-sliders="1"] .panel,
 html[data-ui-sliders="1"] .login-card,
 html[data-ui-sliders="1"] .admin-card {
   background: var(--ui-glass-panel-bg);
@@ -5722,7 +5721,7 @@ html[data-ui-sliders="1"] .admin-card {
 }
 .ui-asset-block-row {
   display: grid;
-  grid-template-columns: minmax(200px, 300px) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 16px 20px;
   align-items: start;
   margin-top: 10px;
@@ -5742,22 +5741,33 @@ html[data-ui-sliders="1"] .admin-card {
   flex-direction: column;
   gap: 8px;
   min-width: 0;
-  padding-top: 2px;
+  width: min(100%, 220px);
+  align-items: stretch;
+  justify-self: end;
 }
 .ui-asset-block-buttons {
   display: flex;
-  flex-wrap: nowrap;
-  align-items: center;
+  flex-direction: column;
+  align-items: stretch;
   gap: 8px;
+  width: 100%;
 }
 .ui-asset-pick-btn {
   cursor: pointer;
   flex-shrink: 0;
+  width: 100%;
+  justify-content: center;
+  box-sizing: border-box;
 }
 .ui-asset-remove-form {
-  display: inline-flex;
+  display: flex;
   margin: 0;
   flex-shrink: 0;
+  width: 100%;
+}
+.ui-asset-remove-form button {
+  width: 100%;
+  justify-content: center;
 }
 .ui-asset-remove-form[hidden] {
   display: none;
@@ -5808,8 +5818,9 @@ html[data-ui-sliders="1"] .admin-card {
   .ui-asset-block-preview {
     min-height: 0;
   }
-  .ui-asset-block-buttons {
-    flex-wrap: wrap;
+  .ui-asset-block-controls {
+    width: 100%;
+    justify-self: stretch;
   }
 }
 
@@ -5942,6 +5953,48 @@ html[data-ui-sliders="1"] .admin-card {
   line-height: 1.45;
   overflow-wrap: anywhere;
 }
+.admin-typography-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.ui-font-upload-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.ui-font-upload-btn {
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 38px;
+  padding: 8px 10px;
+  font-size: 14px;
+  line-height: 1.2;
+  justify-content: center;
+  box-sizing: border-box;
+}
+.ui-font-upload-preview {
+  display: flex;
+  align-items: center;
+  min-height: 0;
+}
+.ui-font-upload-preview .ui-font-preview {
+  width: 100%;
+  min-height: 56px;
+  padding: 10px 12px;
+}
+.ui-font-upload-preview > .muted {
+  font-size: 12px;
+  line-height: 1.4;
+}
+.ui-font-upload-toolbar + .ui-font-upload-preview {
+  margin-top: 2px;
+}
+.ui-font-upload-toolbar ~ .ui-asset-block-status {
+  min-height: 0;
+  margin: 0;
+}
 @media (max-width: 720px) {
   .ui-glass-theme-grid {
     grid-template-columns: 1fr;
@@ -6044,12 +6097,22 @@ html[data-ui-typography="1"] .login-card {
   margin: 0;
 }
 /* Футер карточки с кнопкой сброса — единое выравнивание во всех секциях */
+.ui-color-field input[type="color"]:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
 .admin-card-reset {
   display: flex;
   justify-content: flex-end;
   margin-top: 16px;
   padding-top: 14px;
   border-top: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+}
+.admin-card-reset--inline {
+  margin-top: 10px;
+  padding-top: 0;
+  border-top: 0;
+  justify-content: flex-start;
 }
 /* Липкий бар сохранения внизу страницы оформления */
 .admin-appearance-save {

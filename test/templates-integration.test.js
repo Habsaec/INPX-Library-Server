@@ -173,6 +173,22 @@ test('renderAdminSmtp returns SMTP config page', async () => {
     smtp: {}
   });
   assert.ok(html.includes('action="/admin/smtp"'));
+  assert.equal(html.includes('action="/admin/settings/password-reset"'), false);
+});
+
+test('renderAdminUsers includes password recovery settings', async () => {
+  const { renderAdminUsers } = await import('../src/templates/admin.js');
+  const html = renderAdminUsers({
+    user: { username: 'admin', role: 'admin' },
+    stats: { totalBooks: 0, totalAuthors: 0, totalSeries: 0, totalGenres: 0, totalLanguages: 1 },
+    indexStatus: {},
+    users: [],
+    passwordResetEnabled: true,
+    publicBaseUrl: 'https://books.example.com',
+    csrfToken: 'tok'
+  });
+  assert.ok(html.includes('action="/admin/settings/password-reset"'));
+  assert.ok(html.includes('https://books.example.com'));
 });
 
 // ── 6. Library templates ────────────────────────────────────────────

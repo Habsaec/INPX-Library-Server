@@ -23,7 +23,7 @@ import {
   formatLocaleDateLong,
   serializeClientI18n
 } from '../i18n.js';
-import { getUiCustomization, getThemeCssVars, hasUiThemeColorsConfigured, hasUiThemeSlidersConfigured, hasUiThemeShapeConfigured, hasUiThemeTypographyConfigured } from '../services/ui-customization.js';
+import { getUiCustomization, getThemeCssVars, hasUiThemeColorsConfigured, hasUiPanelSlidersConfigured, hasUiThemeShapeConfigured, hasUiThemeTypographyConfigured } from '../services/ui-customization.js';
 
 export { t, tp, getLocale, plural, countLabel, formatLocaleInt, formatLocaleDateShort, formatLocaleDateTimeShort, formatLocaleDateLong, serializeClientI18n };
 export { formatAuthorLabel, formatGenreLabel, formatLanguageLabel, parseGenreCodes };
@@ -1042,7 +1042,7 @@ function uiHtmlRootAttrs() {
   const ui = getUiCustomization();
   let attrs = '';
   if (hasUiThemeColorsConfigured()) attrs += ' data-ui-theme="1"';
-  if (hasUiThemeSlidersConfigured() || hasUiThemeColorsConfigured() || ui.hasBackground) {
+  if (hasUiPanelSlidersConfigured()) {
     attrs += ' data-ui-sliders="1"';
   }
   if (ui.hasBackground) attrs += ' data-ui-bg="1"';

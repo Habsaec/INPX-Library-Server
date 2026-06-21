@@ -13,6 +13,8 @@ const {
   hasUiThemeConfigured,
   hasUiThemeColorsConfigured,
   hasUiThemeSlidersConfigured,
+  hasUiBackgroundSlidersConfigured,
+  hasUiPanelSlidersConfigured,
   hasUiThemeTypographyConfigured,
   resetUiThemeColors,
   resetUiThemeSliders,
@@ -24,6 +26,7 @@ const {
   removeUiAsset,
   invalidateUiCustomizationCache,
   getPublicUiSettingsJson,
+  refreshBgThemePaletteFromFile,
   normalizeHexColor,
   deriveGlassTheme,
   DEFAULT_GLASS_DARK,
@@ -85,7 +88,7 @@ test('getThemeCssVars applies theme palette without custom background', () => {
   assert.equal(hasUiThemeColorsConfigured(), true);
   const vars = getThemeCssVars();
   assert.ok(vars.some((v) => v.startsWith('--ui-theme-light-surface:#ffcc99')));
-  assert.ok(vars.some((v) => v.startsWith('--ui-surface-opacity:')));
+  assert.ok(!vars.some((v) => v.startsWith('--ui-surface-opacity:')));
   assert.ok(!vars.some((v) => v.startsWith('--ui-bg-image:')));
 });
 
@@ -97,11 +100,36 @@ test('getThemeCssVars injects background vars without custom theme colors', () =
   fs.mkdirSync(uiDir, { recursive: true });
   fs.writeFileSync(path.join(uiDir, 'background.webp'), Buffer.from('RIFF    WEBPVP8 '));
   assert.equal(hasUiThemeColorsConfigured(), false);
+  assert.equal(hasUiPanelSlidersConfigured(), false);
   const vars = getThemeCssVars();
   assert.ok(vars.some((v) => v.startsWith('--ui-bg-image:')));
   assert.ok(vars.some((v) => v.startsWith('--ui-theme-dark-bg-overlay-color:')));
   assert.ok(!vars.some((v) => v.startsWith('--ui-theme-dark-text:')));
+  assert.ok(!vars.some((v) => v.startsWith('--ui-surface-opacity:')));
   try { fs.unlinkSync(path.join(uiDir, 'background.webp')); } catch { /* ignore */ }
+});
+
+test('background sliders do not enable panel glass vars', () => {
+  invalidateUiCustomizationCache();
+  resetUiThemeSliders();
+  saveUiSettings({ bgBlur: 8, bgOverlay: 20 });
+  assert.equal(hasUiBackgroundSlidersConfigured(), true);
+  assert.equal(hasUiPanelSlidersConfigured(), false);
+  const vars = getThemeCssVars();
+  assert.ok(!vars.some((v) => v.startsWith('--ui-surface-opacity:')));
+  assert.ok(!vars.some((v) => v.startsWith('--ui-surface-blur:')));
+});
+
+test('panel sliders inject surface vars without background image', () => {
+  invalidateUiCustomizationCache();
+  resetUiThemeSliders();
+  saveUiSettings({ surfaceOpacity: 100, surfaceBlur: 6 });
+  assert.equal(hasUiPanelSlidersConfigured(), true);
+  assert.equal(hasUiBackgroundSlidersConfigured(), false);
+  const vars = getThemeCssVars();
+  assert.ok(vars.some((v) => v.startsWith('--ui-surface-opacity:100')));
+  assert.ok(vars.some((v) => v.startsWith('--ui-surface-blur:6px')));
+  assert.ok(!vars.some((v) => v.startsWith('--ui-bg-image:')));
 });
 
 test('resetUiThemeColors clears saved palette settings', () => {
@@ -136,7 +164,8 @@ test('resetUiThemeSliders clears saved slider settings', () => {
   assert.equal(hasUiThemeSlidersConfigured(), false);
   const ui = getUiCustomization();
   assert.equal(ui.blur, 0);
-  assert.equal(ui.overlay, 40);
+  assert.equal(ui.overlay, 0);
+  assert.equal(ui.bgContrast, 80);
   assert.equal(ui.surfaceOpacity, 88);
   assert.equal(ui.surfaceBlur, 0);
 });
@@ -304,4 +333,101 @@ test('getPublicUiSettingsJson returns serializable settings', () => {
   const json = getPublicUiSettingsJson();
   assert.equal(typeof json.bgBlur, 'number');
   assert.equal(json.bgBlur, 4);
+});
+
+test('dynamic theme from background applies extracted palette', async () => {
+  invalidateUiCustomizationCache();
+  resetUiThemeColors();
+  resetUiDir();
+  fs.mkdirSync(uiDir, { recursive: true });
+  const buffer = await sharp({
+    create: { width: 96, height: 64, channels: 3, background: { r: 180, g: 60, b: 24 } },
+  }).webp().toBuffer();
+  fs.writeFileSync(path.join(uiDir, 'background.webp'), buffer);
+  const palette = await refreshBgThemePaletteFromFile();
+  saveUiSettings({ dynamicThemeFromBg: true });
+  assert.equal(hasUiThemeColorsConfigured(), true);
+  const ui = getUiCustomization();
+  assert.equal(ui.dynamicThemeFromBg, true);
+  assert.equal(ui.glassColorDark, palette.darkSurface);
+  assert.equal(ui.glassColorLight, palette.lightSurface);
+  assert.ok(getThemeCssVars().some((v) => v.startsWith(`--ui-theme-dark-surface:${palette.darkSurface}`)));
+});
+
+test('dynamic theme preserves manual text color overrides', async () => {
+  invalidateUiCustomizationCache();
+  resetUiThemeColors();
+  resetUiDir();
+  fs.mkdirSync(uiDir, { recursive: true });
+  fs.writeFileSync(path.join(uiDir, 'background.webp'), await sharp({
+    create: { width: 32, height: 32, channels: 3, background: '#224466' },
+  }).webp().toBuffer());
+  await refreshBgThemePaletteFromFile();
+  saveUiSettings({ dynamicThemeFromBg: true });
+  saveUiSettings({
+    glassTextAutoDark: false,
+    glassTextDark: '#aabbcc',
+    glassTextAutoLight: false,
+    glassTextLight: '#112233',
+  });
+  const ui = getUiCustomization();
+  assert.equal(ui.glassTextDark, '#aabbcc');
+  assert.equal(ui.glassTextLight, '#112233');
+  assert.equal(ui.glassTextAutoDark, false);
+});
+
+test('refresh from background resets manual text colors to auto', async () => {
+  invalidateUiCustomizationCache();
+  resetUiThemeColors();
+  resetUiDir();
+  fs.mkdirSync(uiDir, { recursive: true });
+  fs.writeFileSync(path.join(uiDir, 'background.webp'), await sharp({
+    create: { width: 32, height: 32, channels: 3, background: '#663322' },
+  }).webp().toBuffer());
+  saveUiSettings({
+    dynamicThemeFromBg: true,
+    glassTextAutoDark: false,
+    glassTextDark: '#ddeeff',
+    glassMutedAutoDark: false,
+    glassMutedDark: '#aabbcc',
+  });
+  await refreshBgThemePaletteFromFile({ resetTypography: true });
+  const ui = getUiCustomization();
+  assert.equal(getSetting('ui_glass_text_dark'), '');
+  assert.equal(getSetting('ui_glass_muted_dark'), '');
+  assert.equal(ui.glassTextAutoDark, true);
+  assert.notEqual(ui.glassTextDark, '#ddeeff');
+});
+
+test('background palette refresh without reset keeps manual text overrides', async () => {
+  invalidateUiCustomizationCache();
+  resetUiThemeColors();
+  resetUiDir();
+  fs.mkdirSync(uiDir, { recursive: true });
+  fs.writeFileSync(path.join(uiDir, 'background.webp'), await sharp({
+    create: { width: 32, height: 32, channels: 3, background: '#663322' },
+  }).webp().toBuffer());
+  saveUiSettings({
+    dynamicThemeFromBg: true,
+    glassTextAutoDark: false,
+    glassTextDark: '#ddeeff',
+  });
+  await refreshBgThemePaletteFromFile();
+  const ui = getUiCustomization();
+  assert.equal(ui.glassTextDark, '#ddeeff');
+  assert.equal(ui.dynamicThemeFromBg, true);
+});
+
+test('resetUiThemeColors clears dynamic palette mode', async () => {
+  invalidateUiCustomizationCache();
+  resetUiDir();
+  fs.mkdirSync(uiDir, { recursive: true });
+  fs.writeFileSync(path.join(uiDir, 'background.webp'), await sharp({
+    create: { width: 32, height: 32, channels: 3, background: '#224466' },
+  }).webp().toBuffer());
+  await refreshBgThemePaletteFromFile();
+  saveUiSettings({ dynamicThemeFromBg: true });
+  resetUiThemeColors();
+  assert.equal(hasUiThemeColorsConfigured(), false);
+  assert.equal(getSetting('ui_dynamic_theme_from_bg'), '');
 });
