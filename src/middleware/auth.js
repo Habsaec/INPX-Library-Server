@@ -107,6 +107,12 @@ function setCachedUser(username, user) {
   }
 }
 
+/** Drop cached user row after password/session generation changes. */
+export function invalidateSessionUserCache(username) {
+  const key = String(username || '').trim();
+  if (key) sessionUserCache.delete(key);
+}
+
 /** Extract the authenticated user from the session cookie. */
 export function getSessionUser(req) {
   const session = parseSession(req.cookies.session);

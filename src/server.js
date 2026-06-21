@@ -693,6 +693,8 @@ app.use((req, res, next) => {
     p.startsWith('/login') ||
     p.startsWith('/register') ||
     p.startsWith('/logout') ||
+    p.startsWith('/forgot-password') ||
+    p.startsWith('/reset-password') ||
     p.startsWith('/download/') ||
     p.startsWith('/health') ||
     p === '/set-lang' ||

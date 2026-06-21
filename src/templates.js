@@ -7,7 +7,7 @@
 export { setSiteName, getSiteName, setAllowAnonymousDownload, renderMaintenance } from './templates/shared.js';
 
 // Auth templates
-export { renderLogin, renderAdminLogin, renderRegister } from './templates/auth.js';
+export { renderLogin, renderAdminLogin, renderRegister, renderForgotPassword, renderResetPassword } from './templates/auth.js';
 
 // Library / browse templates
 export {

@@ -53,7 +53,7 @@ export const MAX_UNCOMPRESSED_TOTAL = 500 * 1024 * 1024; // 500 MB
 export const MAX_SINGLE_FILE = 50 * 1024 * 1024;         // 50 MB
 
 // --- CSRF ---
-export const CSRF_EXEMPT_PATHS = new Set(['/login', '/register', '/admin/login', '/set-lang']);
+export const CSRF_EXEMPT_PATHS = new Set(['/login', '/register', '/admin/login', '/set-lang', '/forgot-password', '/reset-password']);
 
 // --- Safe admin redirects ---
 export const SAFE_ADMIN_REDIRECTS = new Set(['/admin', '/admin/users', '/admin/smtp', '/admin/events']);

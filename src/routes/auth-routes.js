@@ -3,10 +3,10 @@
  */
 import { config } from '../config.js';
 import { t, translateKnownErrorMessage } from '../i18n.js';
-import { requireWebAuth } from '../middleware/auth.js';
+import { requireWebAuth, invalidateSessionUserCache } from '../middleware/auth.js';
 import { verifyPassword } from '../auth.js';
 import { createSessionValue } from '../services/session.js';
-import { isRateLimited, registerFailedLogin, clearLoginAttempts, getClientKey } from '../services/rate-limiter.js';
+import { isRateLimited, registerFailedLogin, clearLoginAttempts, getClientKey, isPasswordResetRateLimited, registerPasswordResetAttempt } from '../services/rate-limiter.js';
 import { DUMMY_PASSWORD_HASH } from '../constants.js';
 import { getIndexStatus, getReadingHistory } from '../inpx.js';
 import {
@@ -16,10 +16,18 @@ import {
   createTelegramLinkToken, unlinkTelegram, getTelegramBotUsername, resolveTelegramRuntimeConfig, setMeta,
   isTelegramBotAllowedForUser,
   isEreaderEmailAllowedForUser,
+  isPasswordResetConfigured,
+  getUserByEreaderEmail,
+  normalizePasswordResetEmail,
+  createPasswordResetToken,
+  validatePasswordResetToken,
+  completePasswordReset,
 } from '../db.js';
 import { logSystemEvent } from '../services/system-events.js';
+import { resolvePublicBaseUrl, sendPasswordResetEmail } from '../services/password-reset.js';
 import {
   renderLogin, renderAdminLogin, renderRegister, renderProfile, renderProfileSettings,
+  renderForgotPassword, renderResetPassword,
 } from '../templates.js';
 
 function getRecaptchaKeys() {
@@ -102,9 +110,18 @@ export function registerAuthRoutes(app, deps) {
 
   // --- Login ---
 
+  function loginPageOptions() {
+    return {
+      registrationEnabled: getSetting('allow_registration') === '1',
+      passwordResetEnabled: isPasswordResetConfigured()
+    };
+  }
+
   app.get('/login', (req, res) => {
-    const registrationEnabled = getSetting('allow_registration') === '1';
-    res.send(renderLogin('', { registrationEnabled }));
+    const flash = String(req.query.flash || '');
+    const resetOk = String(req.query.reset || '') === 'ok';
+    const successMessage = resetOk ? t('passwordReset.passwordChanged') : flash;
+    res.send(renderLogin('', { ...loginPageOptions(), successMessage }));
   });
 
   app.get('/admin/login', (req, res) => {
@@ -114,7 +131,7 @@ export function registerAuthRoutes(app, deps) {
   app.post('/login', (req, res) => {
     if (isRateLimited(req)) {
       logSystemEvent('warn', 'auth', 'login rate limit triggered', { client: getClientKey(req) });
-      return res.status(429).send(renderLogin(t('auth.rateLimitLogin'), { registrationEnabled: getSetting('allow_registration') === '1' }));
+      return res.status(429).send(renderLogin(t('auth.rateLimitLogin'), loginPageOptions()));
     }
 
     const { username, password } = req.body;
@@ -123,18 +140,20 @@ export function registerAuthRoutes(app, deps) {
     if (!user || !passwordValid) {
       registerFailedLogin(req);
       logSystemEvent('warn', 'auth', 'login failed', { client: getClientKey(req), username: String(username || '') });
-      return res.status(401).send(renderLogin(t('auth.invalidCredentials'), { registrationEnabled: getSetting('allow_registration') === '1' }));
+      return res.status(401).send(renderLogin(t('auth.invalidCredentials'), loginPageOptions()));
     }
 
     if (user.blocked) {
       registerFailedLogin(req);
       logSystemEvent('warn', 'auth', 'blocked user login attempt', { client: getClientKey(req), username: user.username });
-      return res.status(403).send(renderLogin(t('auth.accountBlocked'), { registrationEnabled: getSetting('allow_registration') === '1' }));
+      return res.status(403).send(renderLogin(t('auth.accountBlocked'), loginPageOptions()));
     }
 
     clearLoginAttempts(req);
+    invalidateSessionUserCache(user.username);
+    const freshUser = getUserByUsername(user.username);
     logSystemEvent('info', 'auth', 'login successful', { client: getClientKey(req), username: user.username, role: user.role });
-    res.cookie('session', createSessionValue(user.username, user.sessionGen || 0), {
+    res.cookie('session', createSessionValue(freshUser.username, freshUser.sessionGen || 0), {
       httpOnly: true,
       sameSite: 'lax',
       secure: config.sessionSecureCookie,
@@ -178,6 +197,82 @@ export function registerAuthRoutes(app, deps) {
   app.post('/logout', (req, res) => {
     res.clearCookie('session');
     res.redirect('/');
+  });
+
+  // --- Password reset (e-reader email only) ---
+
+  app.get('/forgot-password', (req, res) => {
+    res.send(renderForgotPassword({ disabled: !isPasswordResetConfigured() }));
+  });
+
+  app.post('/forgot-password', async (req, res) => {
+    if (!isPasswordResetConfigured()) {
+      return res.status(404).send(renderForgotPassword({ disabled: true }));
+    }
+    if (isPasswordResetRateLimited(req)) {
+      return res.status(429).send(renderForgotPassword({ error: t('passwordReset.rateLimit') }));
+    }
+
+    registerPasswordResetAttempt(req);
+    const email = normalizePasswordResetEmail(req.body.email);
+    if (!email) {
+      return res.status(400).send(renderForgotPassword({ error: t('passwordReset.invalidEmail') }));
+    }
+
+    const user = getUserByEreaderEmail(email);
+    if (user) {
+      try {
+        const { token, ereaderEmail } = createPasswordResetToken(user.username);
+        const baseUrl = resolvePublicBaseUrl(req);
+        const resetUrl = `${baseUrl}/reset-password?token=${encodeURIComponent(token)}`;
+        await sendPasswordResetEmail({ to: ereaderEmail, resetUrl, username: user.username });
+        logSystemEvent('info', 'auth', 'password reset email sent', { username: user.username, client: getClientKey(req) });
+      } catch (error) {
+        logSystemEvent('error', 'auth', 'password reset email failed', {
+          username: user.username,
+          client: getClientKey(req),
+          error: error.message
+        });
+      }
+    } else {
+      logSystemEvent('info', 'auth', 'password reset requested for unknown email', { client: getClientKey(req) });
+    }
+
+    res.send(renderForgotPassword({ message: t('passwordReset.emailSent') }));
+  });
+
+  app.get('/reset-password', (req, res) => {
+    const token = String(req.query.token || '').trim();
+    if (!token || !validatePasswordResetToken(token)) {
+      return res.send(renderResetPassword({ invalid: true }));
+    }
+    res.send(renderResetPassword({ token }));
+  });
+
+  app.post('/reset-password', (req, res) => {
+    const token = String(req.body.token || '').trim();
+    const password = String(req.body.password || '');
+    const confirmPassword = String(req.body.confirmPassword || '');
+
+    if (!token || !validatePasswordResetToken(token)) {
+      return res.status(400).send(renderResetPassword({ invalid: true }));
+    }
+    if (password !== confirmPassword) {
+      return res.status(400).send(renderResetPassword({ token, error: t('profile.passwordMismatch') }));
+    }
+
+    try {
+      const result = completePasswordReset(token, password);
+      if (!result) {
+        return res.status(400).send(renderResetPassword({ invalid: true }));
+      }
+      logSystemEvent('info', 'auth', 'password reset completed', { username: result.username, client: getClientKey(req) });
+      invalidateSessionUserCache(result.username);
+      res.clearCookie('session');
+      res.redirect('/login?reset=ok');
+    } catch (error) {
+      res.status(400).send(renderResetPassword({ token, error: translateKnownErrorMessage(error.message) }));
+    }
   });
 
   // --- Registration ---
@@ -260,6 +355,14 @@ export function registerAuthRoutes(app, deps) {
     }
     try {
       changePassword(req.user.username, newPassword);
+      invalidateSessionUserCache(req.user.username);
+      const freshUser = getUserByUsername(req.user.username);
+      res.cookie('session', createSessionValue(freshUser.username, freshUser.sessionGen || 0), {
+        httpOnly: true,
+        sameSite: 'lax',
+        secure: config.sessionSecureCookie,
+        maxAge: config.sessionMaxAgeMs
+      });
       logSystemEvent('info', 'auth', 'password changed', { username: req.user.username });
       res.send(renderProfileSettings(buildProfileSettingsData(req.user, t('profile.passwordChanged'), req.csrfToken || '')));
     } catch (error) {

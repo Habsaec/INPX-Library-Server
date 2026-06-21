@@ -14,7 +14,7 @@ test('templates.js barrel exports all expected symbols', async () => {
     // shared state
     'setSiteName', 'getSiteName', 'setAllowAnonymousDownload',
     // auth
-    'renderLogin', 'renderAdminLogin', 'renderRegister',
+    'renderLogin', 'renderAdminLogin', 'renderRegister', 'renderForgotPassword', 'renderResetPassword',
     // library
     'renderHome', 'renderCatalog', 'renderLibraryView', 'renderBook',
     'renderFavorites', 'renderBrowsePage', 'renderFacetBooks',
@@ -83,6 +83,19 @@ test('renderRegister with registration disabled', async () => {
   const { renderRegister } = await import('../src/templates/auth.js');
   const html = renderRegister({ registrationEnabled: false });
   assert.ok(html.includes('<!doctype html>'));
+});
+
+test('renderForgotPassword returns HTML', async () => {
+  const { renderForgotPassword } = await import('../src/templates/auth.js');
+  const html = renderForgotPassword();
+  assert.ok(html.includes('action="/forgot-password"'));
+});
+
+test('renderResetPassword returns HTML', async () => {
+  const { renderResetPassword } = await import('../src/templates/auth.js');
+  const html = renderResetPassword({ token: 'abc123' });
+  assert.ok(html.includes('action="/reset-password"'));
+  assert.ok(html.includes('value="abc123"'));
 });
 
 // ── 4. OPDS templates ───────────────────────────────────────────────

@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { normalizeLookupEmail } from './utils/email-address.js';
 import Database from 'better-sqlite3';
 import { config } from './config.js';
 import { appendIndexDiaryLine } from './services/file-log.js';
@@ -151,6 +152,19 @@ function ensureTelegramLinkSchema() {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_users_telegram_id ON users(telegram_id) WHERE telegram_id IS NOT NULL;
   `);
   dedupeTelegramIds();
+}
+
+function ensurePasswordResetSchema() {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS password_reset_tokens (
+      token TEXT PRIMARY KEY,
+      username TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (username) REFERENCES users(username) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_username ON password_reset_tokens(username);
+  `);
 }
 
 function dedupeTelegramIds() {
@@ -520,6 +534,113 @@ export function createTelegramLinkToken(username) {
   return { token, expiresAt };
 }
 
+const PASSWORD_RESET_TOKEN_TTL_MS = 60 * 60 * 1000;
+
+function pruneExpiredPasswordResetTokens() {
+  db.prepare(`DELETE FROM password_reset_tokens WHERE expires_at < datetime('now')`).run();
+}
+
+export function normalizePasswordResetEmail(raw) {
+  return normalizeLookupEmail(raw);
+}
+
+export function isPasswordResetEnabled() {
+  return getSetting('password_reset_enabled') === '1';
+}
+
+export function getPublicBaseUrlSetting() {
+  return String(getSetting('public_base_url') || '').trim().replace(/\/+$/, '');
+}
+
+export function setPasswordResetSettings({ enabled, publicBaseUrl }) {
+  setSetting('password_reset_enabled', enabled ? '1' : '0');
+  setSetting('public_base_url', String(publicBaseUrl || '').trim().replace(/\/+$/, ''));
+}
+
+export function isPasswordResetConfigured() {
+  if (!isPasswordResetEnabled()) return false;
+  return Boolean(getSmtpSettings().host);
+}
+
+let _stmtGetUserByEreaderEmail = null;
+export function getUserByEreaderEmail(email) {
+  const normalized = normalizePasswordResetEmail(email);
+  if (!normalized) return null;
+  _stmtGetUserByEreaderEmail ??= db.prepare(`
+    SELECT username, password_hash AS passwordHash, role, created_at AS createdAt,
+           COALESCE(session_gen, 0) AS sessionGen, COALESCE(blocked, 0) AS blocked,
+           telegram_id AS telegramId, telegram_linked_at AS telegramLinkedAt,
+           COALESCE(telegram_bot_allowed, 1) AS telegramBotAllowed,
+           COALESCE(ereader_email_allowed, 1) AS ereaderEmailAllowed,
+           COALESCE(ereader_email, '') AS ereaderEmail
+    FROM users
+    WHERE TRIM(COALESCE(ereader_email, '')) != ''
+      AND LOWER(TRIM(ereader_email)) = ?
+      AND COALESCE(blocked, 0) = 0
+    LIMIT 1
+  `);
+  return _stmtGetUserByEreaderEmail.get(normalized) || null;
+}
+
+export function createPasswordResetToken(username) {
+  const normalizedUsername = String(username || '').trim();
+  const user = getUserByUsername(normalizedUsername);
+  if (!user) throw new Error('User not found');
+  if (user.blocked) throw new Error('Account is blocked');
+  const ereaderEmail = getEreaderEmail(normalizedUsername);
+  if (!normalizePasswordResetEmail(ereaderEmail)) throw new Error('E-reader email is not set');
+
+  db.prepare('DELETE FROM password_reset_tokens WHERE username = ?').run(normalizedUsername);
+  pruneExpiredPasswordResetTokens();
+
+  const token = crypto.randomBytes(24).toString('hex');
+  const expiresAt = new Date(Date.now() + PASSWORD_RESET_TOKEN_TTL_MS).toISOString();
+  db.prepare(`
+    INSERT INTO password_reset_tokens(token, username, expires_at)
+    VALUES(?, ?, ?)
+  `).run(token, normalizedUsername, expiresAt);
+  return { token, expiresAt, ereaderEmail: ereaderEmail.trim() };
+}
+
+export function validatePasswordResetToken(token) {
+  const normalizedToken = String(token || '').trim();
+  if (!normalizedToken) return null;
+
+  pruneExpiredPasswordResetTokens();
+  const row = db.prepare(`
+    SELECT token, username, expires_at AS expiresAt
+    FROM password_reset_tokens
+    WHERE token = ?
+  `).get(normalizedToken);
+  if (!row || new Date(row.expiresAt).getTime() < Date.now()) {
+    if (row) db.prepare('DELETE FROM password_reset_tokens WHERE token = ?').run(normalizedToken);
+    return null;
+  }
+
+  const user = getUserByUsername(row.username);
+  if (!user || user.blocked) {
+    db.prepare('DELETE FROM password_reset_tokens WHERE token = ?').run(normalizedToken);
+    return null;
+  }
+
+  return { username: row.username };
+}
+
+export function completePasswordReset(token, newPassword) {
+  const normalizedToken = String(token || '').trim();
+  if (!normalizedToken) return null;
+
+  return db.transaction(() => {
+    const valid = validatePasswordResetToken(normalizedToken);
+    if (!valid) return null;
+
+    changePassword(valid.username, newPassword);
+    db.prepare('DELETE FROM password_reset_tokens WHERE token = ?').run(normalizedToken);
+    db.prepare('DELETE FROM password_reset_tokens WHERE username = ?').run(valid.username);
+    return { username: valid.username };
+  })();
+}
+
 export function completeTelegramLink(token, telegramId) {
   const normalizedToken = String(token || '').trim();
   const normalizedTgId = normalizeTelegramId(telegramId);
@@ -728,6 +849,7 @@ export function deleteUser(username) {
     db.prepare(`DELETE FROM shelf_books WHERE shelf_id IN (SELECT id FROM shelves WHERE username = ?)`).run(normalizedUsername);
     db.prepare(`DELETE FROM shelves WHERE username = ?`).run(normalizedUsername);
     db.prepare(`DELETE FROM telegram_link_tokens WHERE username = ?`).run(normalizedUsername);
+    db.prepare(`DELETE FROM password_reset_tokens WHERE username = ?`).run(normalizedUsername);
     return db.prepare(`DELETE FROM users WHERE username = ?`).run(normalizedUsername).changes;
   })();
 }
@@ -1268,6 +1390,7 @@ WHERE rp.progress >= 99
 
   ensureUsersSchema();
   ensureTelegramLinkSchema();
+  ensurePasswordResetSchema();
   ensureBooksSchema();
   db.exec(`
     CREATE TABLE IF NOT EXISTS library_dedup_projection (
