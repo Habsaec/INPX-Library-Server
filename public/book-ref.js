@@ -45,6 +45,14 @@
     return bookSegment('/read', id);
   }
 
+  function liteBookPagePath(id) {
+    return bookSegment('/lite/book', id);
+  }
+
+  function liteReadPagePath(id) {
+    return bookSegment('/lite/read', id);
+  }
+
   function apiBookPath(id, suffix) {
     return bookSegment('/api/books', id, suffix || '');
   }
@@ -64,7 +72,7 @@
   function apiSendToEreaderPath(id) { return apiActionPath('/api/send-to-ereader', id); }
 
   const api = {
-    bookIdNeedsSafeUrl, encodeBookRef, decodeBookRef, bookPagePath, readPagePath, apiBookPath, downloadBookPath,
+    bookIdNeedsSafeUrl, encodeBookRef, decodeBookRef, bookPagePath, readPagePath, liteBookPagePath, liteReadPagePath, apiBookPath, downloadBookPath,
     apiReadPath, apiBookmarkPath, apiReadingHistoryPath, apiSendToEreaderPath
   };
   globalThis.bookRef = api;

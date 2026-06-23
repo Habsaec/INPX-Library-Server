@@ -2792,8 +2792,10 @@ function renderCardHtml(book, { batchSelect = false, seriesContext = null } = {}
         ? [['fb2', 'FB2'], ['epub2', 'EPUB']]
         : [[sourceFormat, sourceFormat.toUpperCase()]];
   const downloadMenu =
-    !batchSelect && isPageDownloadAllowed()
-      ? `<details class="download-menu download-menu-compact">
+    !batchSelect && isPageDownloadAllowed() && formats.length
+      ? formats.length === 1
+        ? `<a class="button download-menu-trigger download-menu-trigger-compact download-direct-link" href="${downloadBookPath(book.id, `format=${encodeURIComponent(formats[0][0])}`)}">${escapeHtml(uiT('download.label'))}</a>`
+        : `<details class="download-menu download-menu-compact">
       <summary class="button download-menu-trigger download-menu-trigger-compact">${escapeHtml(uiT('download.label'))}</summary>
       <div class="download-menu-popover">${formats.map(([f, l]) => `<a class="download-format-link" href="${downloadBookPath(book.id, `format=${encodeURIComponent(f)}`)}">${escapeHtml(l)}</a>`).join('')}</div>
     </details>`

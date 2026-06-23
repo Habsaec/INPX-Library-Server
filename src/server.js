@@ -20,8 +20,10 @@ import { registerAuthRoutes } from './routes/auth-routes.js';
 import { registerDownloadRoutes } from './routes/download.js';
 import { registerReaderRoutes } from './routes/reader.js';
 import { registerUserApiRoutes } from './routes/user-api.js';
+import { setDisabledDownloadFormats } from './download-formats.js';
 import { registerAdminRoutes } from './routes/admin.js';
 import { registerLibraryRoutes, detailsCache, getDetailsFull, bookFlibustaSidecarEffective } from './routes/library.js';
+import { registerLiteRoutes } from './routes/lite.js';
 // --- Extracted modules ---
 import { securityHeaders } from './middleware/security-headers.js';
 import { browseLimiter } from './middleware/rate-limiter-browse.js';
@@ -382,6 +384,7 @@ function buildPublicSettingsExport() {
       allowAnonymousBrowse: getSetting('allow_anonymous_browse') === '1',
       allowAnonymousDownload: getSetting('allow_anonymous_download') === '1',
       allowAnonymousOpds: getSetting('allow_anonymous_opds') === '1',
+      disabledDownloadFormats: getSetting('disabled_download_formats') || '',
       recaptchaSiteKey: getSetting('recaptcha_site_key') || '',
       recaptchaSecretConfigured: Boolean(recaptchaSecretStored)
     },
@@ -635,7 +638,8 @@ function browseHtmlNoStore(req, res, next) {
     p.startsWith('/book/') ||
     p.startsWith('/library/') ||
     p === '/shelves' ||
-    p.startsWith('/shelves/')
+    p.startsWith('/shelves/') ||
+    p.startsWith('/lite/')
   ) {
     res.setHeader('Cache-Control', 'private, no-store, max-age=0, must-revalidate');
     res.setHeader('Pragma', 'no-cache');
@@ -710,6 +714,7 @@ app.use((req, res, next) => {
     p.startsWith('/download/') ||
     p.startsWith('/health') ||
     p === '/set-lang' ||
+    p.startsWith('/lite') ||
     p === '/manifest.webmanifest' ||
     p === '/sw.js' ||
     p.startsWith('/custom/ui/')
@@ -937,6 +942,8 @@ registerLibraryRoutes(app, {
   }
 });
 
+registerLiteRoutes(app, { getCachedStats });
+
 const batchEmailLocks = new Set();
 registerReaderRoutes(app);
 registerUserApiRoutes(app, { batchEmailLocks });
@@ -1076,6 +1083,7 @@ async function bootstrap() {
   // Run DB optimize manually/offline; in-process optimize can block HTTP loop on large datasets.
   setSiteName(getSetting('site_name'));
   setAllowAnonymousDownload(getSetting('allow_anonymous_download') === '1');
+  setDisabledDownloadFormats(getSetting('disabled_download_formats') || '');
   setDefaultLocale(getSetting('default_locale'));
 
   /* Проверка путей источников при старте — предупреждение, если не найдены */

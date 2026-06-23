@@ -93,11 +93,8 @@ async function main() {
   ].join('\n');
   const hash = createHash('md5').update(hashInputs).digest('hex').slice(0, 8);
   let sw = readFileSync(swPath, 'utf8');
-  // Handle both ''-string and `...`-template literal forms — sw.js currently
-  // uses a template literal, but the project's own history has used both.
   const prev = sw;
-  sw = sw.replace(/const CACHE_NAME = '[^']*';/, `const CACHE_NAME = 'inpx-v1-${hash}';`);
-  sw = sw.replace(/const CACHE_NAME = `[^`]*`;/, `const CACHE_NAME = \`inpx-v1-${hash}\`;`);
+  sw = sw.replace(/^const CACHE_NAME = .*;\s*$/m, `const CACHE_NAME = \`inpx-v1-${hash}\`;`);
   if (sw === prev) {
     console.warn('[assets] WARNING: could not update CACHE_NAME in sw.js — regex did not match');
   } else {

@@ -9,6 +9,12 @@ import {
   formatGenreLabel
 } from './shared.js';
 import { getGenreGroups } from '../genre-map.js';
+import { config } from '../config.js';
+import {
+  FORMAT_LABELS,
+  getConfiguredDownloadFormats,
+  setDisabledDownloadFormats
+} from '../download-formats.js';
 import {
   TELEGRAM_DEFAULT_PROFILE_DESCRIPTION,
   TELEGRAM_DEFAULT_PROFILE_SHORT,
@@ -643,9 +649,31 @@ export function renderAdminEvents({ user, stats, indexStatus, events = [], total
 }
 
 
-export function renderAdminContent({ user, stats, indexStatus, languages = [], excludedLangSet = new Set(), genres = [], excludedGenreSet = new Set(), flash = '', csrfToken = '' }) {
+export function renderAdminContent({
+  user,
+  stats,
+  indexStatus,
+  languages = [],
+  excludedLangSet = new Set(),
+  genres = [],
+  excludedGenreSet = new Set(),
+  disabledDownloadFormatSet = new Set(),
+  flash = '',
+  csrfToken = ''
+}) {
   const langExcludedCount = languages.filter(l => excludedLangSet.has(l.code)).length;
   const genreExcludedCount = genres.filter(g => excludedGenreSet.has(g.code)).length;
+  const downloadFormatRows = getConfiguredDownloadFormats().map((code) => {
+    const checked = !disabledDownloadFormatSet.has(code);
+    return `
+      <tr class="${checked ? '' : 'lang-row-disabled'}">
+        <td data-label="" style="text-align:center">
+          <input type="checkbox" name="enabled_download_format" value="${escapeHtml(code)}" ${checked ? 'checked' : ''}>
+        </td>
+        <td data-label="${escapeHtml(t('admin.content.thName'))}">${escapeHtml(FORMAT_LABELS[code] || code.toUpperCase())}</td>
+        <td data-label="${escapeHtml(t('admin.content.thCode'))}" class="muted">${escapeHtml(code)}</td>
+      </tr>`;
+  }).join('');
 
   const langRows = languages.map(lang => {
     const checked = !excludedLangSet.has(lang.code);
@@ -771,6 +799,27 @@ export function renderAdminContent({ user, stats, indexStatus, languages = [], e
       ${csrfHiddenField(csrfToken)}
       <div class="admin-card" style="margin-bottom:16px">
         <div class="admin-card-title" style="display:flex;align-items:center;gap:12px">
+          ${escapeHtml(t('admin.content.downloadSection'))}
+          <label style="font-size:13px;font-weight:400;display:flex;align-items:center;gap:4px">
+            <input type="checkbox" id="download-format-toggle-all" title="${escapeHtml(t('admin.content.toggleAll'))}">
+            <span class="muted">${escapeHtml(t('admin.content.toggleAll'))}</span>
+          </label>
+        </div>
+        <p class="muted admin-compact-btn" style="margin:4px 0 12px;">${escapeHtml(t('admin.content.downloadHint'))}</p>
+        ${config.fb2cngPath ? '' : `<p class="muted admin-compact-btn" style="margin:0 0 12px;">${escapeHtml(t('admin.content.downloadFb2cngHint'))}</p>`}
+        <table class="admin-table">
+          <thead>
+            <tr>
+              <th style="width:50px;text-align:center"></th>
+              <th>${escapeHtml(t('admin.content.thName'))}</th>
+              <th>${escapeHtml(t('admin.content.thCode'))}</th>
+            </tr>
+          </thead>
+          <tbody>${downloadFormatRows}</tbody>
+        </table>
+      </div>
+      <div class="admin-card" style="margin-bottom:16px">
+        <div class="admin-card-title" style="display:flex;align-items:center;gap:12px">
           ${escapeHtml(t('admin.content.langSection'))}
           <label style="font-size:13px;font-weight:400;display:flex;align-items:center;gap:4px">
             <input type="checkbox" id="lang-toggle-all" title="${escapeHtml(t('admin.content.toggleAll'))}">
@@ -818,6 +867,22 @@ export function renderAdminContent({ user, stats, indexStatus, languages = [], e
       </div>
     </form>
     <script>
+      document.getElementById('download-format-toggle-all')?.addEventListener('change', function() {
+        document.querySelectorAll('input[name="enabled_download_format"]').forEach(cb => { cb.checked = this.checked; });
+      });
+      document.querySelectorAll('input[name="enabled_download_format"]').forEach(cb => {
+        cb.addEventListener('change', updateGlobalDownloadFormatToggle);
+      });
+      function updateGlobalDownloadFormatToggle() {
+        const all = document.querySelectorAll('input[name="enabled_download_format"]');
+        const checked = [...all].filter(c => c.checked).length;
+        const globalToggle = document.getElementById('download-format-toggle-all');
+        if (globalToggle) {
+          globalToggle.checked = checked === all.length;
+          globalToggle.indeterminate = checked > 0 && checked < all.length;
+        }
+      }
+      updateGlobalDownloadFormatToggle();
       document.getElementById('lang-toggle-all')?.addEventListener('change', function() {
         document.querySelectorAll('input[name="enabled_lang"]').forEach(cb => { cb.checked = this.checked; });
       });

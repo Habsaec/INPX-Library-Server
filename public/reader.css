@@ -36,6 +36,12 @@
   --r-hover: rgba(180,145,80,.04); --r-accent: #786b59;
   --r-shadow: 0 4px 24px rgba(0,0,0,.5);
 }
+[data-reader-theme="eink"] {
+  --r-bg: #ffffff; --r-fg: #000000; --r-link: #000000;
+  --r-bar: #ffffff; --r-border: #000000;
+  --r-hover: #f0f0f0; --r-accent: #000000;
+  --r-shadow: none;
+}
 
 /* --- Reset --- */
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
@@ -94,6 +100,7 @@ body.chrome-hidden .reader-footer{transform:translateY(100%)}
 .tb-btn svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
 .tb-tts-wrap{display:flex;align-items:center;gap:1px}
 .tb-tts-skip:disabled{opacity:.35;cursor:not-allowed}
+.tb-tts-stop[hidden]{display:none !important}
 .tb-tts-skip svg{fill:currentColor;stroke:none}
 .tb-btn .tts-main-icon .tts-main-path{fill:currentColor;stroke:none}
 .tb-meta{display:flex;flex-direction:column;min-width:0;gap:1px}
@@ -877,3 +884,340 @@ body.chrome-hidden .reader-toast{
   bottom:calc(12px + var(--r-safe-bottom));
 }
 .reader-toast.is-visible{opacity:1;transform:translateX(-50%) translateY(0)}
+
+/* E-Ink / lite reader — visual language matches public/lite.css */
+html[data-eink="1"] {
+  --lite-touch: clamp(44px, 11vw, 52px);
+  --lite-radius: 10px;
+  --lite-pad: clamp(14px, 3.5vw, 22px);
+  --lite-line: #141414;
+  --lite-line-soft: #d4d2cb;
+  --lite-surface: #ffffff;
+  --lite-bg: #f7f6f3;
+  --lite-hover: #efeee9;
+  --lite-ink: #141414;
+  --lite-muted: #5a5a5a;
+  --lite-accent: #141414;
+  --lite-accent-fg: #ffffff;
+  --lite-icon: clamp(20px, 5vw, 24px);
+  --r-toolbar-body: calc(var(--lite-touch) + 20px);
+  --r-footer-body: calc(var(--lite-touch) + 4px);
+}
+
+html[data-eink="1"],
+html[data-eink="1"] body {
+  --r-bg: #ffffff;
+  --r-fg: var(--lite-ink);
+  --r-link: var(--lite-ink);
+  --r-bar: var(--lite-surface);
+  --r-border: var(--lite-line-soft);
+  --r-hover: var(--lite-hover);
+  --r-accent: var(--lite-accent);
+  --r-shadow: none;
+  background: var(--lite-bg);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+html[data-eink="1"] *,
+html[data-eink="1"] *::before,
+html[data-eink="1"] *::after {
+  box-sizing: border-box;
+  animation: none !important;
+  transition: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  box-shadow: none !important;
+}
+
+html[data-eink="1"] .reader-chrome {
+  transition: none !important;
+}
+
+html[data-eink="1"] .reader-toolbar {
+  font-size: 1rem;
+  gap: 8px;
+  padding: var(--r-safe-top) var(--lite-pad) 0;
+  overflow: hidden;
+  background: var(--lite-surface) !important;
+  border-bottom: 2px solid var(--lite-line) !important;
+}
+
+html[data-eink="1"] .reader-footer {
+  padding: 0 var(--lite-pad) var(--r-safe-bottom);
+  gap: 10px;
+  font-size: 0.86rem;
+  background: var(--lite-surface) !important;
+  border-top: 1px solid var(--lite-line-soft) !important;
+}
+
+html[data-eink="1"] .ft-chapter,
+html[data-eink="1"] .ft-pct {
+  opacity: 1;
+  color: var(--lite-muted);
+}
+
+html[data-eink="1"] .tb-left {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+}
+
+html[data-eink="1"] .tb-right {
+  flex: 0 0 auto;
+  flex-shrink: 0;
+  gap: 8px;
+}
+
+html[data-eink="1"] .tb-meta {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+html[data-eink="1"] .tb-left .tb-btn {
+  flex-shrink: 0;
+}
+
+html[data-eink="1"] .tb-center {
+  display: none !important;
+}
+
+html[data-eink="1"] .tb-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--lite-touch);
+  height: var(--lite-touch);
+  min-width: var(--lite-touch);
+  min-height: var(--lite-touch);
+  padding: 0;
+  flex-shrink: 0;
+  color: var(--lite-ink);
+  background: var(--lite-surface);
+  border: 2px solid var(--lite-line);
+  border-radius: var(--lite-radius);
+}
+
+html[data-eink="1"] .tb-btn:hover {
+  background: var(--lite-hover);
+}
+
+html[data-eink="1"] .tb-btn:active {
+  background: var(--lite-hover);
+  opacity: 1;
+  transform: none;
+}
+
+html[data-eink="1"] .tb-btn.is-active {
+  background: var(--lite-hover);
+  box-shadow: inset 0 0 0 1px var(--lite-line);
+}
+
+html[data-eink="1"] .tb-btn svg {
+  width: var(--lite-icon);
+  height: var(--lite-icon);
+}
+
+html[data-eink="1"] .tb-kicker {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  opacity: 1;
+  color: var(--lite-muted);
+}
+
+html[data-eink="1"] .tb-title {
+  font-family: Georgia, "Iowan Old Style", "Palatino Linotype", "Times New Roman", serif;
+  font-size: clamp(1rem, 4.5vw, 1.2rem);
+  font-weight: 700;
+  opacity: 1;
+  color: var(--lite-ink);
+}
+
+html[data-eink="1"] #btn-day-night {
+  display: none !important;
+}
+
+html[data-eink="1"] .panel,
+html[data-eink="1"] .reader-note-editor .rne-card,
+html[data-eink="1"] .reader-sel-menu {
+  border: 2px solid var(--lite-line);
+  border-radius: var(--lite-radius);
+  background: var(--lite-surface);
+}
+
+html[data-eink="1"] .panel-header {
+  border-bottom: 1px solid var(--lite-line-soft);
+}
+
+html[data-eink="1"] .panel-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--lite-touch);
+  height: var(--lite-touch);
+  opacity: 1;
+  border: 2px solid var(--lite-line);
+  border-radius: var(--lite-radius);
+  background: var(--lite-surface);
+}
+
+html[data-eink="1"] .panel-tabs {
+  gap: 6px;
+  padding: 8px var(--lite-pad);
+}
+
+html[data-eink="1"] .panel-tab {
+  flex: 1 0 auto;
+  min-height: 40px;
+  padding: 8px 12px;
+  font-size: 0.86rem;
+  font-weight: 700;
+  opacity: 1;
+  color: var(--lite-ink);
+  background: var(--lite-surface);
+  border: 2px solid var(--lite-line);
+  border-radius: var(--lite-radius);
+  border-bottom: 2px solid var(--lite-line);
+}
+
+html[data-eink="1"] .panel-tab.is-active {
+  background: var(--lite-accent);
+  color: var(--lite-accent-fg);
+  border-color: var(--lite-line);
+}
+
+html[data-eink="1"] .rs-seg button,
+html[data-eink="1"] .rs-reset,
+html[data-eink="1"] .rs-color-default {
+  min-height: 40px;
+  padding: 8px 14px;
+  border: 2px solid var(--lite-line);
+  border-radius: var(--lite-radius);
+  background: var(--lite-surface);
+  color: var(--lite-ink);
+  font-weight: 700;
+}
+
+html[data-eink="1"] .rs-seg button.is-active {
+  background: var(--lite-accent);
+  color: var(--lite-accent-fg);
+}
+
+html[data-eink="1"] .rs-select,
+html[data-eink="1"] .rs-label,
+html[data-eink="1"] .panel-kicker {
+  color: var(--lite-ink);
+}
+
+html[data-eink="1"] .rs-select {
+  min-height: var(--lite-touch);
+  border: 2px solid var(--lite-line);
+  border-radius: var(--lite-radius);
+  background: var(--lite-surface);
+}
+
+html[data-eink="1"] .ft-seek {
+  accent-color: var(--lite-accent);
+}
+
+html[data-eink="1"] .reader-toast {
+  border: 2px solid var(--lite-line);
+  border-radius: var(--lite-radius);
+  background: var(--lite-surface);
+}
+
+/* Lite reader: compact toolbar on narrow screens */
+@media (max-width: 720px) {
+  html[data-eink="1"] .tb-kicker {
+    display: none;
+  }
+  html[data-eink="1"] #btn-bookmark-add,
+  html[data-eink="1"] #btn-search,
+  html[data-eink="1"] #btn-toc {
+    display: none !important;
+  }
+}
+
+/* TTS: toolbar play only; dock when active */
+html[data-eink="1"] .reader-toolbar .tb-tts-skip {
+  display: none !important;
+}
+
+html[data-eink="1"] body.reader-tts-active .reader-toolbar .tb-tts-wrap {
+  display: none !important;
+}
+
+html[data-eink="1"] .reader-tts-dock-inner {
+  border: 2px solid var(--lite-line);
+  border-radius: var(--lite-radius);
+  padding: 8px 10px;
+  gap: 8px;
+  background: var(--lite-surface);
+}
+
+html[data-eink="1"] .reader-tts-dock .reader-tts-dock-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--lite-touch);
+  height: var(--lite-touch);
+  min-width: var(--lite-touch);
+  min-height: var(--lite-touch);
+  padding: 0;
+  border: 2px solid var(--lite-line);
+  border-radius: var(--lite-radius);
+  background: var(--lite-surface);
+  color: var(--lite-ink);
+}
+
+html[data-eink="1"] .reader-tts-dock .reader-tts-dock-btn:active {
+  background: var(--lite-hover);
+}
+
+html[data-eink="1"] .reader-tts-dock .reader-tts-dock-btn svg {
+  width: var(--lite-icon);
+  height: var(--lite-icon);
+}
+
+html[data-eink="1"] .reader-sel-menu {
+  border-radius: var(--lite-radius);
+  padding: 6px 8px;
+  gap: 6px;
+}
+
+html[data-eink="1"] .rsm-btn {
+  min-height: 36px;
+  padding: 6px 12px;
+  font-weight: 700;
+  border: 2px solid var(--lite-line);
+  border-radius: var(--lite-radius);
+  background: var(--lite-surface);
+}
+
+html[data-eink="1"] .rsm-btn:active {
+  background: var(--lite-hover);
+}
+
+html[data-eink="1"] .rne-btn {
+  min-height: 40px;
+  padding: 8px 14px;
+  font-size: 0.86rem;
+  font-weight: 700;
+  border: 2px solid var(--lite-line);
+  border-radius: var(--lite-radius);
+  background: var(--lite-surface);
+}
+
+html[data-eink="1"] .rne-btn-primary {
+  background: var(--lite-accent);
+  color: var(--lite-accent-fg);
+  border-color: var(--lite-line);
+}
+
+html[data-eink="1"] .rne-text {
+  border: 2px solid var(--lite-line);
+  border-radius: var(--lite-radius);
+  background: var(--lite-surface);
+}
+

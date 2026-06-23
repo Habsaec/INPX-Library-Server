@@ -3716,26 +3716,22 @@ button.download-format-link {
 }
 
 .book-detail-main {
-  position: relative; /* для абсолютного позиционирования .book-detail-corner-actions */
   border: none;
   border-radius: var(--radius-xl);
   background: var(--card-bg);
   box-shadow: var(--shadow-md);
 }
 
-/* Угловые действия в правом верхнем углу карточки книги: Прочитано/Избранное/На полку.
-   На десктопе — абсолютно позиционированный ряд, на мобильном (card-detail-panel
-   в одну колонку) перенесён в общий поток над контентом. */
+/* Угловые действия: Прочитано / Избранное / На полку — в правой колонке над заголовком,
+   чтобы длинное название не налезало на кнопки. На мобильном — в общем потоке над обложкой. */
 .book-detail-corner-actions {
-  position: absolute;
-  top: 16px;
-  right: 16px;
+  grid-column: 2;
+  grid-row: 1;
   display: flex;
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 6px;
   z-index: 2;
-  max-width: calc(100% - 280px); /* не залезаем поверх обложки слева */
 }
 .book-detail-corner-actions .button {
   font-size: 12px;
@@ -3746,6 +3742,7 @@ button.download-format-link {
 .card-detail-panel {
   display: grid;
   grid-template-columns: 240px minmax(0, 1fr);
+  grid-template-rows: auto 1fr;
   gap: 24px;
   padding: 24px;
   border-radius: var(--radius-xl);
@@ -3754,6 +3751,8 @@ button.download-format-link {
 }
 
 .book-detail-cover {
+  grid-column: 1;
+  grid-row: 1 / -1;
   min-width: 0;
   align-self: start;
 }
@@ -3767,7 +3766,13 @@ button.download-format-link {
 }
 
 .book-detail-content {
+  grid-column: 2;
+  grid-row: 1;
   min-width: 0;
+}
+
+.book-detail-main:has(.book-detail-corner-actions) .book-detail-content {
+  grid-row: 2;
 }
 
 .book-detail-title {
@@ -4382,6 +4387,14 @@ html[data-theme="light"] .alert-info {
   text-decoration-color: color-mix(in srgb, var(--link-hover) 48%, transparent);
 }
 
+.login-lang {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin-top: 18px;
+  font-size: 13px;
+}
 
 /* ── Browse page filter form ── */
 .browse-filter {
@@ -4736,7 +4749,21 @@ html[data-theme="light"] .cover-fallback-overlay {
   }
   .card-detail-panel {
     grid-template-columns: 1fr;
+    grid-template-rows: auto;
     gap: 18px;
+  }
+  .book-detail-corner-actions {
+    grid-column: auto;
+    grid-row: auto;
+    justify-content: flex-start;
+  }
+  .book-detail-cover {
+    grid-column: auto;
+    grid-row: auto;
+  }
+  .book-detail-content {
+    grid-column: auto;
+    grid-row: auto;
   }
   .book-detail-cover {
     max-width: none;
@@ -4869,13 +4896,21 @@ html[data-theme="light"] .cover-fallback-overlay {
     padding: 14px;
     gap: 14px;
   }
-  /* На мобильном корнер-действия превращаются в обычный flex-ряд под обложкой
-     (абсолютное позиционирование в углу не имеет смысла — мало места). */
+  /* На мобильном корнер-действия — обычный flex-ряд над обложкой. */
   .book-detail-corner-actions {
-    position: static;
+    grid-column: auto;
+    grid-row: auto;
     max-width: none;
     margin-bottom: 4px;
     justify-content: flex-start;
+  }
+  .book-detail-cover {
+    grid-column: auto;
+    grid-row: auto;
+  }
+  .book-detail-content {
+    grid-column: auto;
+    grid-row: auto;
   }
   .book-detail-corner-actions .button { font-size: 13px; padding: 6px 12px; }
   .book-detail-cover {
@@ -6147,3 +6182,240 @@ html[data-ui-typography="1"] .login-card {
   }
 }
 
+/* ── E-Ink mode (cookie eink=1 → html[data-eink="1"]) ── */
+html[data-eink="1"] {
+  color-scheme: light;
+  scroll-behavior: auto;
+  --bg: #ffffff;
+  --bg-side: #ffffff;
+  --surface: #ffffff;
+  --surface-hover: #f4f4f4;
+  --shell-bg: #ffffff;
+  --sidebar-bg: #ffffff;
+  --topbar-bg: #ffffff;
+  --text: #000000;
+  --muted: #222222;
+  --link: #000000;
+  --link-hover: #000000;
+  --accent: #000000;
+  --accent-hover: #000000;
+  --border: #000000;
+  --ui-surface-blur: 0px;
+  --ui-bg-blur: 0px;
+  --ui-bg-overlay: 0;
+  --card-cover-shadow: none;
+  --card-cover-shadow-hover: none;
+  --shadow-sm: none;
+  --shadow-md: none;
+  --shadow-lg: none;
+}
+
+html[data-eink="1"] body {
+  background: #ffffff !important;
+  color: #000000 !important;
+}
+
+html[data-eink="1"] body::before,
+html[data-eink="1"] body::after {
+  display: none !important;
+}
+
+html[data-eink="1"] *,
+html[data-eink="1"] *::before,
+html[data-eink="1"] *::after {
+  animation: none !important;
+  transition: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+html[data-eink="1"] .welcome-hero-banner,
+html[data-eink="1"] .nav-progress {
+  display: none !important;
+}
+
+html[data-eink="1"] .sidebar,
+html[data-eink="1"] .topbar,
+html[data-eink="1"] .panel,
+html[data-eink="1"] .book-detail-main,
+html[data-eink="1"] .login-card,
+html[data-eink="1"] .card,
+html[data-eink="1"] .admin-card {
+  background: #ffffff !important;
+  border-color: #000000 !important;
+  box-shadow: none !important;
+}
+
+html[data-eink="1"] a {
+  color: #000000 !important;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+html[data-eink="1"] .sidenav-links a {
+  color: #000000 !important;
+  text-decoration: none !important;
+  border: 1px solid transparent;
+  border-radius: 0;
+}
+
+html[data-eink="1"] .sidenav-links a:hover {
+  background: #eeeeee !important;
+  color: #000000 !important;
+  border-color: #000000;
+}
+
+html[data-eink="1"] .sidenav-links a.active {
+  background: #000000 !important;
+  color: #ffffff !important;
+  font-weight: 700;
+  border-color: #000000;
+  text-decoration: none !important;
+}
+
+html[data-eink="1"] .sidebar .brand-home-link,
+html[data-eink="1"] .sidebar .brand-home-link h1,
+html[data-eink="1"] .sidebar .brand-home-link h2 {
+  text-decoration: none !important;
+}
+
+html[data-eink="1"] .sidenav-section {
+  color: #000000 !important;
+  opacity: 1;
+}
+
+html[data-eink="1"] a.button,
+html[data-eink="1"] .button,
+html[data-eink="1"] button,
+html[data-eink="1"] input,
+html[data-eink="1"] select,
+html[data-eink="1"] textarea {
+  background: #ffffff !important;
+  color: #000000 !important;
+  border: 2px solid #000000 !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  min-height: 44px;
+}
+
+html[data-eink="1"] .theme-toggle,
+html[data-eink="1"] .eink-toggle {
+  min-height: 36px;
+  min-width: 36px;
+  border-width: 2px !important;
+}
+
+html[data-eink="1"] .eink-toggle.is-active {
+  background: #000000 !important;
+  color: #ffffff !important;
+}
+
+html[data-eink="1"] .eink-toggle.is-active span {
+  color: #ffffff !important;
+}
+
+html[data-eink="1"] .cover {
+  background: #ffffff !important;
+  border: 1px solid #000000;
+  box-shadow: none !important;
+}
+
+html[data-eink="1"] .cover img,
+html[data-eink="1"] .brand-logo,
+html[data-eink="1"] .login-logo-img {
+  filter: grayscale(100%) contrast(115%);
+}
+
+html[data-eink="1"] .cover-fallback-overlay {
+  background: rgba(255, 255, 255, 0.5) !important;
+}
+
+html[data-eink="1"] .cover-fallback-title,
+html[data-eink="1"] .cover-fallback-author {
+  color: #000000 !important;
+}
+
+html[data-eink="1"] .cover-image.is-loaded {
+  opacity: 1 !important;
+}
+
+html[data-eink="1"] .cover-rating-wrapper {
+  filter: none;
+}
+
+html[data-eink="1"] .read-badge {
+  inset: 0;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  width: auto;
+  height: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.45) !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+
+html[data-eink="1"] .read-badge svg {
+  width: 42%;
+  aspect-ratio: 1;
+  height: auto;
+  padding: 10%;
+  border-radius: 50%;
+  background: #ffffff !important;
+  border: 2px solid #000000;
+  box-shadow: none !important;
+  stroke: #000000 !important;
+}
+
+html[data-eink="1"] .read-series-badge {
+  background: #ffffff !important;
+  border: 2px solid #000000;
+}
+
+html[data-eink="1"] .read-series-badge svg {
+  stroke: #000000 !important;
+}
+
+html[data-eink="1"] .cover-rating-badge,
+html[data-eink="1"] .cover-rating-1,
+html[data-eink="1"] .cover-rating-2,
+html[data-eink="1"] .cover-rating-3,
+html[data-eink="1"] .cover-rating-4,
+html[data-eink="1"] .cover-rating-5,
+html[data-eink="1"] .detail-rating-badge,
+html[data-eink="1"] .detail-rating-1,
+html[data-eink="1"] .detail-rating-2,
+html[data-eink="1"] .detail-rating-3,
+html[data-eink="1"] .detail-rating-4,
+html[data-eink="1"] .detail-rating-5 {
+  background: #ffffff !important;
+  background-image: none !important;
+  color: #000000 !important;
+  border: 1px solid #000000;
+  box-shadow: none !important;
+  text-shadow: none !important;
+}
+
+html[data-eink="1"] .cover-rating-badge::before,
+html[data-eink="1"] .cover-rating-badge::after {
+  display: none !important;
+}
+
+html[data-eink="1"] .cover-rating-badge > span,
+html[data-eink="1"] .cover-rating-badge .star-active {
+  color: #000000 !important;
+}
+
+html[data-eink="1"] .spinner {
+  border-color: rgba(0, 0, 0, 0.15) !important;
+  border-top-color: #000000 !important;
+}
+
+html[data-eink="1"] .topbar-lang-link.is-active {
+  font-weight: 700;
+  text-decoration: underline;
+}

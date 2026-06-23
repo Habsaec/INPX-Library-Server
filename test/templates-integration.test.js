@@ -273,6 +273,38 @@ test('renderReader returns standalone reader HTML', async () => {
   assert.ok(html.includes('__READER_BOOK_ID'));
 });
 
+test('renderReader lite mode sets e-ink attrs and lite boot', async () => {
+  const { renderReader } = await import('../src/templates/library.js');
+  const html = renderReader({
+    book: { id: '42', ext: 'fb2' },
+    details: { title: 'Lite Reader' },
+    user: null,
+    lite: true
+  });
+  assert.ok(html.includes('data-eink="1"'));
+  assert.ok(html.includes('data-reader-theme="eink"'));
+  assert.ok(html.includes('__READER_LITE=1'));
+  assert.ok(html.includes('/lite/book/'));
+  assert.ok(html.includes('history.back()'));
+  assert.ok(!html.includes('data-set-theme'));
+});
+
+test('renderLiteHome shows logo in header and admin subtitle in hero', async () => {
+  const { setSiteName } = await import('../src/templates/shared.js');
+  const { renderLiteHome } = await import('../src/templates/lite.js');
+  setSiteName('My Library');
+  const html = renderLiteHome({
+    stats: { totalBooks: 1, totalAuthors: 2, totalSeries: 3, totalGenres: 4 },
+    user: null,
+    homeSubtitle: 'Custom home tagline'
+  });
+  assert.ok(html.includes('lite-header-logo'));
+  assert.ok(!html.includes('lite-header-title'));
+  assert.ok(html.includes('Custom home tagline'));
+  assert.ok(html.includes('My Library'));
+  assert.ok(html.includes('lite-hero-subtitle'));
+});
+
 // ── 7. Route modules importable ─────────────────────────────────────
 
 test('all route modules can be imported', async () => {
@@ -281,6 +313,7 @@ test('all route modules can be imported', async () => {
     '../src/routes/auth-routes.js',
     '../src/routes/download.js',
     '../src/routes/library.js',
+    '../src/routes/lite.js',
     '../src/routes/opds.js',
     '../src/routes/reader.js',
     '../src/routes/user-api.js'

@@ -48,6 +48,14 @@ export function readPagePath(id) {
   return bookSegment('/read', id);
 }
 
+export function liteBookPagePath(id) {
+  return bookSegment('/lite/book', id);
+}
+
+export function liteReadPagePath(id) {
+  return bookSegment('/lite/read', id);
+}
+
 export function apiBookPath(id, suffix = '') {
   return bookSegment('/api/books', id, suffix);
 }

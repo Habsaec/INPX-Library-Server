@@ -14,7 +14,7 @@ import {
   firstAuthorValue, uniqueBooksById, batchSelectInputAttrs, safeDomIdPart,
   browseTotalLine, canDownloadInUi, canSendToEmailInUi, renderAuthorLinks, renderSeriesLinks,
   STATIC_ASSET_VERSION, siteTitleForDisplay, READ_CHECK_SVG, renderFaviconLinks,
-  bookPagePath, readPagePath, apiBookPath,
+  bookPagePath, readPagePath, apiBookPath, liteBookPagePath, liteReadPagePath,
   t, tp, getLocale, plural, countLabel, formatLocaleInt,
   formatLocaleDateLong, serializeClientI18n,
   formatAuthorLabel, formatLanguageLabel,
@@ -994,29 +994,52 @@ export function renderShelfDetail({ shelf, books = [], user, stats, indexStatus,
   return pageShell({ title: shelf.name, content, user, stats, indexStatus, breadcrumbs: [{ label: t('nav.home'), href: '/' }, { label: t('shelves.title'), href: '/shelves' }, { label: shelf.name }], currentPath: '/shelves', csrfToken, readBookIds });
 }
 
-export function renderReader({ book, details, user, csrfToken = '' }) {
+export function renderReader({ book, details, user, csrfToken = '', lite = false }) {
   const ext = String(book.ext || 'fb2').toLowerCase();
   const title = details?.title || book.title || t('opds.noTitle');
   const htmlLang = getLocale() === 'en' ? 'en' : 'ru';
+  const backHref = lite ? liteBookPagePath(book.id) : bookPagePath(book.id);
+  const readerBackClick = lite
+    ? ' onclick="event.preventDefault();if(history.length>1){history.back()}else{location.href=this.getAttribute(\'href\')}"'
+    : '';
+  const htmlAttrs = lite ? ' data-eink="1" data-lite="1" data-reader-theme="eink"' : '';
+  const themeBoot = lite
+    ? "document.documentElement.dataset.readerTheme='eink'"
+    : "try{var _t=JSON.parse(localStorage.getItem('reader-settings')||'{}').theme||'sepia';document.documentElement.dataset.readerTheme=_t}catch(e){document.documentElement.dataset.readerTheme='sepia'}";
+  const fontPreconnect = lite ? '' : `<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>`;
+  const liteBoot = lite
+    ? `<script>window.__READER_LITE=1;window.__READER_BOOK_PAGE_PATH=${JSON.stringify(backHref)}</script>`
+    : '';
+  const themeSettingsBlock = lite ? '' : `
+      <div class="rs-group">
+        <div class="rs-label">${escapeHtml(t('reader.theme'))}</div>
+        <div class="rs-themes">
+          <button class="rs-theme-dot" type="button" data-set-theme="dark"><span class="rs-dot-label">${escapeHtml(t('reader.themeDark'))}</span></button>
+          <button class="rs-theme-dot" type="button" data-set-theme="light"><span class="rs-dot-label">${escapeHtml(t('reader.themeLight'))}</span></button>
+          <button class="rs-theme-dot" type="button" data-set-theme="sepia"><span class="rs-dot-label">${escapeHtml(t('reader.themeSepia'))}</span></button>
+          <button class="rs-theme-dot" type="button" data-set-theme="night"><span class="rs-dot-label">${escapeHtml(t('reader.themeNight'))}</span></button>
+        </div>
+      </div>`;
+  const ttsStopSvg = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" fill="currentColor"/></svg>';
   return `<!DOCTYPE html>
-<html lang="${htmlLang}">
+<html lang="${htmlLang}"${htmlAttrs}>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 ${csrfToken ? `<meta name="csrf-token" content="${escapeHtml(csrfToken)}">` : ''}
 <title>${escapeHtml(siteTitleForDisplay())} \u2014 ${escapeHtml(title)}</title>
 ${renderFaviconLinks()}
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="/reader.css">
-<script>try{var _t=JSON.parse(localStorage.getItem('reader-settings')||'{}').theme||'sepia';document.documentElement.dataset.readerTheme=_t}catch(e){document.documentElement.dataset.readerTheme='sepia'}</script>
+${fontPreconnect}
+<link rel="stylesheet" href="/reader.css?v=${STATIC_ASSET_VERSION}">
+<script>${themeBoot}</script>
 </head>
-<body class="chrome-hidden">
+<body class="chrome-hidden${lite ? ' reader-lite' : ''}">
 <script type="application/json" id="ui-i18n-json">${serializeClientI18n()}</script>
 
 <div class="reader-toolbar reader-chrome" id="toolbar">
   <div class="tb-left">
-    <a href="${bookPagePath(book.id)}" class="tb-btn" title="${escapeHtml(t('reader.back'))}" aria-label="${escapeHtml(t('reader.backToBook'))}"><svg viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></svg></a>
+    <a href="${backHref}" class="tb-btn"${readerBackClick} title="${escapeHtml(t('reader.back'))}" aria-label="${escapeHtml(t('reader.backToBook'))}"><svg viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></svg></a>
     <div class="tb-meta">
       <span class="tb-kicker">${escapeHtml(t('reader.reading'))}</span>
       <span class="tb-title">${escapeHtml(title)}</span>
@@ -1031,6 +1054,7 @@ ${renderFaviconLinks()}
     <div class="tb-tts-wrap" role="group" aria-label="${escapeHtml(t('reader.ttsBar'))}">
       <button class="tb-btn tb-tts-skip js-tts-prev" type="button" id="btn-tts-prev" disabled title="${escapeHtml(t('reader.ttsPrev'))}" aria-label="${escapeHtml(t('reader.ttsPrev'))}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5h2v14H6V5zm3.6 7L18 5v14L9.6 12z" fill="currentColor"/></svg></button>
       <button class="tb-btn" type="button" id="btn-tts" title="${escapeHtml(t('reader.ttsPlay'))}" aria-label="${escapeHtml(t('reader.tts'))}"><svg class="tts-main-icon" viewBox="0 0 24 24" aria-hidden="true"><path class="tts-main-path" fill="currentColor" d="M8 5v14l11-7z"/></svg></button>
+      <button class="tb-btn tb-tts-stop js-tts-stop" type="button" id="btn-tts-stop" hidden title="${escapeHtml(t('reader.ttsStop'))}" aria-label="${escapeHtml(t('reader.ttsStop'))}">${ttsStopSvg}</button>
       <button class="tb-btn tb-tts-skip js-tts-next" type="button" id="btn-tts-next" disabled title="${escapeHtml(t('reader.ttsNext'))}" aria-label="${escapeHtml(t('reader.ttsNext'))}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 5h2v14h-2V5zm-2.4 7L8 5v14l7.6-7z" fill="currentColor"/></svg></button>
     </div>
     <button class="tb-btn" type="button" id="btn-fullscreen" title="${escapeHtml(t('reader.fullscreen'))}" aria-label="${escapeHtml(t('reader.fullscreen'))}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H5a2 2 0 00-2 2v3m18 0V5a2 2 0 00-2-2h-3m0 18h3a2 2 0 002-2v-3M3 16v3a2 2 0 002 2h3"/></svg></button>
@@ -1061,6 +1085,7 @@ ${renderFaviconLinks()}
   <div class="reader-tts-dock-inner">
     <button type="button" class="reader-tts-dock-btn tb-btn js-tts-prev" id="btn-tts-dock-prev" disabled title="${escapeHtml(t('reader.ttsPrev'))}" aria-label="${escapeHtml(t('reader.ttsPrev'))}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5h2v14H6V5zm3.6 7L18 5v14L9.6 12z" fill="currentColor"/></svg></button>
     <button type="button" class="reader-tts-dock-btn tb-btn reader-tts-dock-main" id="btn-tts-dock" title="${escapeHtml(t('reader.ttsPlay'))}" aria-label="${escapeHtml(t('reader.tts'))}"><svg class="tts-main-icon" viewBox="0 0 24 24" aria-hidden="true"><path class="tts-main-path" fill="currentColor" d="M8 5v14l11-7z"/></svg></button>
+    <button type="button" class="reader-tts-dock-btn tb-btn js-tts-stop" id="btn-tts-dock-stop" hidden title="${escapeHtml(t('reader.ttsStop'))}" aria-label="${escapeHtml(t('reader.ttsStop'))}">${ttsStopSvg}</button>
     <button type="button" class="reader-tts-dock-btn tb-btn js-tts-next" id="btn-tts-dock-next" disabled title="${escapeHtml(t('reader.ttsNext'))}" aria-label="${escapeHtml(t('reader.ttsNext'))}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 5h2v14h-2V5zm-2.4 7L8 5v14l7.6-7z" fill="currentColor"/></svg></button>
   </div>
 </div>
@@ -1134,15 +1159,7 @@ ${renderFaviconLinks()}
       <div id="notes-content"><div class="bm-empty">${escapeHtml(t('reader.loading'))}</div></div>
     </div>
     <div class="panel-body" data-panel-tab="settings" hidden>
-      <div class="rs-group">
-        <div class="rs-label">${escapeHtml(t('reader.theme'))}</div>
-        <div class="rs-themes">
-          <button class="rs-theme-dot" type="button" data-set-theme="dark"><span class="rs-dot-label">${escapeHtml(t('reader.themeDark'))}</span></button>
-          <button class="rs-theme-dot" type="button" data-set-theme="light"><span class="rs-dot-label">${escapeHtml(t('reader.themeLight'))}</span></button>
-          <button class="rs-theme-dot" type="button" data-set-theme="sepia"><span class="rs-dot-label">${escapeHtml(t('reader.themeSepia'))}</span></button>
-          <button class="rs-theme-dot" type="button" data-set-theme="night"><span class="rs-dot-label">${escapeHtml(t('reader.themeNight'))}</span></button>
-        </div>
-      </div>
+      ${themeSettingsBlock}
       <div class="rs-group">
         <div class="rs-label">${escapeHtml(t('reader.presets'))}</div>
         <div class="rs-seg rs-preset-seg">
@@ -1249,8 +1266,9 @@ ${renderFaviconLinks()}
 <div class="reader-toast" id="reader-toast"></div>
 
 <script src="/book-ref.js?v=${STATIC_ASSET_VERSION}" defer></script>
+${liteBoot}
 <script>window.__READER_BOOK_ID=${JSON.stringify(book.id).replace(/</g, '\\u003c')};window.__READER_BOOK_EXT=${JSON.stringify(ext).replace(/</g, '\\u003c')}</script>
-<script type="module" src="/reader.js"></script>
+<script type="module" src="/reader.js?v=${STATIC_ASSET_VERSION}"></script>
 </body>
 </html>`;
 }

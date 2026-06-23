@@ -7,12 +7,14 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createWriteStream } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import archiver from 'archiver';
 
-const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Z]:)/i, '$1')));
-const PROJECT = path.resolve(ROOT, '..');
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const PROJECT = path.resolve(__dirname, '..');
 
 const pkg = JSON.parse(fs.readFileSync(path.join(PROJECT, 'package.json'), 'utf8'));
 const version = pkg.version || '0.0.0';
@@ -23,13 +25,13 @@ const outDir = path.join(PROJECT, 'release');
 fs.mkdirSync(outDir, { recursive: true });
 const outPath = path.join(outDir, archiveName);
 
-const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-const assetsBuild = spawnSync(npmCmd, ['run', 'build:assets'], {
+const assetsBuild = spawnSync(process.execPath, [path.join(PROJECT, 'scripts', 'build-assets.js')], {
   cwd: PROJECT,
   stdio: 'inherit'
 });
-if ((assetsBuild.status || 0) !== 0) {
+if (assetsBuild.error || assetsBuild.status !== 0) {
   console.error('  ERROR: asset build failed, aborting release packaging');
+  if (assetsBuild.error) console.error(`  ${assetsBuild.error.message}`);
   process.exit(1);
 }
 

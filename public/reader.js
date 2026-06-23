@@ -70,6 +70,13 @@ import {
   /* ===== Constants & DOM refs ===== */
   const bookId = window.__READER_BOOK_ID;
   const bookExt = window.__READER_BOOK_EXT;
+  const READER_LITE = Boolean(window.__READER_LITE);
+  const SETTINGS_STORAGE_KEY = READER_LITE ? 'reader-settings-lite' : 'reader-settings';
+
+  function readerBookPagePath() {
+    if (window.__READER_BOOK_PAGE_PATH) return window.__READER_BOOK_PAGE_PATH;
+    return globalThis.bookPagePath ? globalThis.bookPagePath(bookId) : `/book/${encodeURIComponent(bookId)}`;
+  }
   const $ = (s) => document.getElementById(s);
   const readerBody = $('reader-body');
   const toolbarChapter = $('toolbar-chapter');
@@ -88,6 +95,8 @@ import {
   const toastEl = $('reader-toast');
   const btnTts = $('btn-tts');
   const btnTtsDock = $('btn-tts-dock');
+  const btnTtsStop = $('btn-tts-stop');
+  const btnTtsDockStop = $('btn-tts-dock-stop');
   const ttsDockEl = $('reader-tts-dock');
   const bookPagesEl = $('reader-book-pages');
   const bookPageLeft = $('book-page-left');
@@ -513,8 +522,22 @@ import {
   }
   let S = {};
   function loadSettings() {
-    try { S = JSON.parse(localStorage.getItem('reader-settings') || '{}'); } catch { S = {}; }
+    try { S = JSON.parse(localStorage.getItem(SETTINGS_STORAGE_KEY) || '{}'); } catch { S = {}; }
     for (const k of Object.keys(defaults)) if (S[k] === undefined) S[k] = defaults[k];
+    if (READER_LITE) {
+      S.theme = 'eink';
+      S.textColor = '';
+      S.bgColor = '';
+      if (!localStorage.getItem(SETTINGS_STORAGE_KEY)) {
+        S.fontSize = 21;
+        S.lineHeight = 1.7;
+        S.pageMargin = 24;
+        S.font = 'serif';
+        S.layout = 'paginated';
+        S.textColor = '';
+        S.bgColor = '';
+      }
+    }
     if (S.layout !== 'paginated' && S.layout !== 'dual') S.layout = defaults.layout;
     if (S.textColor && !/^#[0-9A-Fa-f]{6}$/.test(String(S.textColor).trim())) S.textColor = '';
     if (S.bgColor && !/^#[0-9A-Fa-f]{6}$/.test(String(S.bgColor).trim())) S.bgColor = '';
@@ -529,13 +552,14 @@ import {
     S.ttsRate = Number.isFinite(tr) ? Math.min(2, Math.max(0.5, tr)) : defaults.ttsRate;
     if (typeof S.ttsVoice !== 'string') S.ttsVoice = defaults.ttsVoice;
   }
-  function saveSettings() { localStorage.setItem('reader-settings', JSON.stringify(S)); }
+  function saveSettings() { localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(S)); }
   loadSettings();
   const themeColors = {
     dark:  { bg: '#1b1b2f', fg: '#d4cfc4', link: '#8ab4f8' },
     light: { bg: '#faf9f6', fg: '#222',    link: '#1a5fb4' },
     sepia: { bg: '#f4edd5', fg: '#3d3121', link: '#6b4226' },
     night: { bg: '#0d0d0d', fg: '#888',    link: '#5a8ab8' },
+    eink:  { bg: '#ffffff', fg: '#000000', link: '#000000' },
   };
   const presets = {
     compact:  { fontSize: 16, lineHeight: 1.45, pageMargin: 20, maxWidth: 680 },
@@ -576,7 +600,8 @@ import {
       [align="left"]{text-align:left} [align="right"]{text-align:right} [align="center"]{text-align:center} [align="justify"]{text-align:justify}
       pre { white-space: pre-wrap !important; }
       aside[epub|type~="endnote"],aside[epub|type~="footnote"],aside[epub|type~="note"],aside[epub|type~="rearnote"] { display: none; }
-      a { color: ${c.link}; }
+      a { color: ${READER_LITE ? fg : c.link}; }
+      ${READER_LITE ? 'img,svg image { filter: grayscale(100%) contrast(115%) !important; }' : ''}
     `;
     const gf = GOOGLE_FONTS[S.font];
     if (gf) return [`@import url("${googleFontCssUrl(gf)}");`, text];
@@ -725,6 +750,7 @@ import {
   }
 
   function applySettings() {
+    if (READER_LITE) S.theme = 'eink';
     document.documentElement.dataset.readerTheme = S.theme;
     document.body.dataset.readerTheme = S.theme;
     const bg = getEffectiveBgColor();
@@ -1757,10 +1783,15 @@ import {
     document.querySelectorAll('.js-tts-prev, .js-tts-next').forEach((b) => {
       b.disabled = !ttsChainActive;
     });
+    [btnTtsStop, btnTtsDockStop].forEach((btn) => {
+      if (!btn) return;
+      btn.hidden = !ttsChainActive;
+    });
     if (ttsDockEl) {
       ttsDockEl.classList.toggle('is-visible', ttsChainActive);
       ttsDockEl.setAttribute('aria-hidden', ttsChainActive ? 'false' : 'true');
     }
+    document.body.classList.toggle('reader-tts-active', ttsChainActive);
     if (!ttsChainActive) pauseTtsKeepalive();
     syncTtsMediaSessionPlayback();
     if (ttsChainActive) syncTtsMediaMetadata();
@@ -2097,6 +2128,13 @@ import {
   }
   wireTtsPrimaryControl(btnTts);
   wireTtsPrimaryControl(btnTtsDock);
+
+  document.querySelectorAll('.js-tts-stop').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      stopReaderTts();
+      scheduleChromeHide();
+    });
+  });
 
   document.querySelectorAll('.js-tts-prev').forEach((btn) => {
     btn.addEventListener('click', () => {
@@ -2686,7 +2724,7 @@ import {
     bookPagesEl?.classList.add('is-hidden');
     readerBody.innerHTML = '<div class="reader-error"><div class="reader-error-title">' + esc(rt('readerJs.errorTitle')) + '</div>' +
       '<div class="reader-error-text">' + esc(msg) + '</div>' +
-      '<a href="' + (globalThis.bookPagePath ? globalThis.bookPagePath(bookId) : `/book/${encodeURIComponent(bookId)}`) + '" class="tb-btn" style="margin-top:12px;">' + esc(rt('readerJs.back')) + '</a></div>';
+      '<a href="' + readerBookPagePath() + '" class="tb-btn" style="margin-top:12px;">' + esc(rt('readerJs.back')) + '</a></div>';
   }
 
   /* ===== Reader ext classifier (kept in sync with server utils/book-format.js) ===== */
@@ -2719,7 +2757,7 @@ import {
       '<div class="reader-error-text">' + esc(text) + '</div>' +
       '<div style="display:flex;gap:10px;margin-top:14px;flex-wrap:wrap;">' +
       '<a href="' + downloadHref + '" class="tb-btn" download>' + esc(rt('readerJs.download')) + '</a>' +
-      '<a href="' + (globalThis.bookPagePath ? globalThis.bookPagePath(bookId) : `/book/${encodeURIComponent(bookId)}`) + '" class="tb-btn">' + esc(rt('readerJs.back')) + '</a>' +
+      '<a href="' + readerBookPagePath() + '" class="tb-btn">' + esc(rt('readerJs.back')) + '</a>' +
       '</div></div>';
   }
 

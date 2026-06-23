@@ -3,6 +3,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import express from 'express';
 import { config } from '../config.js';
+import { getConfiguredDownloadFormats, setDisabledDownloadFormats } from '../download-formats.js';
 import { runWithLocaleLang, resolveLocale, t, tp, countLabel, translateKnownErrorMessage, setDefaultLocale } from '../i18n.js';
 import { ApiErrorCode, apiFail } from '../api-errors.js';
 import { requireAdminWeb, requireAdminApi, invalidateSessionUserCache } from '../middleware/auth.js';
@@ -1605,20 +1606,37 @@ export function registerAdminRoutes(app, deps) {
     const excludedGenreSet = new Set(
       excludedGenres ? excludedGenres.split(',').map(s => s.trim()).filter(Boolean) : []
     );
+    const disabledDownloadFormats = getSetting('disabled_download_formats');
+    const disabledDownloadFormatSet = new Set(
+      disabledDownloadFormats ? disabledDownloadFormats.split(',').map(s => s.trim().toLowerCase()).filter(Boolean) : []
+    );
     res.send(renderAdminContent({
       user: req.user, stats: getCachedStats(), indexStatus: getIndexStatus(),
       languages: allLangs, excludedLangSet,
       genres: allGenres, excludedGenreSet,
+      disabledDownloadFormatSet,
       flash: String(req.query.flash || ''), csrfToken: req.csrfToken || ''
     }));
   });
 
   app.post('/admin/content', requireAdminWeb, async (req, res) => {
+    const allFmt = getConfiguredDownloadFormats();
+    const rawFmt = req.body.enabled_download_format || [];
+    const enabledFmt = new Set(Array.isArray(rawFmt) ? rawFmt : [rawFmt]);
+    const disabledFmt = allFmt.filter(code => !enabledFmt.has(code));
+    setSetting('disabled_download_formats', disabledFmt.join(','));
+    setDisabledDownloadFormats(disabledFmt);
+
     // Пока идёт индексация, не трогаем excluded_* и не делаем DROP/CREATE VIEW:
     // SQLite может заблокировать или оставить active_books в полусогласованном состоянии.
     if (getIndexStatus().active) {
+      clearPageDataCache();
+      logSystemEvent('info', 'admin', 'download formats updated during indexing', {
+        admin: req.user.username,
+        disabledFormats: disabledFmt.join(',')
+      });
       return res.redirect('/admin/content?flash=' + encodeURIComponent(
-        t('admin.content.blockedDuringIndexing') || 'Change the filter after indexing finishes'
+        t('admin.content.savedFormatsDuringIndexing')
       ));
     }
     // Сохраняем предыдущие значения, чтобы откатить, если rebuildActiveBooksView() упадёт.
@@ -1649,7 +1667,8 @@ export function registerAdminRoutes(app, deps) {
       logSystemEvent('info', 'admin', 'content filter updated', {
         admin: req.user.username,
         excludedLangs: excludedLang.join(','),
-        excludedGenres: excludedGenre.join(',')
+        excludedGenres: excludedGenre.join(','),
+        disabledFormats: disabledFmt.join(',')
       });
       res.redirect('/admin/content?flash=' + encodeURIComponent(t('admin.content.saved')));
     } catch (error) {

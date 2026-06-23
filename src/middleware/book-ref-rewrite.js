@@ -13,6 +13,18 @@ function rewritePath(path) {
     return id ? `/read/${encodeURIComponent(id)}` : null;
   }
 
+  m = path.match(/^\/lite\/read\/b64\/([A-Za-z0-9_-]+)$/);
+  if (m) {
+    const id = decodeBookRef(m[1]);
+    return id ? `/lite/read/${encodeURIComponent(id)}` : null;
+  }
+
+  m = path.match(/^\/lite\/book\/b64\/([A-Za-z0-9_-]+)$/);
+  if (m) {
+    const id = decodeBookRef(m[1]);
+    return id ? `/lite/book/${encodeURIComponent(id)}` : null;
+  }
+
   m = path.match(/^\/download\/b64\/([A-Za-z0-9_-]+)$/);
   if (m) {
     const id = decodeBookRef(m[1]);

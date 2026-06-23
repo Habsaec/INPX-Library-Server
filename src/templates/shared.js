@@ -7,9 +7,9 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { formatAuthorLabel, formatGenreLabel, formatLanguageLabel, parseGenreCodes } from '../genre-map.js';
-import { getAvailableDownloadFormats, FORMAT_LABELS } from '../conversion.js';
+import { getAvailableDownloadFormats, FORMAT_LABELS, isDownloadFormatEnabled } from '../conversion.js';
 import { config } from '../config.js';
-import { bookPagePath, readPagePath, apiBookPath, downloadBookPath, encodeBookRef } from '../utils/book-ref.js';
+import { bookPagePath, readPagePath, apiBookPath, downloadBookPath, liteBookPagePath, liteReadPagePath, encodeBookRef } from '../utils/book-ref.js';
 import { formatSingleAuthorName, splitAuthorValues } from '../inpx.js';
 import {
   t,
@@ -28,7 +28,7 @@ import { getUiCustomization, getThemeCssVars, hasUiThemeColorsConfigured, hasUiP
 export { t, tp, getLocale, plural, countLabel, formatLocaleInt, formatLocaleDateShort, formatLocaleDateTimeShort, formatLocaleDateLong, serializeClientI18n };
 export { formatAuthorLabel, formatGenreLabel, formatLanguageLabel, parseGenreCodes };
 export { getAvailableDownloadFormats, FORMAT_LABELS };
-export { bookPagePath, readPagePath, apiBookPath, downloadBookPath };
+export { bookPagePath, readPagePath, apiBookPath, downloadBookPath, liteBookPagePath, liteReadPagePath };
 
 /** data-* атрибут с ID книги (base64url), безопасен для NUL и спецсимволов в HTML. */
 export function bookIdDataAttr(id) {
@@ -46,6 +46,9 @@ const APP_MIN_PATH = path.join(config.publicDir, 'app.min.js');
 const CSS_MIN_PATH = path.join(config.publicDir, 'styles.min.css');
 const APP_SRC_PATH = path.join(config.publicDir, 'app.js');
 const CSS_SRC_PATH = path.join(config.publicDir, 'styles.css');
+const LITE_CSS_PATH = path.join(config.publicDir, 'lite.css');
+const READER_JS_PATH = path.join(config.publicDir, 'reader.js');
+const READER_CSS_PATH = path.join(config.publicDir, 'reader.css');
 
 /**
  * Returns true only if the minified bundle is at least as new as its source.
@@ -88,8 +91,8 @@ const CSS_ASSET_FILE = USE_MINIFIED_ASSETS ? 'styles.min.css' : 'styles.css';
 
 function computeStaticAssetVersion() {
   const files = USE_MINIFIED_ASSETS
-    ? [APP_MIN_PATH, CSS_MIN_PATH]
-    : [APP_SRC_PATH, CSS_SRC_PATH];
+    ? [APP_MIN_PATH, CSS_MIN_PATH, LITE_CSS_PATH, READER_JS_PATH, READER_CSS_PATH]
+    : [APP_SRC_PATH, CSS_SRC_PATH, LITE_CSS_PATH, READER_JS_PATH, READER_CSS_PATH];
   const hash = crypto.createHash('md5');
   for (const p of files) {
     try {
@@ -522,13 +525,17 @@ export function renderEmptyState({ title, text, actionHref = '', actionLabel = '
 
 export function renderDownloadMenu(book, { compact = false, accent = false, user = null } = {}) {
   if (!canDownloadInUi(user)) return '';
-  const available = getAvailableDownloadFormats(book);
-  const formats = available.map((f) => [f, FORMAT_LABELS[f] || f.toUpperCase()]);
+  const formats = getAvailableDownloadFormats(book).map((f) => [f, FORMAT_LABELS[f] || f.toUpperCase()]);
+  if (!formats.length) return '';
   const triggerClass = [
     'button',
     'download-menu-trigger',
     compact ? 'download-menu-trigger-compact' : ''
   ].filter(Boolean).join(' ');
+  if (formats.length === 1) {
+    const [format] = formats[0];
+    return `<a class="${triggerClass} download-direct-link" href="${downloadBookPath(book.id, `format=${encodeURIComponent(format)}`)}">${escapeHtml(t('download.label'))}</a>`;
+  }
   return `
     <details class="download-menu ${compact ? 'download-menu-compact' : ''}">
       <summary class="${triggerClass}">${escapeHtml(t('download.label'))}</summary>
@@ -556,9 +563,10 @@ function renderBatchEmailMenu(params) {
 }
 
 function batchZipFormatPairs() {
-  return config.fb2cngPath
+  const pairs = config.fb2cngPath
     ? [['fb2', 'FB2'], ['epub2', 'EPUB'], ['epub3', 'EPUB3'], ['kepub', 'KEPUB'], ['kfx', 'KFX'], ['azw8', 'AZW8']]
     : [['fb2', 'FB2']];
+  return pairs.filter(([format]) => isDownloadFormatEnabled(format));
 }
 
 /** batchContext: { facet, value } | { shelf } | { adhoc: true } — для чекбоксов и POST выбранных книг */
@@ -575,6 +583,9 @@ export function renderBatchDownloadToolbar(batchContext, { extraActions = '', us
   }
   const ctxJson = escapeHtml(JSON.stringify(batchContext));
   const formats = batchZipFormatPairs();
+  if (!formats.length) {
+    return '';
+  }
   const selectedLinks = formats
     .map(
       ([format, label]) =>
@@ -998,10 +1009,14 @@ export function renderHomeShelf({ title, href, items, type = 'books', facetBaseP
     </section>`;
 }
 
-function renderBrandLogoImg(className = 'brand-logo') {
+export function renderSiteLogoImg(className = 'brand-logo') {
   const ui = getUiCustomization();
   const src = ui.logoUrl || '/logo.png';
   return `<img src="${escapeHtml(src)}" alt="" class="${className}" onerror="if(this.dataset.fallback!=='1'){this.dataset.fallback='1';this.src='/logo.png'}else{this.style.display='none'}">`;
+}
+
+function renderBrandLogoImg(className = 'brand-logo') {
+  return renderSiteLogoImg(className);
 }
 
 export function renderFaviconLinks() {
@@ -1049,6 +1064,22 @@ function uiHtmlRootAttrs() {
   if (hasUiThemeShapeConfigured()) attrs += ' data-ui-shape="1"';
   if (hasUiThemeTypographyConfigured()) attrs += ' data-ui-typography="1"';
   return attrs;
+}
+
+function renderThemeBootScript() {
+  return `<script>
+    (() => {
+      try {
+        const savedTheme = localStorage.getItem('theme-preference');
+        const theme = savedTheme === 'light' || savedTheme === 'dark'
+          ? savedTheme
+          : (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+        document.documentElement.dataset.theme = theme;
+      } catch {
+        document.documentElement.dataset.theme = 'dark';
+      }
+    })();
+  </script>`;
 }
 
 function renderLoginLogoBlock() {
@@ -1123,19 +1154,7 @@ export function pageShell({ title, content, user, query = '', field = 'all', sta
   <meta name="viewport" content="width=device-width, initial-scale=1">
   ${csrfToken ? `<meta name="csrf-token" content="${escapeHtml(csrfToken)}">` : ''}
   <title>${title !== siteDisplay ? escapeHtml(siteDisplay) + ' \u2014 ' + escapeHtml(title) : escapeHtml(title)}</title>
-  <script>
-    (() => {
-      try {
-        const savedTheme = localStorage.getItem('theme-preference');
-        const theme = savedTheme === 'light' || savedTheme === 'dark'
-          ? savedTheme
-          : (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
-        document.documentElement.dataset.theme = theme;
-      } catch {
-        document.documentElement.dataset.theme = 'dark';
-      }
-    })();
-  </script>
+  ${renderThemeBootScript()}
   ${renderFaviconLinks()}
   <link rel="manifest" href="/manifest.webmanifest">
   <meta name="theme-color" content="#1a1a2e">
@@ -1265,19 +1284,7 @@ export function renderLoginScreen({
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>${escapeHtml(siteDisplay)} \u2014 ${escapeHtml(title)}</title>
-  <script>
-    (() => {
-      try {
-        const savedTheme = localStorage.getItem('theme-preference');
-        const theme = savedTheme === 'light' || savedTheme === 'dark'
-          ? savedTheme
-          : (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
-        document.documentElement.dataset.theme = theme;
-      } catch {
-        document.documentElement.dataset.theme = 'dark';
-      }
-    })();
-  </script>
+  ${renderThemeBootScript()}
   ${renderFaviconLinks()}
   ${renderWebFontLinks()}
   ${renderUiFontFaceStyle()}
@@ -1302,6 +1309,11 @@ export function renderLoginScreen({
       ${successMessage ? renderAlert('success', successMessage) : ''}
       ${formFields}
       ${extraHtml}
+      <div class="login-lang" aria-label="${escapeHtml(t('aria.langSwitch'))}">
+        <a href="/set-lang?lang=ru" class="topbar-lang-link${getLocale() === 'ru' ? ' is-active' : ''}" hreflang="ru">${escapeHtml(t('nav.langRu'))}</a>
+        <span class="muted">·</span>
+        <a href="/set-lang?lang=en" class="topbar-lang-link${getLocale() === 'en' ? ' is-active' : ''}" hreflang="en">${escapeHtml(t('nav.langEn'))}</a>
+      </div>
     </${hideForm ? 'div' : 'form'}>
   </div>
 </body>

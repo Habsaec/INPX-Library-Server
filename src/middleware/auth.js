@@ -220,6 +220,15 @@ export function requireBrowseAuth(req, res, next) {
   return res.redirect('/login');
 }
 
+export function requireLiteBrowseAuth(req, res, next) {
+  if (req.user?.username) {
+    trackUser(req.user.username);
+    return next();
+  }
+  if (isAnonymousAllowed('allow_anonymous_browse')) return next();
+  return res.redirect('/lite/login');
+}
+
 export function requireBrowseOrOpds(req, res, next) {
   if (req.user?.username) {
     trackUser(req.user.username);

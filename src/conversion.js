@@ -385,7 +385,15 @@ function normalizeDownloadFormat(book, requestedFormat) {
   return format;
 }
 
-export { getAvailableDownloadFormats, FORMAT_LABELS, getFormatMimeType };
+export { getFormatMimeType };
+export {
+  getAvailableDownloadFormats,
+  FORMAT_LABELS,
+  isDownloadFormatEnabled,
+  getConfiguredDownloadFormats,
+  setDisabledDownloadFormats,
+  getDisabledDownloadFormats
+} from './download-formats.js';
 
 export async function resolveDownload(book, requestedFormat, options = {}) {
   const skipFb2DeliveryProcessing = options?.skipFb2DeliveryProcessing === true;

@@ -399,7 +399,7 @@ function safeRecordReadingHistory(username, bookId) {
 
 // --- Exported accessors for other modules ---
 
-export { detailsCache, getDetailsFull, clearBookDetailsCache, bookFlibustaSidecarEffective, resolveBestCoverDetails };
+export { detailsCache, getDetails, getDetailsFull, clearBookDetailsCache, bookFlibustaSidecarEffective, resolveBestCoverDetails };
 
 // --- Route registration ---
 

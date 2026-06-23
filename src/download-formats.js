@@ -14,14 +14,49 @@ export const FORMAT_LABELS = {
 
 export const DOWNLOAD_FORMATS = new Set(['fb2', ...FB2_CONVERTIBLE_FORMATS]);
 
+/** Formats shown in admin and used for batch ZIP (FB2 source). */
+export function getConfiguredDownloadFormats() {
+  return config.fb2cngPath ? ['fb2', ...FB2_CONVERTIBLE_FORMATS] : ['fb2'];
+}
+
+let disabledDownloadFormats = new Set();
+
 /**
- * @param {{ ext?: string }} book
- * @returns {string[]}
+ * @param {string|string[]|Set<string>} formats Disabled format codes (comma string or list).
  */
-export function getAvailableDownloadFormats(book) {
+export function setDisabledDownloadFormats(formats) {
+  const raw = formats instanceof Set
+    ? [...formats]
+    : Array.isArray(formats)
+      ? formats
+      : String(formats || '').split(',');
+  disabledDownloadFormats = new Set(
+    raw.map((s) => String(s).trim().toLowerCase()).filter((f) => DOWNLOAD_FORMATS.has(f))
+  );
+}
+
+export function getDisabledDownloadFormats() {
+  return [...disabledDownloadFormats];
+}
+
+export function isDownloadFormatEnabled(format) {
+  const code = String(format || '').trim().toLowerCase();
+  if (!DOWNLOAD_FORMATS.has(code)) return true;
+  return !disabledDownloadFormats.has(code);
+}
+
+function getBookNativeDownloadFormats(book) {
   const sourceFormat = String(book?.ext || 'fb2').toLowerCase();
   if (sourceFormat === 'fb2') {
     return config.fb2cngPath ? ['fb2', ...FB2_CONVERTIBLE_FORMATS] : ['fb2'];
   }
   return [sourceFormat];
+}
+
+/**
+ * @param {{ ext?: string }} book
+ * @returns {string[]}
+ */
+export function getAvailableDownloadFormats(book) {
+  return getBookNativeDownloadFormats(book).filter(isDownloadFormatEnabled);
 }
