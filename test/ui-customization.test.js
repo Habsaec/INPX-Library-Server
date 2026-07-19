@@ -16,19 +16,22 @@ const {
   hasUiBackgroundSlidersConfigured,
   hasUiPanelSlidersConfigured,
   hasUiThemeTypographyConfigured,
+  usesPanelGlass,
   resetUiThemeColors,
   resetUiThemeSliders,
   saveUiSettings,
   saveUiTypographySettings,
-  saveUiFontFile,
   resetUiThemeTypography,
+  saveUiFontFile,
   saveUiAsset,
   removeUiAsset,
   invalidateUiCustomizationCache,
   getPublicUiSettingsJson,
   refreshBgThemePaletteFromFile,
+  refreshBgThemePaletteForAdmin,
   normalizeHexColor,
   deriveGlassTheme,
+  getThemePreviewFromDraft,
   DEFAULT_GLASS_DARK,
   DEFAULT_GLASS_LIGHT,
   LEGACY_SURFACE_DARK,
@@ -88,7 +91,7 @@ test('getThemeCssVars applies theme palette without custom background', () => {
   assert.equal(hasUiThemeColorsConfigured(), true);
   const vars = getThemeCssVars();
   assert.ok(vars.some((v) => v.startsWith('--ui-theme-light-surface:#ffcc99')));
-  assert.ok(!vars.some((v) => v.startsWith('--ui-surface-opacity:')));
+  assert.ok(vars.some((v) => v.startsWith('--ui-surface-opacity:88')));
   assert.ok(!vars.some((v) => v.startsWith('--ui-bg-image:')));
 });
 
@@ -105,7 +108,20 @@ test('getThemeCssVars injects background vars without custom theme colors', () =
   assert.ok(vars.some((v) => v.startsWith('--ui-bg-image:')));
   assert.ok(vars.some((v) => v.startsWith('--ui-theme-dark-bg-overlay-color:')));
   assert.ok(!vars.some((v) => v.startsWith('--ui-theme-dark-text:')));
-  assert.ok(!vars.some((v) => v.startsWith('--ui-surface-opacity:')));
+  assert.ok(vars.some((v) => v.startsWith('--ui-surface-opacity:88')));
+  try { fs.unlinkSync(path.join(uiDir, 'background.webp')); } catch { /* ignore */ }
+});
+
+test('usesPanelGlass is true when a custom background image exists', () => {
+  invalidateUiCustomizationCache();
+  resetUiThemeColors();
+  resetUiThemeSliders();
+  const uiDir = path.join(config.dataDir, 'ui');
+  fs.mkdirSync(uiDir, { recursive: true });
+  fs.writeFileSync(path.join(uiDir, 'background.webp'), Buffer.from('RIFF    WEBPVP8 '));
+  assert.equal(hasUiPanelSlidersConfigured(), false);
+  assert.equal(hasUiThemeColorsConfigured(), false);
+  assert.equal(usesPanelGlass(), true);
   try { fs.unlinkSync(path.join(uiDir, 'background.webp')); } catch { /* ignore */ }
 });
 
@@ -168,6 +184,108 @@ test('resetUiThemeSliders clears saved slider settings', () => {
   assert.equal(ui.bgContrast, 80);
   assert.equal(ui.surfaceOpacity, 88);
   assert.equal(ui.surfaceBlur, 0);
+});
+
+test('resetUiThemeSliders and resetUiThemeTypography preserve saved colors', () => {
+  invalidateUiCustomizationCache();
+  saveUiSettings({
+    glassColorDark: '#222222',
+    glassColorLight: '#eeeeee',
+    accentAutoDark: false,
+    accentDark: '#ff0000',
+    glassMutedAutoDark: false,
+    glassMutedDark: '#aaaaaa',
+  });
+  saveUiTypographySettings({ fontSize: 16, density: 'compact' });
+  saveUiSettings({ surfaceOpacity: 72, bgBlur: 12 });
+  assert.equal(hasUiThemeColorsConfigured(), true);
+
+  resetUiThemeTypography();
+  assert.equal(hasUiThemeColorsConfigured(), true);
+  assert.equal(getSetting('ui_glass_color_dark'), '#222222');
+  assert.equal(getSetting('ui_accent_dark'), '#ff0000');
+  assert.equal(getSetting('ui_glass_muted_dark'), '#aaaaaa');
+  assert.equal(hasUiThemeTypographyConfigured(), false);
+
+  resetUiThemeSliders();
+  assert.equal(hasUiThemeColorsConfigured(), true);
+  assert.equal(getSetting('ui_glass_color_dark'), '#222222');
+  assert.equal(getSetting('ui_accent_dark'), '#ff0000');
+  assert.equal(hasUiThemeSlidersConfigured(), false);
+});
+
+test('usesPanelGlass keeps default panel opacity when theme colors saved but sliders reset', () => {
+  invalidateUiCustomizationCache();
+  saveUiSettings({ glassColorDark: '#222222', surfaceOpacity: 72 });
+  resetUiThemeSliders();
+  assert.equal(hasUiPanelSlidersConfigured(), false);
+  assert.equal(hasUiThemeColorsConfigured(), true);
+  assert.equal(usesPanelGlass(), true);
+  const vars = getThemeCssVars();
+  assert.ok(vars.some((v) => v.startsWith('--ui-surface-opacity:88')));
+});
+
+test('getThemePreviewFromDraft keeps saved accent when draft only changes typography', () => {
+  invalidateUiCustomizationCache();
+  saveUiSettings({
+    glassColorDark: '#222222',
+    accentAutoDark: false,
+    accentDark: '#ff0000',
+  });
+  saveUiTypographySettings({ fontSize: 16 });
+  const saved = getUiCustomization();
+  const preview = getThemePreviewFromDraft({ fontSize: '14', density: 'normal' });
+  assert.ok(preview.vars.some((v) => v.includes('#ff0000') || v.includes('ff0000')));
+  assert.equal(preview.attrs.theme, true);
+  assert.equal(preview.attrs.typography, true);
+  assert.ok(saved.glassAccentDark);
+});
+
+test('getThemePreviewFromDraft applies unsaved preset colors and enables theme attrs', () => {
+  invalidateUiCustomizationCache();
+  resetUiThemeColors();
+  assert.equal(hasUiThemeColorsConfigured(), false);
+  const preview = getThemePreviewFromDraft({
+    glassColorDark: '#1a2744',
+    glassColorLight: '#f4efe4',
+    accentAutoDark: '1',
+    accentAutoLight: '1',
+  });
+  assert.equal(preview.attrs.theme, true);
+  assert.ok(preview.vars.some((v) => v.startsWith('--ui-theme-dark-surface:#1a2744')));
+  assert.ok(preview.vars.some((v) => v.startsWith('--ui-theme-light-surface:#f4efe4')));
+});
+
+test('getThemePreviewFromDraft prefers draft accent over saved manual accent', () => {
+  invalidateUiCustomizationCache();
+  saveUiSettings({
+    glassColorDark: '#222222',
+    accentAutoDark: false,
+    accentDark: '#ff0000',
+  });
+  const preview = getThemePreviewFromDraft({
+    glassColorDark: '#222222',
+    accentAutoDark: '0',
+    accentDark: '#00ff00',
+  });
+  assert.ok(preview.vars.some((v) => v.includes('#00ff00') || v.includes('00ff00')));
+  assert.ok(!preview.vars.some((v) => v.includes('#ff0000') || v.includes('ff0000')));
+});
+
+test('getThemePreviewFromDraft uses saved glass colors when dynamic is checked but palette not extracted yet', () => {
+  invalidateUiCustomizationCache();
+  saveUiSettings({
+    glassColorDark: '#334455',
+    glassColorLight: '#ccddee',
+    dynamicThemeFromBg: false,
+  });
+  const preview = getThemePreviewFromDraft({
+    dynamicThemeFromBg: true,
+    glassColorDark: '#334455',
+    glassColorLight: '#ccddee',
+  });
+  assert.ok(preview.vars.some((v) => v.startsWith('--ui-theme-dark-surface:#334455')));
+  assert.ok(preview.vars.some((v) => v.startsWith('--ui-theme-light-surface:#ccddee')));
 });
 
 test('saveUiSettings persists glass colors and text overrides', () => {
@@ -352,6 +470,25 @@ test('dynamic theme from background applies extracted palette', async () => {
   assert.equal(ui.glassColorDark, palette.darkSurface);
   assert.equal(ui.glassColorLight, palette.lightSurface);
   assert.ok(getThemeCssVars().some((v) => v.startsWith(`--ui-theme-dark-surface:${palette.darkSurface}`)));
+});
+
+test('refreshBgThemePaletteForAdmin enables dynamic theme without clearing manual text colors', async () => {
+  invalidateUiCustomizationCache();
+  resetUiThemeColors();
+  resetUiDir();
+  fs.mkdirSync(uiDir, { recursive: true });
+  fs.writeFileSync(path.join(uiDir, 'background.webp'), await sharp({
+    create: { width: 32, height: 32, channels: 3, background: '#445566' },
+  }).webp().toBuffer());
+  saveUiSettings({
+    glassTextAutoDark: false,
+    glassTextDark: '#ccddee',
+  });
+  const palette = await refreshBgThemePaletteForAdmin();
+  const ui = getUiCustomization();
+  assert.equal(ui.dynamicThemeFromBg, true);
+  assert.equal(ui.glassColorDark, palette.darkSurface);
+  assert.equal(ui.glassTextDark, '#ccddee');
 });
 
 test('dynamic theme preserves manual text color overrides', async () => {

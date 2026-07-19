@@ -10,9 +10,9 @@ import {
   renderStatsRibbon, renderBookMetaList, renderSkeletonGrid,
   renderAuthorFacetSeriesList, renderFacetSummaryBlock,
   renderSectionIntro, renderFacetHero, renderAlert, renderAccountNav,
-  renderListRemoveBtn, bookIdDataAttr,
+  renderListRemoveBtn, bookIdDataAttr, bookCardDataAttrs, batchBookIdDataAttr,
   firstAuthorValue, uniqueBooksById, batchSelectInputAttrs, safeDomIdPart,
-  browseTotalLine, canDownloadInUi, canSendToEmailInUi, renderAuthorLinks, renderSeriesLinks,
+  browseTotalLine, canDownloadInUi, canSendToEmailInUi, renderAuthorLinks, renderSeriesLinks, renderWelcomeQuoteAuthor,
   STATIC_ASSET_VERSION, siteTitleForDisplay, READ_CHECK_SVG, renderFaviconLinks,
   bookPagePath, readPagePath, apiBookPath, liteBookPagePath, liteReadPagePath,
   t, tp, getLocale, plural, countLabel, formatLocaleInt,
@@ -55,7 +55,7 @@ export function renderHome({ user, stats, indexStatus, history = [], favoriteAut
       <div class="welcome-hero-overlay"></div>
       <div class="welcome-hero-content">
         <blockquote class="welcome-hero-quote">${escapeHtml(welcomeQuote.quote)}</blockquote>
-        <cite class="welcome-hero-author">${escapeHtml(welcomeQuote.author)}</cite>
+        <cite class="welcome-hero-author">${renderWelcomeQuoteAuthor(welcomeQuote.author)}</cite>
       </div>
     </section>
     ${!isAuthenticated ? `<div class="home-inline-note">${loginHint}</div>` : ''}
@@ -319,9 +319,9 @@ export function renderBook({
     <section class="book-detail-shell">
       <div class="book-detail-main card-detail-panel">
         ${isAuthenticated ? `<div class="book-detail-corner-actions">
-          <button class="button book-detail-read-action ${isRead ? 'is-active' : ''}" type="button" data-read-button="${encodeURIComponent(book.id)}">${isRead ? escapeHtml(t('book.markedRead')) : escapeHtml(t('book.markRead'))}</button>
-          <button class="button book-detail-bookmark-action ${bookmarked ? 'is-active' : ''}" type="button" data-bookmark-button="${encodeURIComponent(book.id)}" ${bookmarked ? 'data-active-favorite="true"' : ''}>${bookmarked ? escapeHtml(t('book.inFavorite')) : escapeHtml(t('book.addFavorite'))}</button>
-          <button class="button" type="button" data-add-to-shelf="${encodeURIComponent(book.id)}">${escapeHtml(t('book.toShelf'))}</button>
+          <button class="button book-detail-read-action ${isRead ? 'is-active' : ''}" type="button" ${bookIdDataAttr(book.id)} data-read-button="1">${isRead ? escapeHtml(t('book.markedRead')) : escapeHtml(t('book.markRead'))}</button>
+          <button class="button book-detail-bookmark-action ${bookmarked ? 'is-active' : ''}" type="button" ${bookIdDataAttr(book.id)} data-bookmark-button="1" ${bookmarked ? 'data-active-favorite="true"' : ''}>${bookmarked ? escapeHtml(t('book.inFavorite')) : escapeHtml(t('book.addFavorite'))}</button>
+          <button class="button" type="button" ${bookIdDataAttr(book.id)} data-add-to-shelf="1">${escapeHtml(t('book.toShelf'))}</button>
         </div>` : ''}
         <div class="book-detail-cover">
           <div class="cover ${hasRealCover ? '' : 'cover-fallback-active'}">
@@ -355,7 +355,7 @@ export function renderBook({
           <div class="actions actions-primary">
             ${renderDownloadMenu(book, { accent: true, user })}
             <a href="${readPagePath(book.id)}" class="button" target="_blank" rel="noopener noreferrer">${escapeHtml(t('book.read'))}</a>
-            ${isAuthenticated && canSendToEmailInUi(user) ? `<button class="button" type="button" data-send-to-ereader="${encodeURIComponent(book.id)}">${escapeHtml(t('book.toEmail'))}</button>` : ''}
+            ${isAuthenticated && canSendToEmailInUi(user) ? `<button class="button" type="button" ${bookIdDataAttr(book.id)} data-send-to-ereader="1">${escapeHtml(t('book.toEmail'))}</button>` : ''}
           </div>
         </div>
         ${user?.role === 'admin' ? `<details class="book-edit-disclosure book-edit-disclosure--inline">
@@ -974,8 +974,8 @@ export function renderShelfDetail({ shelf, books = [], user, stats, indexStatus,
     ${uniqueBooks.length ? `
       <div class="grid">
         ${uniqueBooks.map((book) => `
-          <article class="card" data-book-id="${escapeHtml(book.id)}">
-            ${shelfBatch ? `<label class="batch-select-hit" title="${escapeHtml(t('batch.selectTitle'))}"><input type="checkbox" class="batch-select-cb" ${batchSelectInputAttrs(book.id)} data-batch-book-id="${escapeHtml(book.id)}" aria-label="${escapeHtml(t('batch.selectAria'))}"></label>` : ''}
+          <article class="card" ${bookCardDataAttrs(book.id)}>
+            ${shelfBatch ? `<label class="batch-select-hit" title="${escapeHtml(t('batch.selectTitle'))}"><input type="checkbox" class="batch-select-cb" ${batchSelectInputAttrs(book.id)} ${batchBookIdDataAttr(book.id)} aria-label="${escapeHtml(t('batch.selectAria'))}"></label>` : ''}
             ${renderCover(book, { readBookIds })}
             <div class="meta">
               <h3><a href="${bookPagePath(book.id)}">${escapeHtml(book.title)}</a></h3>

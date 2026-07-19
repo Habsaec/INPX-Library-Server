@@ -12,7 +12,16 @@ const explicitPort = Number(process.argv[3] || 0);
 const targetPort = Number.isInteger(explicitPort) && explicitPort > 0 ? explicitPort : config.port;
 const statePath = path.join(config.dataDir, `server-process-${targetPort}.json`);
 const serverLogPath = path.join(config.dataDir, 'server.log');
-const STARTUP_TIMEOUT_MS = 20000;
+const STARTUP_TIMEOUT_MS = Math.max(
+  20_000,
+  Number.parseInt(String(process.env.SERVER_STARTUP_TIMEOUT_MS || ''), 10) || 120_000
+);
+
+function resolveNodeExecutable() {
+  const runtimeNode = path.join(config.rootDir, 'runtime', process.platform === 'win32' ? 'node.exe' : 'node');
+  if (fs.existsSync(runtimeNode)) return runtimeNode;
+  return process.execPath;
+}
 
 function ensureStateDir() {
   fs.mkdirSync(config.dataDir, { recursive: true });
@@ -187,7 +196,7 @@ async function startServer() {
   fs.appendFileSync(serverLogPath, `\n--- start ${new Date().toISOString()} ---\n`);
   const logFd = fs.openSync(serverLogPath, 'a');
 
-  const child = spawn(process.execPath, [path.join('src', 'server-entry.js')], {
+  const child = spawn(resolveNodeExecutable(), [path.join('src', 'server-entry.js')], {
     cwd: config.rootDir,
     detached: true,
     stdio: ['ignore', logFd, logFd],

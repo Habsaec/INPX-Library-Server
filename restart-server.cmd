@@ -1,5 +1,9 @@
 @echo off
 cd /d "%~dp0"
-if exist "runtime\node.exe" set "PATH=%~dp0runtime;%PATH%"
-node scripts\server-control.js restart %1
+set "NODE_EXE=node"
+if exist "%~dp0runtime\node.exe" (
+  set "NODE_EXE=%~dp0runtime\node.exe"
+  set "PATH=%~dp0runtime;%PATH%"
+)
+"%NODE_EXE%" scripts\server-control.js restart %1
 pause

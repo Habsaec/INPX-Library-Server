@@ -1,5 +1,47 @@
 # INPX Library Server — Agent Instructions
 
+## Unified ecosystem (server + Android reader)
+
+**INPX Library Server** and **inpx-book-reader** (`D:\inpx-book-reader`) are one product during development.
+
+| Rule | Meaning |
+|------|---------|
+| API-first metadata | Series, author, genres come from the INPX index via `/api/*`, not from client-side file parsing |
+| Paired changes | New/changed API routes require matching updates in reader `inpxClient.ts` and both `AGENTS.md` files |
+| Sync by `bookId` | Reading position, bookmarks, annotations sync through server APIs; on-disk file path is a download-time snapshot |
+| Restart after routes | Restart the server after adding or changing route handlers |
+| Additive API | Prefer backward-compatible response changes; Android and OPDS depend on stable contracts |
+| Android-only reader | `inpx-book-reader` targets **Android APK only** — do not design API or UX for iOS/desktop/web client |
+
+Key endpoints for reader:
+- `GET /api/books/:id/meta` (`seriesList` from index)
+- `GET /api/books/:id/position` — position fields plus `positionVersion: 4` and monotonic `revision`; rows below v4 are migrated lazily and idempotently
+- `POST /api/books/:id/position` — CAS write; requires `positionVersion: 4` and `baseRevision`, returns a new `revision`; stale writes receive `409 { current }`, legacy clients receive `428`; marks read at `progress >= 99` and clears that status when rereading drops below 95%
+- `GET /api/books/:id/reader-sync-meta` — bookmark/annotation revs and position sync metadata
+- `GET /api/profile` — user stats, recent books, bookmarks, annotations (Android profile screen)
+- `GET /api/reader-activity-sync-meta` — read-state and reading-history revs
+- `POST /api/reading-history/:id` — record `lastOpenedAt` when a book is opened
+- `DELETE /api/reading-history/:id` — remove a reading-history entry
+- Cross-device reading position uses server revisions/CAS; web reader and Android prompt when both the local position and a newer server revision changed
+
+### Reading position contract (Foliate glue)
+
+Shared logic lives in `public/position-sync.js` (copied to Android `public/inpx-reader/position-sync.js` at build).
+
+| Field | Rule |
+|-------|------|
+| `textOffset` / `textQuote` / `textSectionLength` | Primary exact v4 text anchor inside `sectionIndex`; independent of viewport, font, and pagination |
+| `fraction` | Book-wide display coordinate and restore fallback, **not** an exact text anchor and not TOC-derived % |
+| `progress` | Display/sync percent derived from `fraction` (0.0001% precision) |
+| `fb2Href` | Coarse FB2 fallback (`section` or `section#block`); it never overrides a differing precise `fraction` |
+| `position` | EPUB CFI / paginator token; empty for FB2 when `fb2Href` is set |
+| `positionVersion` | Coordinate contract version; rows below v4 migrate lazily: FB2/FBZ coordinates and anchors reset, while EPUB keeps only its CFI |
+| `revision` / `baseRevision` | Server CAS token; only a write based on the current revision is accepted |
+
+Cursor rule: `.cursor/rules/unified-ecosystem.mdc` (always apply).
+
+---
+
 ## Project Overview
 
 This repository is a self-hosted ebook library server.
@@ -334,7 +376,7 @@ Do **not** modify `install.cmd`, `start-server.cmd`, or other Windows launcher s
 
 ### Native modules (Windows)
 
-Production startup uses **`runtime\node.exe`** (Node 20) via `start-server.cmd` / `install.cmd`.
+Production startup uses **`runtime\node.exe`** (Node 24) via `start-server.cmd` / `install.cmd`.
 
 * Do not run `npm rebuild` with a different Node (e.g. Cursor’s system Node 22) without telling the user to run `install.cmd` afterward
 * If tests fail with `better-sqlite3` / `NODE_MODULE_VERSION`, the fix is rebuild under the same Node as `runtime\node.exe` — usually by running **`install.cmd`**, not by inventing new rebuild scripts

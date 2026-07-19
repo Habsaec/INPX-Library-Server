@@ -6,12 +6,25 @@ import { PAGE_CACHE_TTL_MS } from '../constants.js';
 import { getCachedPageData, getStaleOrSchedule } from '../services/cache.js';
 import { safePage } from '../utils/safe-int.js';
 import {
+  getAuthorBooksGroupedCoalesced,
+  getAuthorFlibustaSourceId,
+  getSourceRoot,
   getBooksByFacetCoalesced,
+  getBookById,
   getLibraryView,
   getSuggestions,
+  listAuthors,
+  listGenresGrouped,
+  listSeries,
   resolveAuthorName,
   searchCatalog
 } from '../inpx.js';
+import {
+  readFlibustaAuthorBioHtml,
+  readFlibustaAuthorPortraitForAuthorName
+} from '../flibusta-sidecar.js';
+import { getGenreGroups } from '../genre-map.js';
+import { getLocale } from '../i18n.js';
 import { getRecommendedLibraryView } from '../services/recommendations.js';
 import { requireBrowseAuth } from '../middleware/auth.js';
 import { t } from '../i18n.js';
@@ -76,6 +89,78 @@ export function registerBrowseApiRoutes(app) {
     res.json({ items: result.items, total: result.total, page, pageSize, field: result.field });
   });
 
+  app.get('/api/browse/authors', requireBrowseAuth, (req, res) => {
+    const page = safePage(req.query.page);
+    const pageSize = 50;
+    const sort = ['name', 'count'].includes(String(req.query.sort || '')) ? String(req.query.sort) : 'count';
+    const query = String(req.query.q || '');
+    const letter = String(req.query.letter || '').trim().slice(0, 2);
+    const result = listAuthors({ query, page, pageSize, sort, order: '', letter });
+    res.json({ ...result, page, pageSize });
+  });
+
+  app.get('/api/browse/series', requireBrowseAuth, (req, res) => {
+    const page = safePage(req.query.page);
+    const pageSize = 50;
+    const sort = ['name', 'count'].includes(String(req.query.sort || '')) ? String(req.query.sort) : 'count';
+    const query = String(req.query.q || '');
+    const letter = String(req.query.letter || '').trim().slice(0, 2);
+    const result = listSeries({ query, page, pageSize, sort, order: '', letter });
+    res.json({ ...result, page, pageSize });
+  });
+
+  app.get('/api/browse/genres', requireBrowseAuth, (req, res) => {
+    const sort = ['name', 'count'].includes(String(req.query.sort || '')) ? String(req.query.sort) : 'count';
+    const allGenres = listGenresGrouped({ sort });
+    const groups = getGenreGroups();
+    const grouped = [];
+    const entries = sort === 'name'
+      ? Object.entries(groups).sort((a, b) => a[0].localeCompare(b[0], getLocale()))
+      : Object.entries(groups);
+    for (const [groupName, codes] of entries) {
+      const codesSet = new Set(codes);
+      const items = allGenres.filter((g) => codesSet.has(g.name));
+      if (items.length) grouped.push({ groupName, items });
+    }
+    const allGrouped = new Set(Object.values(groups).flat());
+    const uncategorized = allGenres.filter((g) => !allGrouped.has(g.name));
+    if (uncategorized.length) grouped.push({ groupName: t('genre.other'), items: uncategorized });
+    res.json({ total: allGenres.length, items: allGenres, groups, page: 1, pageSize: allGenres.length });
+  });
+
+  app.get('/api/browse/authors/:value/grouped', requireBrowseAuth, async (req, res, next) => {
+    try {
+      let value = decodeURIComponent(String(req.params.value || '')).trim();
+      const resolved = resolveAuthorName(value);
+      if (resolved) value = resolved;
+      const sort = ['recent', 'title', 'author', 'series', 'rating'].includes(String(req.query.sort || ''))
+        ? String(req.query.sort)
+        : 'title';
+      const order = String(req.query.order || '');
+      const flibSourceId = getAuthorFlibustaSourceId(value);
+      const facetRoot = flibSourceId != null ? getSourceRoot(flibSourceId) : '';
+      const [grouped, bioHtml, portrait] = await Promise.all([
+        getAuthorBooksGroupedCoalesced(value, sort, order, { page: 1, pageSize: 48 }),
+        flibSourceId != null
+          ? readFlibustaAuthorBioHtml(value, facetRoot, flibSourceId).catch(() => '')
+          : Promise.resolve(''),
+        flibSourceId != null
+          ? readFlibustaAuthorPortraitForAuthorName(value, facetRoot).catch(() => null)
+          : Promise.resolve(null),
+      ]);
+      res.json({
+        series: grouped.series,
+        standaloneBooks: grouped.standaloneBooks,
+        total: grouped.total,
+        bioHtml: bioHtml || '',
+        hasPortrait: !!(portrait?.data?.length),
+        authorName: value,
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   app.get('/api/facet-books', requireBrowseAuth, async (req, res, next) => {
     try {
       const facet = String(req.query.facet || '').trim();
@@ -98,5 +183,28 @@ export function registerBrowseApiRoutes(app) {
     } catch (error) {
       next(error);
     }
+  });
+
+  /** Метаданные книги для мобильного клиента (серия, автор, ext). */
+  app.get('/api/books/:id/meta', requireBrowseAuth, (req, res) => {
+    const book = getBookById(req.params.id);
+    if (!book) {
+      return apiFail(res, 404, ApiErrorCode.BOOK_NOT_FOUND, t('book.notFound'));
+    }
+    res.json({
+      id: book.id,
+      title: book.title,
+      authors: book.authors,
+      authorsList: book.authorsList,
+      genres: book.genres,
+      genresDisplayList: book.genresDisplayList,
+      series: book.series || '',
+      seriesNo: book.seriesNo || '',
+      seriesList: book.seriesList || [],
+      ext: book.ext,
+      date: book.date,
+      libRate: book.libRate,
+      size: book.size,
+    });
   });
 }

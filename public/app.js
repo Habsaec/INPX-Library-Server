@@ -234,6 +234,23 @@ function uiTp(key, vars = {}) {
   return str;
 }
 
+function formatIndexArchiveLine(status) {
+  const stage = status?.currentStage;
+  if (stage?.key) {
+    const params = { ...(stage.params || {}) };
+    if (params.labelKey) {
+      params.label = uiT(String(params.labelKey));
+      delete params.labelKey;
+    }
+    if (params.phaseKey) {
+      params.phase = uiT(String(params.phaseKey));
+      delete params.phaseKey;
+    }
+    return uiTp(stage.key, params);
+  }
+  return status?.currentArchive ? String(status.currentArchive) : '';
+}
+
 function uiPlural(type, n) {
   const lang = getUiLocale();
   const v = Math.floor(Math.abs(Number(n) || 0));
@@ -481,7 +498,7 @@ let _cardDetailsObserver = null;
 
 function applyCardDetailsForId(id, details) {
   if (!id || !details) return;
-  const cards = document.querySelectorAll(`[data-book-id="${CSS.escape(id)}"]`);
+  const cards = typeof findCardsByBookId === 'function' ? findCardsByBookId(id) : document.querySelectorAll(`[data-book-id="${CSS.escape(id)}"]`);
   for (const card of cards) {
     card.dataset.coverAvailable = details.coverAvailable ? 'true' : 'false';
     const img = card.querySelector('.cover .cover-image');
@@ -592,11 +609,11 @@ function getCardDetailsObserver() {
 
 function loadCardDetails(cardList) {
   if (!cardList) resetCardDetailsObserver();
-  const cards = cardList ? [...cardList] : [...document.querySelectorAll('[data-book-id]')];
+  const cards = cardList ? [...cardList] : [...document.querySelectorAll('.card[data-book-id-ref], .card[data-book-id]')];
   if (!cards.length) return Promise.resolve();
   const observer = getCardDetailsObserver();
   for (const card of cards) {
-    const id = card.dataset.bookId;
+    const id = typeof resolveBookIdFromElement === 'function' ? resolveBookIdFromElement(card) : card.dataset.bookId;
     if (!id) continue;
     if (_cardDetailsCache.has(id)) {
       applyCardDetailsForId(id, _cardDetailsCache.get(id).details);
@@ -913,8 +930,7 @@ function attachReadBookActions() {
     btn.addEventListener('click', async (e) => {
       e.preventDefault();
       e.stopPropagation();
-      const rawAttr = btn.dataset.readButton;
-      const bookId = rawAttr ? decodeURIComponent(rawAttr).replace(/\uFFFD/g, '\0') : null;
+      const bookId = typeof resolveBookIdFromElement === 'function' ? resolveBookIdFromElement(btn) : (btn.dataset.readButton ? decodeURIComponent(btn.dataset.readButton).replace(/\uFFFD/g, '\0') : null);
       try {
         const csrfMeta = document.querySelector('meta[name="csrf-token"]');
         const headers = {};
@@ -937,7 +953,8 @@ function attachReadBookActions() {
 function toggleReadBadgesForBook(bookId, isRead) {
   const set = getReadBookIdSet();
   if (isRead) set.add(bookId); else set.delete(bookId);
-  document.querySelectorAll(`.card[data-book-id="${CSS.escape(bookId)}"]`).forEach((card) => {
+  const cards = typeof findCardsByBookId === 'function' ? findCardsByBookId(bookId) : [...document.querySelectorAll(`.card[data-book-id="${CSS.escape(bookId)}"]`)];
+  cards.forEach((card) => {
     const cover = card.querySelector('.cover');
     if (!cover) return;
     const existing = cover.querySelector('.read-badge');
@@ -964,8 +981,9 @@ function attachCoverLongPress() {
   let startX = 0, startY = 0;
 
   function getCardBookId(el) {
-    const card = el.closest('.card[data-book-id]');
-    return card ? card.dataset.bookId : null;
+    const card = el.closest('.card[data-book-id-ref], .card[data-book-id]');
+    if (!card) return null;
+    return typeof resolveBookIdFromElement === 'function' ? resolveBookIdFromElement(card) : card.dataset.bookId;
   }
 
   function cancel() {
@@ -1219,7 +1237,7 @@ async function attachBookmarkActions() {
     button.addEventListener('click', async (e) => {
       e.preventDefault();
       e.stopPropagation();
-      const bookId = button.dataset.bookmarkButton ? decodeURIComponent(button.dataset.bookmarkButton).replace(/\uFFFD/g, '\0') : null;
+      const bookId = typeof resolveBookIdFromElement === 'function' ? resolveBookIdFromElement(button) : (button.dataset.bookmarkButton ? decodeURIComponent(button.dataset.bookmarkButton).replace(/\uFFFD/g, '\0') : null);
       const removing =
         isFavoriteBookListRemoveButton(button) ||
         button.dataset.activeFavorite === 'true' ||
@@ -1573,7 +1591,7 @@ async function pollAdminIndexControls() {
       timeNode.textContent = parts.join('  \u00b7  ');
     }
     if (archiveNode) {
-      archiveNode.textContent = status?.currentArchive ? String(status.currentArchive) : '';
+      archiveNode.textContent = formatIndexArchiveLine(status);
     }
     if (barNode) {
       const barWidth = indeterminate ? 100 : percent;
@@ -2311,7 +2329,7 @@ async function pollOperationsDashboard() {
 
       const stageNode = document.querySelector('[data-index-field="currentArchive"]');
       if (stageNode) {
-        const line = indexStatus.active && indexStatus.currentArchive ? String(indexStatus.currentArchive).trim() : '';
+        const line = indexStatus.active ? formatIndexArchiveLine(indexStatus).trim() : '';
         stageNode.textContent = line;
       }
 
@@ -2511,6 +2529,98 @@ function attachSidebarToggle() {
       close();
     }
   });
+}
+
+const TOPBAR_COMPACT_MQ = '(max-width: 900px)';
+
+function attachTopbarSearchToggle() {
+  const topbar = document.querySelector('[data-topbar]');
+  const btn = document.querySelector('[data-topbar-search-toggle]');
+  if (!topbar || !btn) return;
+
+  const input = document.getElementById('global-search-input');
+  const setOpen = (open) => {
+    topbar.classList.toggle('topbar-search-expanded', open);
+    topbar.classList.remove('topbar-hidden');
+    btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    btn.setAttribute(
+      'aria-label',
+      open ? (uiT('topbar.searchClose') || uiT('topbar.searchToggle')) : uiT('topbar.searchToggle')
+    );
+    btn.title = btn.getAttribute('aria-label') || '';
+    if (open && input) {
+      requestAnimationFrame(() => input.focus());
+    }
+  };
+
+  btn.addEventListener('click', () => {
+    setOpen(!topbar.classList.contains('topbar-search-expanded'));
+  });
+
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && topbar.classList.contains('topbar-search-expanded')) {
+      setOpen(false);
+    }
+  });
+}
+
+/** Скрывает компактный topbar при скролле вниз, показывает при скролле вверх. */
+function attachTopbarAutoHide() {
+  const topbar = document.querySelector('[data-topbar]');
+  if (!topbar) return;
+
+  const mq = window.matchMedia(TOPBAR_COMPACT_MQ);
+  let lastY = window.scrollY;
+  let ticking = false;
+
+  const closeSearch = () => {
+    if (!topbar.classList.contains('topbar-search-expanded')) return;
+    topbar.classList.remove('topbar-search-expanded');
+    const btn = document.querySelector('[data-topbar-search-toggle]');
+    if (btn) {
+      btn.setAttribute('aria-expanded', 'false');
+      btn.setAttribute('aria-label', uiT('topbar.searchToggle'));
+      btn.title = uiT('topbar.searchToggle');
+    }
+  };
+
+  const onScroll = () => {
+    if (!mq.matches) {
+      topbar.classList.remove('topbar-hidden');
+      return;
+    }
+    const y = window.scrollY;
+    const dy = y - lastY;
+    if (y < 56) {
+      topbar.classList.remove('topbar-hidden');
+    } else if (dy > 6) {
+      closeSearch();
+      topbar.classList.add('topbar-hidden');
+    } else if (dy < -6) {
+      topbar.classList.remove('topbar-hidden');
+    }
+    lastY = y;
+  };
+
+  window.addEventListener(
+    'scroll',
+    () => {
+      if (ticking) return;
+      ticking = true;
+      requestAnimationFrame(() => {
+        onScroll();
+        ticking = false;
+      });
+    },
+    { passive: true }
+  );
+
+  const onMq = () => {
+    if (!mq.matches) topbar.classList.remove('topbar-hidden', 'topbar-search-expanded');
+    lastY = window.scrollY;
+  };
+  if (mq.addEventListener) mq.addEventListener('change', onMq);
+  else if (mq.addListener) mq.addListener(onMq);
 }
 
 /** Формы с data-confirm / data-confirm-danger — модальное подтверждение вместо window.confirm */
@@ -2801,11 +2911,15 @@ function renderCardHtml(book, { batchSelect = false, seriesContext = null } = {}
     </details>`
       : '';
   const batchCb = batchSelect
-    ? `<label class="batch-select-hit" title="${escapeHtml(uiT('batch.selectTitle'))}"><input type="checkbox" class="batch-select-cb" id="batch-select-${safeDomIdPart(book.id)}" name="batch-select-${safeDomIdPart(book.id)}" data-batch-book-id="${id}" aria-label="${escapeHtml(uiT('batch.selectAria'))}"></label>`
+    ? `<label class="batch-select-hit" title="${escapeHtml(uiT('batch.selectTitle'))}"><input type="checkbox" class="batch-select-cb" id="batch-select-${safeDomIdPart(book.id)}" name="batch-select-${safeDomIdPart(book.id)}" ${bookIdNeedsSafeUrl(book.id) ? `data-batch-book-id-ref="${escapeHtml(encodeBookRef(book.id))}"` : `data-batch-book-id="${id}"`} aria-label="${escapeHtml(uiT('batch.selectAria'))}"></label>`
     : '';
+  const cardRef = encodeBookRef(book.id);
+  const cardAttrs = bookIdNeedsSafeUrl(book.id)
+    ? `data-book-id-ref="${escapeHtml(cardRef)}"`
+    : `data-book-id-ref="${escapeHtml(cardRef)}" data-book-id="${id}"`;
   const _libRateClamped = Math.max(0, Math.min(5, Math.floor(Number(book.libRate) || 0)));
   const coverRating = _libRateClamped ? `<span class="cover-rating-wrapper"><span class="cover-rating-badge cover-rating-${_libRateClamped}">${Array.from({ length: _libRateClamped }, () => '<span>★</span>').join('')}</span></span>` : '';
-  return `<article class="card" data-book-id="${id}">
+  return `<article class="card" ${cardAttrs}>
     ${batchCb}
     <a class="cover" href="${bookPagePath(book.id)}" data-role="cover">
       <img class="cover-image" loading="lazy" draggable="false" src="${apiBookPath(book.id, 'cover-thumb')}" data-cover-src="${apiBookPath(book.id, 'cover-thumb')}" alt="${title}">
@@ -2884,8 +2998,8 @@ function attachLoadMore() {
       for (const s of skeletons) s.remove();
       if (grid && data.items?.length) {
         const existingIds = new Set(
-          [...grid.querySelectorAll('[data-book-id]')]
-            .map((card) => card.getAttribute('data-book-id'))
+          [...grid.querySelectorAll('.card[data-book-id-ref], .card[data-book-id]')]
+            .map((card) => (typeof resolveBookIdFromElement === 'function' ? resolveBookIdFromElement(card) : card.getAttribute('data-book-id')))
             .filter(Boolean)
         );
         const nextItems = [];
@@ -2946,7 +3060,7 @@ function collectCheckedBatchBookIds(scope) {
     ...new Set(
       [...scope.querySelectorAll('input.batch-select-cb')]
         .filter((c) => c.checked)
-        .map((c) => c.getAttribute('data-batch-book-id') || c.closest('.card')?.dataset.bookId)
+        .map((c) => (typeof resolveBatchBookIdFromElement === 'function' ? resolveBatchBookIdFromElement(c) : (c.getAttribute('data-batch-book-id') || c.closest('.card')?.dataset.bookId)))
         .filter(Boolean)
     )
   ];
@@ -3805,7 +3919,7 @@ async function openAddToShelfPicker(bookIds) {
 function attachAddToShelfButtons() {
   for (const btn of document.querySelectorAll('[data-add-to-shelf]')) {
     btn.addEventListener('click', async () => {
-      const bookId = btn.dataset.addToShelf ? decodeURIComponent(btn.dataset.addToShelf).replace(/\uFFFD/g, '\0') : null;
+      const bookId = typeof resolveBookIdFromElement === 'function' ? resolveBookIdFromElement(btn) : (btn.dataset.addToShelf ? decodeURIComponent(btn.dataset.addToShelf).replace(/\uFFFD/g, '\0') : null);
       if (!bookId) return;
       await openAddToShelfPicker([bookId]);
     });
@@ -3815,7 +3929,7 @@ function attachAddToShelfButtons() {
 function attachSendToEreader() {
   for (const btn of document.querySelectorAll('[data-send-to-ereader]')) {
     btn.addEventListener('click', async () => {
-      const bookId = btn.dataset.sendToEreader ? decodeURIComponent(btn.dataset.sendToEreader).replace(/\uFFFD/g, '\0') : null;
+      const bookId = typeof resolveBookIdFromElement === 'function' ? resolveBookIdFromElement(btn) : (btn.dataset.sendToEreader ? decodeURIComponent(btn.dataset.sendToEreader).replace(/\uFFFD/g, '\0') : null);
       try {
         const emailRes = await fetch('/api/ereader-email', { credentials: 'same-origin' });
         if (!emailRes.ok) throw new Error('HTTP ' + emailRes.status);
@@ -3913,7 +4027,7 @@ function attachSendBatchToEreader() {
 
     const ids = [...scope.querySelectorAll('input.batch-select-cb')]
       .filter((c) => c.checked)
-      .map((c) => c.getAttribute('data-batch-book-id') || c.closest('.card')?.dataset.bookId)
+      .map((c) => (typeof resolveBatchBookIdFromElement === 'function' ? resolveBatchBookIdFromElement(c) : (c.getAttribute('data-batch-book-id') || c.closest('.card')?.dataset.bookId)))
       .filter(Boolean);
     if (!ids.length) {
       showToast(uiT('app.batchSelectAtLeastOne'), 'error');
@@ -4155,21 +4269,124 @@ function attachUiAppearanceUpload() {
         headers: {
           'Content-Type': file.type || 'application/octet-stream',
           ...(csrf ? { 'X-CSRF-Token': csrf } : {}),
-          // HTTP header values must be ISO-8859-1; Cyrillic filenames break Headers().
           ...(asset === 'font' && file.name ? { 'X-Ui-Asset-Name': encodeURIComponent(file.name) } : {}),
         },
         body: file,
       });
       const data = await resp.json().catch(() => ({}));
       if (!resp.ok) throw new Error(data.error || uiT('admin.ui.uploadFailed'));
+      applyUiAssetState(asset, data.ui || {}, data.appearance);
+      if (statusEl) statusEl.textContent = uiT('admin.ui.uploadAutoHint');
       showToast(uiT('admin.ui.uploadOk'), 'success');
-      document.querySelectorAll('form.is-dirty').forEach((form) => form.classList.remove('is-dirty'));
-      location.reload();
     } catch (error) {
       if (statusEl) statusEl.textContent = uiT('admin.ui.uploadAutoHint');
       showToast(error.message || uiT('admin.ui.uploadFailed'), 'error');
     }
   }
+
+  async function removeUiAssetClient(asset) {
+    try {
+      const csrf = getCsrfTokenFromPage();
+      const resp = await fetch('/api/admin/ui/remove', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(csrf ? { 'X-CSRF-Token': csrf } : {}),
+        },
+        body: JSON.stringify({ asset }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error(data.error || uiT('admin.ui.uploadFailed'));
+      applyUiAssetState(asset, data.ui || {}, data.appearance);
+      showToast(uiT('admin.ui.flashRemoved'), 'success');
+    } catch (error) {
+      showToast(error.message || uiT('admin.ui.uploadFailed'), 'error');
+    }
+  }
+
+  function syncBrandLogos(logoUrl) {
+    const src = logoUrl || '/logo.png';
+    document.querySelectorAll('.brand-logo').forEach((img) => {
+      if (img instanceof HTMLImageElement) img.src = src;
+    });
+  }
+
+  function syncBackgroundSections(hasBackground) {
+    page.querySelector('[data-ui-bg-section]')?.toggleAttribute('hidden', !hasBackground);
+    page.querySelector('[data-ui-bg-palette-wrap]')?.toggleAttribute('hidden', !hasBackground);
+    const dynamic = page.querySelector('[name="dynamicThemeFromBg"]');
+    if (dynamic) {
+      dynamic.disabled = !hasBackground;
+      if (!hasBackground) dynamic.checked = false;
+    }
+    syncDynamicBaseColorInputs();
+  }
+
+  function applyUiAssetState(asset, ui, appearance) {
+    const block = page.querySelector(`[data-ui-upload-status="${asset}"]`)?.closest('.ui-asset-block')
+      || page.querySelector(`#ui-${asset}-input`)?.closest('.admin-field-group, .ui-asset-block, .ui-font-upload-toolbar');
+    const preview = block?.querySelector('.ui-asset-block-preview, .ui-font-preview-wrap');
+    const removeForm = block?.querySelector('.ui-asset-remove-form');
+
+    if (asset === 'logo') {
+      if (preview) {
+        preview.innerHTML = ui.logoUrl
+          ? `<img src="${escapeHtml(ui.logoUrl)}" alt="" class="ui-asset-preview">`
+          : `<span class="muted">${escapeHtml(uiT('admin.ui.defaultAsset'))}</span>`;
+      }
+      if (removeForm) removeForm.hidden = !ui.hasLogo;
+      syncBrandLogos(ui.logoUrl);
+      schedulePreview();
+      return;
+    }
+    if (asset === 'favicon') {
+      if (preview) {
+        preview.innerHTML = ui.faviconUrl
+          ? `<img src="${escapeHtml(ui.faviconUrl)}" alt="" class="ui-asset-preview ui-asset-preview--favicon">`
+          : `<span class="muted">${escapeHtml(uiT('admin.ui.defaultAsset'))}</span>`;
+      }
+      if (removeForm) removeForm.hidden = !ui.faviconUrl;
+      schedulePreview();
+      return;
+    }
+    if (asset === 'background') {
+      if (preview) {
+        preview.innerHTML = ui.backgroundUrl
+          ? `<img src="${escapeHtml(ui.backgroundUrl)}" alt="" class="ui-asset-preview ui-asset-preview--bg">`
+          : `<span class="muted">${escapeHtml(uiT('admin.ui.noBackground'))}</span>`;
+      }
+      if (removeForm) removeForm.hidden = !ui.hasBackground;
+      syncBackgroundSections(Boolean(ui.hasBackground));
+      schedulePreview();
+      return;
+    }
+    if (asset === 'font') {
+      const fontWrap = block?.querySelector('.ui-font-upload-preview');
+      if (fontWrap) {
+        fontWrap.innerHTML = ui.hasCustomFont
+          ? `<div class="ui-font-preview">${escapeHtml(uiT('admin.ui.fontPreviewSample'))}</div>`
+          : `<span class="muted">${escapeHtml(uiT('admin.ui.fontCustomEmpty'))}</span>`;
+      }
+      if (removeForm) removeForm.hidden = !ui.hasCustomFont;
+      const fontFamily = page.querySelector('[name="fontFamily"]');
+      if (fontFamily && ui.fontFamily) fontFamily.value = ui.fontFamily;
+      if (appearance) {
+        applyTypographyState(appearance);
+        updateResetWraps(appearance);
+        patchDirtyFormBaseline('ui-main-form', 'typography');
+      }
+      schedulePreview();
+    }
+  }
+
+  page.querySelectorAll('.ui-asset-remove-form').forEach((form) => {
+    form.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const asset = form.querySelector('[name="asset"]')?.value;
+      if (asset) removeUiAssetClient(String(asset));
+    });
+  });
 
   page.querySelectorAll('input[data-ui-asset]').forEach((input) => {
     const asset = input.dataset.uiAsset;
@@ -4178,19 +4395,6 @@ function attachUiAppearanceUpload() {
       const file = input.files?.[0];
       if (file) uploadUiAsset(asset, file, statusEl);
     });
-  });
-
-  page.querySelectorAll('input[type="range"]').forEach((input) => {
-    const valueEl = page.querySelector(`[data-ui-range-value="${input.name}"]`);
-    if (!valueEl) return;
-    const sync = () => {
-      valueEl.textContent = input.value;
-      if (input.name === 'surfaceOpacity') {
-        ['dark', 'light'].forEach((theme) => syncGlassPreview(theme));
-      }
-    };
-    input.addEventListener('input', sync);
-    sync();
   });
 
   function previewGlassFillOpacity(hex, surfaceOpacity, isLight) {
@@ -4294,12 +4498,16 @@ function attachUiAppearanceUpload() {
     input.addEventListener('input', () => {
       syncGlassHex(input);
       syncGlassPreview(input.dataset.uiGlassColor);
+      setResetWrapVisible('colors', true);
+      schedulePreview();
     });
   });
   page.querySelectorAll('[data-ui-glass-pick-input]').forEach((input) => {
     input.addEventListener('input', () => {
       input.dataset.uiGlassAuto = '0';
       syncGlassPreview(input.dataset.uiGlassPickTheme);
+      setResetWrapVisible('colors', true);
+      schedulePreview();
     });
   });
   ['dark', 'light'].forEach((theme) => {
@@ -4315,8 +4523,415 @@ function attachUiAppearanceUpload() {
     });
   }
 
-  page.querySelector('[name="dynamicThemeFromBg"]')?.addEventListener('change', syncDynamicBaseColorInputs);
+  page.querySelector('[name="dynamicThemeFromBg"]')?.addEventListener('change', () => {
+    syncDynamicBaseColorInputs();
+    setResetWrapVisible('colors', true);
+    schedulePreview();
+  });
   syncDynamicBaseColorInputs();
+
+  // ── Live preview (apply draft to the page without saving) ──
+  const mainForm = document.getElementById('ui-main-form');
+  const previewBar = page.querySelector('[data-ui-preview-bar]');
+  let previewStyleEl = null;
+  let previewFontLink = null;
+  let previewTimer = 0;
+  let showPreviewBar = false;
+
+  function ensurePreviewStyle() {
+    if (!previewStyleEl) {
+      previewStyleEl = document.createElement('style');
+      previewStyleEl.id = 'ui-live-preview';
+      document.head.appendChild(previewStyleEl);
+    }
+    return previewStyleEl;
+  }
+
+  function setRootAttr(name, on) {
+    if (on) document.documentElement.setAttribute(name, '1');
+    else document.documentElement.removeAttribute(name);
+  }
+
+  function applyPreview(data, { showBar = false } = {}) {
+    if (!data || !Array.isArray(data.vars)) return;
+    ensurePreviewStyle().textContent = `:root{${data.vars.join(';')}}`;
+    const attrs = data.attrs || {};
+    setRootAttr('data-ui-theme', attrs.theme);
+    setRootAttr('data-ui-sliders', attrs.sliders);
+    setRootAttr('data-ui-bg', attrs.bg);
+    setRootAttr('data-ui-shape', attrs.shape);
+    setRootAttr('data-ui-typography', attrs.typography);
+    if (data.webfont) {
+      const family = String(data.webfont).split(':')[0].replace(/\s+/g, '+');
+      const href = `https://fonts.googleapis.com/css2?family=${family}:wght@400;600;700&display=swap`;
+      if (!previewFontLink) {
+        previewFontLink = document.createElement('link');
+        previewFontLink.rel = 'stylesheet';
+        previewFontLink.id = 'ui-preview-font';
+        document.head.appendChild(previewFontLink);
+      }
+      if (previewFontLink.href !== href) previewFontLink.href = href;
+    }
+    if (previewBar) previewBar.hidden = !showBar;
+  }
+
+  function collectDraft() {
+    const draft = {};
+    if (!mainForm) return draft;
+    page.querySelectorAll('[form="ui-main-form"]').forEach((el) => {
+      if (!(el instanceof HTMLInputElement || el instanceof HTMLSelectElement || el instanceof HTMLTextAreaElement)) return;
+      const name = el.name;
+      if (!name) return;
+      if (el instanceof HTMLInputElement) {
+        if (el.type === 'checkbox') {
+          draft[name] = el.checked ? (el.value || '1') : '0';
+        } else if (el.type === 'radio') {
+          if (el.checked) draft[name] = el.value;
+        } else if (!el.disabled) {
+          draft[name] = el.value;
+        }
+      } else if (!el.disabled) {
+        draft[name] = el.value;
+      }
+    });
+    return draft;
+  }
+
+  async function runPreview() {
+    try {
+      const csrf = getCsrfTokenFromPage();
+      const resp = await fetch('/api/admin/ui/preview', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(csrf ? { 'X-CSRF-Token': csrf } : {}),
+        },
+        body: JSON.stringify(collectDraft()),
+      });
+      if (!resp.ok) return;
+      const data = await resp.json().catch(() => null);
+      if (data && data.ok) applyPreview(data, { showBar: showPreviewBar });
+    } catch { /* preview is best-effort */ }
+  }
+
+  function schedulePreview({ showBar = true } = {}) {
+    if (showBar) showPreviewBar = true;
+    if (previewTimer) clearTimeout(previewTimer);
+    previewTimer = window.setTimeout(runPreview, 120);
+  }
+
+  function setResetWrapVisible(section, visible) {
+    const wrap = page.querySelector(`[data-ui-reset-wrap="${section}"]`);
+    if (wrap) wrap.hidden = !visible;
+  }
+
+  // Radius scale field visibility follows the radius preset select.
+  const radiusPresetSel = page.querySelector('[name="radiusPreset"]');
+  const radiusScaleField = page.querySelector('[data-ui-radius-scale-field]');
+  function syncRadiusScaleField() {
+    if (radiusScaleField) radiusScaleField.hidden = radiusPresetSel?.value !== 'custom';
+  }
+  radiusPresetSel?.addEventListener('change', () => { syncRadiusScaleField(); setResetWrapVisible('shape', true); schedulePreview(); });
+  syncRadiusScaleField();
+
+  // Accent / overlay color: hex label + auto checkbox enable/disable.
+  function bindAutoColor(colorSel, autoAttr, hexAttr, autoHiddenId, resetSection) {
+    page.querySelectorAll(`[${colorSel}]`).forEach((input) => {
+      const key = input.getAttribute(colorSel);
+      const hexEl = page.querySelector(`[${hexAttr}="${key}"]`);
+      input.addEventListener('input', () => {
+        if (hexEl) hexEl.textContent = input.value;
+        if (resetSection) setResetWrapVisible(resetSection, true);
+        schedulePreview();
+      });
+    });
+    page.querySelectorAll(`[${autoAttr}]`).forEach((chk) => {
+      const key = chk.getAttribute(autoAttr);
+      const colorInput = page.querySelector(`[${colorSel}="${key}"]`);
+      const hidden = page.querySelector(`#${autoHiddenId}-${key}`);
+      chk.addEventListener('change', () => {
+        if (hidden) hidden.value = chk.checked ? '1' : '0';
+        if (colorInput) colorInput.disabled = chk.checked;
+        if (resetSection) setResetWrapVisible(resetSection, true);
+        schedulePreview();
+      });
+    });
+  }
+  bindAutoColor('data-ui-accent', 'data-ui-accent-auto', 'data-ui-accent-hex', 'ui-accent-auto', 'colors');
+  bindAutoColor('data-ui-overlay', 'data-ui-overlay-auto', 'data-ui-overlay-hex', 'ui-overlay-auto', 'sliders');
+
+  page.querySelector('[name="shadowPreset"]')?.addEventListener('change', () => {
+    setResetWrapVisible('shape', true);
+    schedulePreview();
+  });
+  page.querySelectorAll('[name="fontFamily"], [name="fontSize"], [name="density"]').forEach((el) => {
+    el.addEventListener('change', () => {
+      setResetWrapVisible('typography', true);
+      schedulePreview();
+    });
+  });
+
+  // Theme presets: apply surface + accent to the color inputs, then preview.
+  page.querySelectorAll('[data-ui-preset]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const map = [
+        { theme: 'dark', surface: btn.dataset.presetDark, accent: btn.dataset.presetAccentDark },
+        { theme: 'light', surface: btn.dataset.presetLight, accent: btn.dataset.presetAccentLight },
+      ];
+      const dynamic = page.querySelector('[name="dynamicThemeFromBg"]');
+      if (dynamic?.checked) { dynamic.checked = false; syncDynamicBaseColorInputs(); }
+      for (const { theme, surface, accent } of map) {
+        const glass = page.querySelector(`[data-ui-glass-color="${theme}"]`);
+        if (glass && surface) {
+          glass.disabled = false;
+          glass.value = surface;
+          syncGlassHex(glass);
+          syncGlassPreview(theme);
+        }
+        const accentInput = page.querySelector(`[data-ui-accent="${theme}"]`);
+        const accentAuto = page.querySelector(`[data-ui-accent-auto="${theme}"]`);
+        const accentHidden = page.querySelector(`#ui-accent-auto-${theme}`);
+        const accentHex = page.querySelector(`[data-ui-accent-hex="${theme}"]`);
+        const hasAccent = accent && /^#[0-9a-fA-F]{6}$/.test(accent);
+        if (accentInput) {
+          accentInput.disabled = !hasAccent;
+          if (hasAccent) accentInput.value = accent;
+        }
+        if (accentAuto) accentAuto.checked = !hasAccent;
+        if (accentHidden) accentHidden.value = hasAccent ? '0' : '1';
+        if (accentHex && hasAccent) accentHex.textContent = accent;
+      }
+      page.querySelectorAll('[data-ui-preset]').forEach((b) => b.classList.toggle('is-active', b === btn));
+      setResetWrapVisible('colors', true);
+      if (mainForm) mainForm.classList.add('is-dirty');
+      schedulePreview();
+    });
+  });
+
+  // All appearance controls (including those outside #ui-main-form via form=) trigger preview.
+  page.addEventListener('input', (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+    if (target.closest('[data-ui-appearance-page]') && target.form === mainForm) schedulePreview();
+  });
+  page.addEventListener('change', (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+    if (target.closest('[data-ui-appearance-page]') && target.form === mainForm) schedulePreview();
+  });
+  page.querySelector('#admin-site-name')?.addEventListener('input', schedulePreview);
+  page.querySelector('#admin-home-subtitle')?.addEventListener('input', schedulePreview);
+
+  page.querySelectorAll('input[type="range"]').forEach((input) => {
+    const valueEl = page.querySelector(`[data-ui-range-value="${input.name}"]`);
+    if (!valueEl) return;
+    const syncDisplay = () => {
+      valueEl.textContent = input.value;
+      if (input.name === 'surfaceOpacity') {
+        ['dark', 'light'].forEach((theme) => syncGlassPreview(theme));
+      }
+    };
+    const sync = () => {
+      syncDisplay();
+      if (['bgBlur', 'bgOverlay', 'surfaceOpacity', 'surfaceBlur'].includes(input.name)) {
+        setResetWrapVisible('sliders', true);
+      }
+      if (input.name === 'radiusScale') setResetWrapVisible('shape', true);
+      if (input.name === 'headingScale') setResetWrapVisible('typography', true);
+      schedulePreview();
+    };
+    input.addEventListener('input', sync);
+    syncDisplay();
+  });
+
+  page.querySelectorAll('[name="bgSize"], [name="bgPosition"]').forEach((sel) => {
+    sel.addEventListener('change', () => {
+      setResetWrapVisible('sliders', true);
+      schedulePreview();
+    });
+  });
+
+  function setHiddenFlag(name, auto) {
+    const el = page.querySelector(`[name="${name}"]`);
+    if (el) el.value = auto ? '1' : '0';
+  }
+
+  function setRangeField(name, value) {
+    const input = page.querySelector(`[form="ui-main-form"][name="${name}"]`);
+    if (!input) return;
+    input.value = value;
+    page.querySelector(`[data-ui-range-value="${name}"]`)?.replaceChildren(String(value));
+  }
+
+  function setAccentOrOverlay(kind, theme, color, auto) {
+    const colorSel = kind === 'accent' ? 'data-ui-accent' : 'data-ui-overlay';
+    const autoSel = kind === 'accent' ? 'data-ui-accent-auto' : 'data-ui-overlay-auto';
+    const hexSel = kind === 'accent' ? 'data-ui-accent-hex' : 'data-ui-overlay-hex';
+    const hiddenId = kind === 'accent' ? `ui-accent-auto-${theme}` : `ui-overlay-auto-${theme}`;
+    const colorInput = page.querySelector(`[${colorSel}="${theme}"]`);
+    const autoChk = page.querySelector(`[${autoSel}="${theme}"]`);
+    const hidden = page.querySelector(`#${hiddenId}`);
+    const hexEl = page.querySelector(`[${hexSel}="${theme}"]`);
+    if (autoChk) autoChk.checked = auto;
+    if (hidden) hidden.value = auto ? '1' : '0';
+    if (colorInput) {
+      colorInput.disabled = auto;
+      if (!auto && color) colorInput.value = color;
+    }
+    if (hexEl && !auto && color) hexEl.textContent = color;
+  }
+
+  function setGlassPick(theme, role, color, auto) {
+    const input = page.querySelector(`[data-ui-glass-pick-input="${role}"][data-ui-glass-pick-theme="${theme}"]`);
+    if (!input) return;
+    input.value = color;
+    input.dataset.uiGlassAuto = auto ? '1' : '0';
+  }
+
+  function applySlidersState(st) {
+    setRangeField('bgBlur', st.blur);
+    setRangeField('bgOverlay', st.bgContrast);
+    setRangeField('surfaceOpacity', st.surfaceOpacity);
+    setRangeField('surfaceBlur', st.surfaceBlur);
+    const bgSize = page.querySelector('[name="bgSize"]');
+    if (bgSize) bgSize.value = st.bgSize;
+    const bgPos = page.querySelector('[name="bgPosition"]');
+    if (bgPos) bgPos.value = st.bgPosition;
+    ['dark', 'light'].forEach((theme) => syncGlassPreview(theme));
+  }
+
+  function applyColorsState(st) {
+    page.querySelectorAll('[data-ui-preset]').forEach((b) => b.classList.remove('is-active'));
+    const dynamic = page.querySelector('[name="dynamicThemeFromBg"]');
+    if (dynamic) dynamic.checked = Boolean(st.dynamicThemeFromBg);
+    syncDynamicBaseColorInputs();
+    for (const theme of ['dark', 'light']) {
+      const glass = page.querySelector(`[data-ui-glass-color="${theme}"]`);
+      const surface = theme === 'dark' ? st.glassColorDark : st.glassColorLight;
+      if (glass && surface) {
+        glass.value = surface;
+        syncGlassHex(glass);
+      }
+      setGlassPick(theme, 'text', theme === 'dark' ? st.glassTextDark : st.glassTextLight, theme === 'dark' ? st.glassTextAutoDark : st.glassTextAutoLight);
+      setGlassPick(theme, 'muted', theme === 'dark' ? st.glassMutedDark : st.glassMutedLight, theme === 'dark' ? st.glassMutedAutoDark : st.glassMutedAutoLight);
+      setGlassPick(theme, 'link', theme === 'dark' ? st.glassLinkDark : st.glassLinkLight, theme === 'dark' ? st.glassLinkAutoDark : st.glassLinkAutoLight);
+      setAccentOrOverlay('accent', theme, theme === 'dark' ? st.glassAccentDark : st.glassAccentLight, theme === 'dark' ? st.glassAccentAutoDark : st.glassAccentAutoLight);
+      setAccentOrOverlay('overlay', theme, theme === 'dark' ? st.overlayColorDark : st.overlayColorLight, theme === 'dark' ? st.overlayColorAutoDark : st.overlayColorAutoLight);
+    }
+    setHiddenFlag('glassTextAutoDark', st.glassTextAutoDark);
+    setHiddenFlag('glassTextAutoLight', st.glassTextAutoLight);
+    setHiddenFlag('glassMutedAutoDark', st.glassMutedAutoDark);
+    setHiddenFlag('glassMutedAutoLight', st.glassMutedAutoLight);
+    setHiddenFlag('glassLinkAutoDark', st.glassLinkAutoDark);
+    setHiddenFlag('glassLinkAutoLight', st.glassLinkAutoLight);
+    ['dark', 'light'].forEach((theme) => syncGlassPreview(theme));
+  }
+
+  function applyShapeState(st) {
+    const radiusPreset = page.querySelector('[name="radiusPreset"]');
+    if (radiusPreset) radiusPreset.value = st.radiusPreset;
+    setRangeField('radiusScale', st.radiusScale);
+    const shadow = page.querySelector('[name="shadowPreset"]');
+    if (shadow) shadow.value = st.shadowPreset;
+    syncRadiusScaleField();
+  }
+
+  function applyTypographyState(st) {
+    const fontFamily = page.querySelector('[name="fontFamily"]');
+    if (fontFamily) fontFamily.value = st.fontFamily;
+    const fontSize = page.querySelector('[name="fontSize"]');
+    if (fontSize) fontSize.value = String(st.fontSize);
+    setRangeField('headingScale', st.headingScale);
+    const density = page.querySelector('[name="density"]');
+    if (density) density.value = st.density;
+    page.querySelectorAll('.ui-font-upload-toolbar .ui-asset-remove-form').forEach((form) => {
+      form.hidden = !st.hasCustomFont;
+    });
+  }
+
+  function updateResetWraps(st) {
+    setResetWrapVisible('sliders', st.hasCustomThemeSliders);
+    setResetWrapVisible('colors', st.hasCustomThemeColors);
+    setResetWrapVisible('shape', st.hasCustomThemeShape);
+    setResetWrapVisible('typography', st.hasCustomThemeTypography);
+  }
+
+  const RESET_FLASH = {
+    sliders: 'admin.ui.flashResetSliders',
+    colors: 'admin.ui.flashResetColors',
+    shape: 'admin.ui.flashResetShape',
+    typography: 'admin.ui.flashResetTypography',
+  };
+
+  async function runAppearanceReset(section) {
+    const flashKey = RESET_FLASH[section];
+    if (!flashKey) return;
+    const btn = page.querySelector(`[data-ui-reset="${section}"]`);
+    if (btn?.disabled) return;
+    if (btn) btn.disabled = true;
+    try {
+      const csrf = getCsrfTokenFromPage();
+      const resp = await fetch(`/api/admin/ui/reset/${encodeURIComponent(section)}`, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { ...(csrf ? { 'X-CSRF-Token': csrf } : {}) },
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error(data.error || uiT('app.errorPrefix'));
+      const st = data.state;
+      if (!st) throw new Error(uiT('app.errorPrefix'));
+      if (section === 'sliders') applySlidersState(st);
+      else if (section === 'colors') applyColorsState(st);
+      else if (section === 'shape') applyShapeState(st);
+      else if (section === 'typography') applyTypographyState(st);
+      updateResetWraps(st);
+      schedulePreview();
+      patchDirtyFormBaseline('ui-main-form', section);
+      showToast(uiT(flashKey), 'success');
+    } catch (error) {
+      showToast(error.message || uiT('app.errorPrefix'), 'error');
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  page.querySelectorAll('[data-ui-reset]').forEach((btn) => {
+    btn.addEventListener('click', () => runAppearanceReset(btn.dataset.uiReset));
+  });
+
+  async function runRefreshBgPalette() {
+    const btn = page.querySelector('[data-ui-refresh-bg-palette]');
+    if (btn?.disabled) return;
+    if (btn) btn.disabled = true;
+    try {
+      const csrf = getCsrfTokenFromPage();
+      const resp = await fetch('/api/admin/ui/refresh-bg-palette', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { ...(csrf ? { 'X-CSRF-Token': csrf } : {}) },
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error(data.error || uiT('app.errorPrefix'));
+      const st = data.state;
+      if (!st) throw new Error(uiT('app.errorPrefix'));
+      applyColorsState(st);
+      updateResetWraps(st);
+      schedulePreview();
+      patchDirtyFormBaseline('ui-main-form', 'colors');
+      showToast(uiT('admin.ui.flashBgPaletteRefreshed'), 'success');
+    } catch (error) {
+      showToast(error.message || uiT('app.errorPrefix'), 'error');
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  page.querySelector('[data-ui-refresh-bg-palette]')?.addEventListener('click', () => runRefreshBgPalette());
+
+  // Sync live preview with the current form (preserves panel glass after asset changes).
+  showPreviewBar = false;
+  schedulePreview({ showBar: false });
 }
 
 function attachAccountNavSelect() {
@@ -4334,10 +4949,9 @@ function attachAccountNavSelect() {
 
 function resolveBookIdFromRow(row) {
   if (!row) return '';
-  const ref = row.dataset.bookIdRef;
-  if (ref && typeof globalThis.decodeBookRef === 'function') {
-    const decoded = globalThis.decodeBookRef(ref);
-    if (decoded) return decoded;
+  if (typeof resolveBookIdFromElement === 'function') {
+    const fromEl = resolveBookIdFromElement(row);
+    if (fromEl) return fromEl;
   }
   return row.dataset.bookId || row.dataset.removeReading || '';
 }
@@ -4801,7 +5415,7 @@ function attachSourcesReindex() {
             detail = `<span class="muted" style="margin-left:12px">${escapeHtml(uiTp('app.adminIndexFilesLine', { processed: status.processedArchives || 0, total: status.totalArchives || 0, imported, unique }))}</span>`;
           }
           const showEta = !phase || phase === 'archives';
-          const archiveLabel = status.currentArchive ? escapeHtml(status.currentArchive) : '';
+          const archiveLabel = formatIndexArchiveLine(status);
           const { elapsed, eta } = computeIndexTimeInfo(status.startedAt, status.processedArchives || 0, status.totalArchives || 0);
           const timeParts = [];
           if (elapsed) timeParts.push(uiTp('app.indexElapsed', { time: elapsed }));
@@ -5165,6 +5779,8 @@ function attachAddSourceForm() {
 attachBfCacheFacetReload();
 attachScrollToTop();
 attachSidebarToggle();
+attachTopbarSearchToggle();
+attachTopbarAutoHide();
 attachThemeToggle();
 attachDownloadMenus();
 attachCoverErrorFallback(document);
@@ -5217,6 +5833,38 @@ attachSourcesReindex();
 attachSourceDelete();
 attachAddSourceForm();
 attachSourceEdit();
+
+const dirtyBaselineUpdaters = new Map();
+const dirtyBaselinePatchers = new Map();
+
+const UI_APPEARANCE_FIELD_GROUPS = {
+  sliders: [
+    'bgBlur', 'bgOverlay', 'surfaceOpacity', 'surfaceBlur', 'bgSize', 'bgPosition',
+    'overlayColorDark', 'overlayColorLight', 'overlayColorAutoDark', 'overlayColorAutoLight',
+  ],
+  colors: [
+    'dynamicThemeFromBg',
+    'glassColorDark', 'glassColorLight',
+    'glassTextDark', 'glassTextLight', 'glassTextAutoDark', 'glassTextAutoLight',
+    'glassMutedDark', 'glassMutedLight', 'glassMutedAutoDark', 'glassMutedAutoLight',
+    'glassLinkDark', 'glassLinkLight', 'glassLinkAutoDark', 'glassLinkAutoLight',
+    'accentDark', 'accentLight', 'accentAutoDark', 'accentAutoLight',
+  ],
+  shape: ['radiusPreset', 'radiusScale', 'shadowPreset'],
+  typography: ['fontSize', 'fontFamily', 'density', 'headingScale'],
+};
+
+function patchDirtyFormBaseline(formId, sectionOrFields) {
+  const fields = Array.isArray(sectionOrFields)
+    ? sectionOrFields
+    : UI_APPEARANCE_FIELD_GROUPS[sectionOrFields] || [];
+  dirtyBaselinePatchers.get(formId)?.(fields);
+}
+
+function syncDirtyFormBaseline(formId = 'ui-main-form') {
+  dirtyBaselineUpdaters.get(formId)?.();
+}
+
 attachDirtyFormTracking();
 attachAdminUserFormAutofillGuard();
 
@@ -5230,13 +5878,36 @@ function attachDirtyFormTracking() {
       form.querySelectorAll('input[type="checkbox"]').forEach(cb => {
         if (!cb.checked) state[cb.name] = 'off';
       });
+      if (form.id) {
+        document.querySelectorAll(`[form="${CSS.escape(form.id)}"][type="checkbox"]`).forEach((cb) => {
+          if (!cb.checked && cb.name) state[cb.name] = 'off';
+        });
+      }
       return JSON.stringify(state);
     };
-    const initial = getState();
+    let baseline = getState();
     const check = () => {
-      const dirty = getState() !== initial;
+      const dirty = getState() !== baseline;
       form.classList.toggle('is-dirty', dirty);
     };
+    const syncBaseline = () => {
+      baseline = getState();
+      check();
+    };
+    const patchBaseline = (fields) => {
+      const current = JSON.parse(getState());
+      const base = JSON.parse(baseline);
+      for (const key of fields) {
+        if (key in current) base[key] = current[key];
+        else delete base[key];
+      }
+      baseline = JSON.stringify(base);
+      check();
+    };
+    if (form.id) {
+      dirtyBaselineUpdaters.set(form.id, syncBaseline);
+      dirtyBaselinePatchers.set(form.id, patchBaseline);
+    }
     const bindDirtyEvents = (el) => {
       el.addEventListener('input', check);
       el.addEventListener('change', check);
@@ -5253,6 +5924,17 @@ function attachDirtyFormTracking() {
       form.classList.remove('is-dirty');
     });
   });
+  document.querySelectorAll('form[data-clears-dirty]').forEach((form) => {
+    const targetId = form.getAttribute('data-clears-dirty');
+    if (!targetId) return;
+    const clearDirty = () => document.getElementById(targetId)?.classList.remove('is-dirty');
+    form.addEventListener('submit', clearDirty);
+    if (form.id) {
+      document.querySelectorAll(`button[type="submit"][form="${CSS.escape(form.id)}"], input[type="submit"][form="${CSS.escape(form.id)}"]`).forEach((btn) => {
+        btn.addEventListener('click', clearDirty, { capture: true });
+      });
+    }
+  });
   window.addEventListener('beforeunload', (e) => {
     if (document.querySelector('form.is-dirty')) {
       e.preventDefault();
@@ -5264,6 +5946,9 @@ function attachAdminUserFormAutofillGuard() {
   document.querySelectorAll('.user-admin-form').forEach((form) => {
     const details = form.closest('details');
     const hydrateScopedFields = () => {
+      form.querySelectorAll('[data-admin-fields-ready]').forEach((input) => {
+        input.value = '1';
+      });
       form.querySelectorAll('[data-initial-telegram-id]').forEach((input) => {
         if (input.dataset.hydrated === '1') return;
         input.value = input.getAttribute('data-initial-telegram-id') || '';

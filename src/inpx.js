@@ -20,6 +20,7 @@ import {
   endFastSqliteImport,
   dropBulkImportIndexes,
   ensureBulkImportIndexes,
+  ensureBulkImportIndexesAsync,
   beginExclusiveOperation,
   endExclusiveOperation,
   refreshCatalogBookCounts,
@@ -29,7 +30,8 @@ import {
   getReadBooksCount,
   createDatabaseBackup,
   onViewRebuild,
-  deleteReadingHistoryEntry
+  deleteReadingHistoryEntry,
+  touchUserReaderRevision,
 } from './db.js';
 import { config } from './config.js';
 import { formatGenreLabel, formatGenreList } from './genre-map.js';
@@ -39,6 +41,8 @@ import { appendIndexDiaryLine } from './services/file-log.js';
 import { logSystemEvent } from './services/system-events.js';
 import { invalidateAllRecommendations } from './services/recommendations.js';
 import { parseEnvTimeoutMs, promiseWithTimeout } from './utils/async-timeout.js';
+import { resolveIndexImportMode } from './index-import-mode.js';
+import { getBulkIndexLabelKey } from './index-stage-i18n.js';
 import { resolveLibraryArchiveFile } from './flibusta-sidecar.js';
 
 /** Уступка циклу событий между тяжёлыми синхронными участками (чтобы HTTP не «замирал»).
@@ -169,6 +173,7 @@ function clearRuntimeQueryCaches() {
   facetSummaryCache.clear();
   authorGroupedCache.clear();
   archiveStemLookupCache.clear();
+  _facetStmtCache.clear();
   _distinctLangsCache = null;
   _distinctFormatsCache = null;
 }
@@ -190,6 +195,33 @@ export function invalidateDuplicatesCache() {
   facetSummaryCache.clear();
   _dupSummaryCache = null;
   _dupGroupsCache = null;
+}
+
+/**
+ * Удаляет junction-строки для отсутствующих книг (hard-deleted).
+ * Серии намеренно не схлопываются: одна книга может быть в нескольких сериях
+ * (авторская + издательская и т.д.) через повторные строки INP с тем же lib_id.
+ */
+export function repairBookJunctionLinks() {
+  const removedOrphans = db.transaction(() => {
+    const a = db.prepare(`
+      DELETE FROM book_authors WHERE book_id NOT IN (SELECT id FROM books)
+    `).run().changes;
+    const s = db.prepare(`
+      DELETE FROM book_series WHERE book_id NOT IN (SELECT id FROM books)
+    `).run().changes;
+    const g = db.prepare(`
+      DELETE FROM book_genres WHERE book_id NOT IN (SELECT id FROM books)
+    `).run().changes;
+    return { authors: a, series: s, genres: g };
+  })();
+
+  if (removedOrphans.authors || removedOrphans.series || removedOrphans.genres) {
+    console.log('[index] repairBookJunctionLinks:', removedOrphans);
+    logSystemEvent('info', 'index', 'orphan book junction links removed', removedOrphans);
+  }
+  invalidateDuplicatesCache();
+  return removedOrphans;
 }
 
 /* Короткий кеш сводки по дубликатам: один полный проход вместо двух (total + preview). */
@@ -768,7 +800,9 @@ const indexState = {
   totalArchives: 0,
   importedBooks: 0,
   uniqueBooks: 0,
+  newBooksCount: 0,
   currentArchive: '',
+  currentStage: null,
   error: '',
   pauseRequested: false,
   paused: false,
@@ -776,6 +810,48 @@ const indexState = {
   mode: '',
   sourceId: null
 };
+
+function assignIndexStage(key, params = {}) {
+  indexState.currentStage = { key, params };
+  indexState.currentArchive = '';
+}
+
+function assignIndexArchiveRaw(text) {
+  indexState.currentStage = null;
+  indexState.currentArchive = String(text || '');
+}
+
+function clearIndexStageDisplay() {
+  indexState.currentStage = null;
+  indexState.currentArchive = '';
+}
+
+export function bumpIndexNewBooks(delta = 1) {
+  const d = Math.max(0, Math.floor(Number(delta) || 0));
+  if (d > 0) indexState.newBooksCount += d;
+}
+
+function persistIndexNewBooksCount() {
+  try {
+    setMeta('index_last_new_books_count', String(Math.max(0, indexState.newBooksCount || 0)));
+  } catch { /* ignore */ }
+}
+
+const _indexCompleteListeners = [];
+
+/** @param {(payload: { newBooksCount: number }) => void} listener */
+export function onIndexComplete(listener) {
+  if (typeof listener === 'function') _indexCompleteListeners.push(listener);
+}
+
+function emitIndexCompleted() {
+  const newBooksCount = Math.max(0, indexState.newBooksCount || 0);
+  for (const listener of _indexCompleteListeners) {
+    try {
+      listener({ newBooksCount });
+    } catch { /* ignore */ }
+  }
+}
 
 function resetIndexControlState() {
   indexState.pauseRequested = false;
@@ -810,12 +886,11 @@ function isClusterIndexActive() {
   return true;
 }
 
-function setClusterIndexActive() {
-  setMeta('index_active', '1');
-  setMeta('index_pid', String(process.pid));
-  setMeta('index_heartbeat', new Date().toISOString());
-  setMeta('index_pause_requested', '');
-  setMeta('index_cancel_requested', '');
+function startClusterIndexHeartbeat() {
+  if (_indexHeartbeatTimer) {
+    clearInterval(_indexHeartbeatTimer);
+    _indexHeartbeatTimer = null;
+  }
   _indexHeartbeatTimer = setInterval(() => {
     try {
       setMeta('index_heartbeat', new Date().toISOString());
@@ -823,6 +898,33 @@ function setClusterIndexActive() {
     } catch {}
   }, INDEX_HEARTBEAT_INTERVAL_MS);
   if (typeof _indexHeartbeatTimer.unref === 'function') _indexHeartbeatTimer.unref();
+}
+
+/** Атомарно захватить cluster-lock индексации (meta-таблица). */
+function tryClaimClusterIndexLock() {
+  const now = new Date().toISOString();
+  const myPid = String(process.pid);
+  const claimed = db.transaction(() => {
+    if (getMeta('index_active') === '1') {
+      const hb = getMeta('index_heartbeat');
+      if (hb) {
+        const age = Date.now() - new Date(hb).getTime();
+        if (age <= INDEX_HEARTBEAT_STALE_MS) {
+          const lockPid = getMeta('index_pid');
+          if (lockPid && lockPid !== myPid) return false;
+        }
+      }
+    }
+    setMeta('index_active', '1');
+    setMeta('index_pid', myPid);
+    setMeta('index_heartbeat', now);
+    setMeta('index_pause_requested', '');
+    setMeta('index_cancel_requested', '');
+    return true;
+  })();
+  if (!claimed) return false;
+  startClusterIndexHeartbeat();
+  return true;
 }
 
 function clearClusterIndexState() {
@@ -847,7 +949,9 @@ function writeClusterIndexProgress() {
       totalArchives: indexState.totalArchives,
       importedBooks: indexState.importedBooks,
       uniqueBooks: indexState.uniqueBooks,
+      newBooksCount: indexState.newBooksCount,
       currentArchive: String(indexState.currentArchive || '').slice(0, 500),
+      currentStage: indexState.currentStage || null,
       startedAt: indexState.startedAt,
       mode: indexState.mode,
       sourceId: indexState.sourceId,
@@ -976,6 +1080,8 @@ export function splitFacetValues(value) {
 
 let _authorByName;
 let _authorByDisplaySearch;
+let _authorsBySortPrefix;
+const _authorsByTokenSubsetStmtCache = new Map();
 
 function ensureAuthorStmts() {
   if (!_authorByName) {
@@ -986,7 +1092,222 @@ function ensureAuthorStmts() {
       WHERE display_name = ? OR search_name = ? OR sort_name = ?
       LIMIT 1
     `);
+    _authorsBySortPrefix = db.prepare(`
+      SELECT name, COALESCE(display_name, name) AS displayName, sort_name, book_count
+      FROM authors
+      WHERE sort_name LIKE ? AND book_count > 0
+      ORDER BY book_count DESC
+    `);
   }
+}
+
+function isAuthorInitialToken(token = '') {
+  const raw = String(token || '').replace(/\./g, '').trim();
+  if (!raw || raw.length > 2) return false;
+  return /^[a-zа-яё]{1,2}$/i.test(raw);
+}
+
+function parseAuthorInitialPattern(value = '') {
+  const tokens = createSortKey(value).split(/\s+/).filter(Boolean);
+  if (tokens.length < 2) return null;
+
+  const initials = [];
+  const names = [];
+  for (const token of tokens) {
+    if (isAuthorInitialToken(token)) {
+      initials.push(token.replace(/\./g, ''));
+    } else {
+      names.push(token);
+    }
+  }
+  if (!initials.length || names.length !== 1) return null;
+  return { surname: names[0], initials };
+}
+
+function catalogTokenMatchesInitial(token, initial) {
+  const part = String(token || '').trim();
+  const init = String(initial || '').replace(/\./g, '').trim();
+  if (!part || !init) return false;
+  if (part === init) return true;
+  return part.startsWith(init);
+}
+
+function scoreAuthorInitialMatch(sortName, pattern) {
+  if (!pattern?.surname || !pattern.initials?.length) return -1;
+  const tokens = createSortKey(sortName).split(/\s+/).filter(Boolean);
+  if (!tokens.length || tokens[0] !== pattern.surname) return -1;
+
+  const given = tokens.slice(1);
+  if (!given.length) return -1;
+
+  let matched = 0;
+  let gi = 0;
+  for (const init of pattern.initials) {
+    if (gi >= given.length) break;
+    if (catalogTokenMatchesInitial(given[gi], init)) {
+      matched += 1;
+      gi += 1;
+    } else {
+      break;
+    }
+  }
+  if (!matched) return -1;
+
+  const fullInitials = matched === pattern.initials.length ? 500 : 0;
+  const exactTokenCount = given.length === matched ? 100 : 0;
+  return matched * 1000 + fullInitials + exactTokenCount;
+}
+
+function findAuthorsMatchingInitialPattern(pattern) {
+  if (!pattern) return [];
+
+  ensureAuthorStmts();
+  const rows = _authorsBySortPrefix.all(`${pattern.surname} %`);
+  return rows
+    .map((row) => ({
+      name: row.name,
+      displayName: row.displayName,
+      sortKey: row.sort_name,
+      bookCount: row.book_count,
+      initialScore: scoreAuthorInitialMatch(row.sort_name || '', pattern)
+    }))
+    .filter((row) => row.initialScore >= 1000)
+    .sort((a, b) => {
+      if (b.initialScore !== a.initialScore) return b.initialScore - a.initialScore;
+      const countCmp = (b.bookCount || 0) - (a.bookCount || 0);
+      if (countCmp) return countCmp;
+      return String(a.sortKey || '').localeCompare(String(b.sortKey || ''), 'ru');
+    });
+}
+
+const AUTHOR_NAME_PARTICLES = new Set([
+  'de', 'da', 'di', 'du', 'del', 'della', 'van', 'von', 'der', 'den', 'le', 'la', 'las', 'los', 'y', 'e',
+  'де', 'да', 'ди', 'дель', 'ван', 'фон', 'тер', 'ten', 'op'
+]);
+
+function authorQueryTokensForSubset(value = '') {
+  return createSortKey(value).split(/\s+/).filter((token) => {
+    if (AUTHOR_NAME_PARTICLES.has(token)) return true;
+    return token.length >= 2;
+  });
+}
+
+function scoreAuthorTokenSubsetMatch(sortName, queryTokens) {
+  if (!queryTokens?.length || queryTokens.length < 2) return -1;
+  const key = createSortKey(sortName);
+  if (!key) return -1;
+
+  const padded = ` ${key} `;
+  if (!queryTokens.every((token) => padded.includes(` ${token} `))) return -1;
+
+  const queryPhrase = queryTokens.join(' ');
+  let score = queryTokens.length * 100;
+  if (key.endsWith(queryPhrase)) score += 500;
+  else if (padded.includes(` ${queryPhrase} `)) score += 300;
+  score -= Math.max(0, key.split(/\s+/).filter(Boolean).length - queryTokens.length) * 10;
+  return score;
+}
+
+function getAuthorsByTokenSubsetStmt(tokenCount) {
+  if (!_authorsByTokenSubsetStmtCache.has(tokenCount)) {
+    const clauses = Array.from(
+      { length: tokenCount },
+      () => `(' ' || COALESCE(sort_name, '') || ' ') LIKE ?`
+    );
+    _authorsByTokenSubsetStmtCache.set(tokenCount, db.prepare(`
+      SELECT name, COALESCE(display_name, name) AS displayName, sort_name, book_count
+      FROM authors
+      WHERE ${clauses.join(' AND ')} AND book_count > 0
+      ORDER BY book_count DESC
+      LIMIT 48
+    `));
+  }
+  return _authorsByTokenSubsetStmtCache.get(tokenCount);
+}
+
+function findAuthorsMatchingTokenSubset(value = '', { requireBooks = true } = {}) {
+  if (parseAuthorInitialPattern(value)) return [];
+
+  const tokens = authorQueryTokensForSubset(value);
+  if (tokens.length < 2) return [];
+
+  const rows = getAuthorsByTokenSubsetStmt(tokens.length).all(
+    ...tokens.map((token) => `% ${token}%`)
+  );
+
+  return rows
+    .map((row) => ({
+      name: row.name,
+      displayName: row.displayName,
+      sortKey: row.sort_name,
+      bookCount: row.book_count,
+      subsetScore: scoreAuthorTokenSubsetMatch(row.sort_name || '', tokens)
+    }))
+    .filter((row) => row.subsetScore > 0)
+    .filter((row) => !requireBooks || row.bookCount > 0)
+    .sort((a, b) => {
+      if (b.subsetScore !== a.subsetScore) return b.subsetScore - a.subsetScore;
+      const countCmp = (b.bookCount || 0) - (a.bookCount || 0);
+      if (countCmp) return countCmp;
+      return String(a.sortKey || '').localeCompare(String(b.sortKey || ''), 'ru');
+    });
+}
+
+function paginateAuthorSearchMatches(matched, { offset, pageSize, sort, order, letterNorm, scoreKey }) {
+  let rows = matched;
+  if (letterNorm) {
+    rows = rows.filter((row) => String(row.sortKey || '').startsWith(letterNorm));
+  }
+  rows.sort((a, b) => {
+    const scoreA = scoreKey ? (a[scoreKey] || 0) : 0;
+    const scoreB = scoreKey ? (b[scoreKey] || 0) : 0;
+    if (scoreB !== scoreA) return scoreB - scoreA;
+    if (sort === 'count') {
+      const countCmp = (b.bookCount || 0) - (a.bookCount || 0);
+      if (countCmp !== 0) return order === 'desc' ? -countCmp : countCmp;
+    }
+    const nameCmp = String(a.sortKey || '').localeCompare(String(b.sortKey || ''), 'ru');
+    return order === 'desc' ? -nameCmp : nameCmp;
+  });
+  return {
+    total: rows.length,
+    items: rows.slice(offset, offset + pageSize).map(({ name, displayName, sortKey, bookCount }) => ({
+      name,
+      displayName,
+      sortKey,
+      bookCount
+    }))
+  };
+}
+
+function buildAuthorWhereFromMatchedNames(names = []) {
+  if (!names.length) return null;
+  const placeholders = names.map(() => '?').join(', ');
+  const rankCases = names.map(() => 'WHEN a2.name = ? THEN 1').join(' ');
+  return {
+    where: `EXISTS (
+      SELECT 1 FROM book_authors ba2
+      JOIN authors a2 ON a2.id = ba2.author_id
+      WHERE ba2.book_id = active_books.id
+        AND a2.name IN (${placeholders})
+    )`,
+    params: names,
+    authorRankSQL: `(SELECT MIN(CASE ${rankCases} ELSE 5 END) FROM book_authors ba2 JOIN authors a2 ON a2.id = ba2.author_id WHERE ba2.book_id = active_books.id)`,
+    authorRankParams: names
+  };
+}
+
+function findAuthorNamesForBookSearch(query = '') {
+  const initialPattern = parseAuthorInitialPattern(query);
+  if (initialPattern) {
+    const names = findAuthorsMatchingInitialPattern(initialPattern).map((row) => row.name);
+    if (names.length) return names;
+  }
+  if (authorQueryTokensForSubset(query).length >= 2) {
+    const names = findAuthorsMatchingTokenSubset(query, { requireBooks: false }).map((row) => row.name);
+    if (names.length) return names;
+  }
+  return [];
 }
 
 export function resolveAuthorName(value) {
@@ -1066,6 +1387,7 @@ function createIndexDiagnostics() {
     parsedRows: 0,
     importedRows: 0,
     deletedRows: 0,
+    purgedRows: 0,
     parseSkipped: 0,
     suppressedRows: 0,
     collisionScopedRows: 0,
@@ -1175,7 +1497,9 @@ export function getIndexStatus() {
         totalArchives: p.totalArchives || 0,
         importedBooks: p.importedBooks || 0,
         uniqueBooks: p.uniqueBooks || 0,
+        newBooksCount: p.newBooksCount || 0,
         currentArchive: p.currentArchive || '',
+        currentStage: p.currentStage || null,
         error: '',
         pauseRequested: getMeta('index_pause_requested') === '1',
         paused: p.paused || false,
@@ -1215,7 +1539,7 @@ export function startBackgroundIndexing(force = false, incremental = true) {
     logSystemEvent('warn', 'index', 'global reindex skipped: already running', {});
     return false;
   }
-  if (isClusterIndexActive()) {
+  if (!tryClaimClusterIndexLock()) {
     console.warn('[index] reindex skipped: another cluster worker is indexing');
     logSystemEvent('warn', 'index', 'reindex skipped: another cluster worker is indexing', {});
     return false;
@@ -1225,8 +1549,8 @@ export function startBackgroundIndexing(force = false, incremental = true) {
   indexState.error = '';
   indexState.startedAt = new Date().toISOString();
   indexState.finishedAt = null;
+  indexState.newBooksCount = 0;
   beginIndexControlState('all', null);
-  setClusterIndexActive();
 
   if (force) {
     setMeta('catalog_normalization_v1', '');
@@ -1247,6 +1571,8 @@ export function startBackgroundIndexing(force = false, incremental = true) {
         indexState.ready = true;
         indexState.active = false;
         indexState.finishedAt = new Date().toISOString();
+        persistIndexNewBooksCount();
+        emitIndexCompleted();
         clearClusterIndexState();
         await refreshCatalogBookCounts();
         invalidateAllRecommendations();
@@ -1256,6 +1582,7 @@ export function startBackgroundIndexing(force = false, incremental = true) {
         indexState.ready = false;
         indexState.error = err.message;
         indexState.finishedAt = new Date().toISOString();
+        persistIndexNewBooksCount();
         clearClusterIndexState();
         resetIndexControlState();
         logSystemEvent('error', 'index', 'global index post-processing failed', { error: err.message });
@@ -1274,6 +1601,7 @@ export function startBackgroundIndexing(force = false, incremental = true) {
         logSystemEvent('error', 'index', 'global index failed', { error: error.message });
       }
       indexState.finishedAt = new Date().toISOString();
+      persistIndexNewBooksCount();
       resetIndexControlState();
       if (!isIndexCancelledError(error)) {
         console.error(error);
@@ -1288,7 +1616,7 @@ export function startSourceIndexing(sourceId, force = false) {
     logSystemEvent('warn', 'index', 'source reindex skipped: global indexer already running', { sourceId });
     return false;
   }
-  if (isClusterIndexActive()) {
+  if (!tryClaimClusterIndexLock()) {
     console.warn('[index] source reindex skipped: another cluster worker is indexing');
     logSystemEvent('warn', 'index', 'source reindex skipped: another cluster worker is indexing', { sourceId });
     return false;
@@ -1298,8 +1626,8 @@ export function startSourceIndexing(sourceId, force = false) {
   indexState.error = '';
   indexState.startedAt = new Date().toISOString();
   indexState.finishedAt = null;
+  indexState.newBooksCount = 0;
   beginIndexControlState('source', Number(sourceId) || null);
-  setClusterIndexActive();
 
   if (force) {
     setMeta('catalog_normalization_v1', '');
@@ -1316,11 +1644,21 @@ export function startSourceIndexing(sourceId, force = false) {
   indexSingleSource(sourceId, force)
     .then(async () => {
       try {
+        assignIndexStage('index.stage.catalogFull');
+        writeClusterIndexProgress();
+        const tCat = Date.now();
+        await refreshCatalogBookCounts();
+        const catSec = ((Date.now() - tCat) / 1000).toFixed(1);
+        if (Number(catSec) > 3) {
+          console.log(`[index] catalog book_count refresh done in ${catSec} s`);
+        }
         indexState.ready = true;
         indexState.active = false;
         indexState.finishedAt = new Date().toISOString();
+        clearIndexStageDisplay();
+        persistIndexNewBooksCount();
+        emitIndexCompleted();
         clearClusterIndexState();
-        await refreshCatalogBookCounts();
         invalidateAllRecommendations();
         resetIndexControlState();
       } catch (err) {
@@ -1328,6 +1666,7 @@ export function startSourceIndexing(sourceId, force = false) {
         indexState.ready = false;
         indexState.error = err.message;
         indexState.finishedAt = new Date().toISOString();
+        persistIndexNewBooksCount();
         clearClusterIndexState();
         resetIndexControlState();
         logSystemEvent('error', 'index', 'single source index post-processing failed', {
@@ -1352,6 +1691,7 @@ export function startSourceIndexing(sourceId, force = false) {
         });
       }
       indexState.finishedAt = new Date().toISOString();
+      persistIndexNewBooksCount();
       resetIndexControlState();
       if (!isIndexCancelledError(error)) {
         console.error(error);
@@ -1665,6 +2005,27 @@ function resolveArchiveNameForInp(libraryRoot, inpRelativePath) {
   return pick(zipRel, sevenRel);
 }
 
+/** Fingerprint for incremental .inp change detection (size + zip metadata). */
+export function inpEntryFingerprint(entry) {
+  const u = Number(entry?.uncompressedSize) || 0;
+  const c = Number(entry?.compressedSize) || 0;
+  const crc = Number(entry?.crc32);
+  return {
+    u,
+    c,
+    crc: Number.isFinite(crc) ? crc : 0
+  };
+}
+
+export function inpEntryChanged(entry, previous) {
+  if (previous === undefined || previous === null) return true;
+  if (typeof previous === 'number') {
+    return previous !== (Number(entry?.uncompressedSize) || 0);
+  }
+  const fp = inpEntryFingerprint(entry);
+  return previous.u !== fp.u || previous.c !== fp.c || previous.crc !== fp.crc;
+}
+
 export async function rebuildIndex(inpxPath, incremental = false, sourceId = null) {
   await checkIndexControlPoint();
   clearRuntimeQueryCaches();
@@ -1718,32 +2079,35 @@ export async function rebuildIndex(inpxPath, incremental = false, sourceId = nul
   }
 
   const entriesToProcess = incremental
-    ? inpEntries.filter((entry) => {
-        const prevSize = previousSizes[entry.path];
-        return prevSize === undefined || prevSize !== entry.uncompressedSize;
-      })
+    ? inpEntries.filter((entry) => inpEntryChanged(entry, previousSizes[entry.path]))
     : inpEntries;
 
   const skippedCount = inpEntries.length - entriesToProcess.length;
 
-  /**
-   * Полная переиндексация: без триггеров FTS, synchronous OFF, один rebuild в конце.
-   * Инкремент с изменениями: триггеры FTS остаются включёнными — per-row overhead
-   * незначителен по сравнению с полным rebuild всего индекса.
-   * Инкремент без изменений: триггеры не трогаем, synchronous не ослабляем.
-   */
-  const ftsBulkMode = !incremental;
+  const { ftsBulkMode, useFastSqlite, incrementalBulk } = resolveIndexImportMode({
+    incremental,
+    toProcess: entriesToProcess.length,
+    total: inpEntries.length
+  });
   let completedSuccessfully = false;
+
+  if (entriesToProcess.length > 0) {
+    console.log(
+      `[index] INPX import plan: process=${entriesToProcess.length}/${inpEntries.length} skipped=${skippedCount} ftsBulk=${ftsBulkMode} fastSqlite=${useFastSqlite}`
+    );
+  }
 
   try {
   beginExclusiveOperation('indexing');
-  if (ftsBulkMode) {
+  if (useFastSqlite) {
     beginFastSqliteImport();
-    setMeta(BOOKS_FTS_DIRTY_META_KEY, '1');
   }
-  if (!incremental) {
+  if (ftsBulkMode) {
+    setMeta(BOOKS_FTS_DIRTY_META_KEY, '1');
     dropBooksFtsTriggers();
     dropBulkImportIndexes();
+  }
+  if (!incremental) {
     if (sourceId) {
       db.transaction(() => {
         db.prepare('DELETE FROM book_details_cache WHERE book_id IN (SELECT id FROM books WHERE source_id = ?)').run(sourceId);
@@ -1781,6 +2145,8 @@ export async function rebuildIndex(inpxPath, incremental = false, sourceId = nul
     archivesToProcess: entriesToProcess.length,
     skippedUnchanged: skippedCount,
     ftsBulkMode,
+    incrementalBulk,
+    useFastSqlite,
     inpxFile: path.basename(inpxPath)
   });
   const insertAuthor = db.prepare(`
@@ -1816,11 +2182,25 @@ export async function rebuildIndex(inpxPath, incremental = false, sourceId = nul
   const unlinkAuthors = db.prepare('DELETE FROM book_authors WHERE book_id = ?');
   const unlinkSeries = db.prepare('DELETE FROM book_series WHERE book_id = ?');
   const unlinkGenres = db.prepare('DELETE FROM book_genres WHERE book_id = ?');
+  const deleteBookDetailsCache = db.prepare('DELETE FROM book_details_cache WHERE book_id = ?');
+  const deleteBookById = sourceId != null && sourceId !== ''
+    ? db.prepare('DELETE FROM books WHERE id = ? AND source_id = ?')
+    : db.prepare('DELETE FROM books WHERE id = ?');
   const suppressedIds = getSuppressedBookIds();
   const legacyIdCollisions = new Set();
   const legacyIdOwners = new Map();
   const diagnosticsTotal = createIndexDiagnostics();
   const seenUniqueBookIds = new Set();
+  const existingBookIds = new Set();
+  if (incremental) {
+    const loadExisting = sourceId != null && sourceId !== ''
+      ? db.prepare('SELECT id FROM books WHERE source_id = ?')
+      : db.prepare('SELECT id FROM books');
+    const rows = sourceId != null && sourceId !== ''
+      ? loadExisting.iterate(sourceId)
+      : loadExisting.iterate();
+    for (const row of rows) existingBookIds.add(row.id);
+  }
   const insert = db.prepare(`
     INSERT INTO books (
       id, title, authors, genres, series, series_no, title_sort, author_sort,
@@ -1865,6 +2245,54 @@ export async function rebuildIndex(inpxPath, incremental = false, sourceId = nul
   const newSizes = incremental ? { ...previousSizes } : {};
   const archiveRoot = sourceId ? getSourceRoot(sourceId) : getLibraryRoot();
 
+  function listBookIdsForArchive(archiveName) {
+    const sel = sourceId != null && sourceId !== ''
+      ? db.prepare('SELECT id FROM books WHERE archive_name = ? AND source_id = ?')
+      : db.prepare('SELECT id FROM books WHERE archive_name = ?');
+    const rows = sourceId != null && sourceId !== ''
+      ? sel.all(archiveName, sourceId)
+      : sel.all(archiveName);
+    return rows.map((row) => row.id);
+  }
+
+  function purgeInpxBook(bookId, diagnostics) {
+    if (!bookId) return;
+    deleteBookDetailsCache.run(bookId);
+    unlinkAuthors.run(bookId);
+    unlinkSeries.run(bookId);
+    unlinkGenres.run(bookId);
+    if (sourceId != null && sourceId !== '') deleteBookById.run(bookId, sourceId);
+    else deleteBookById.run(bookId);
+    existingBookIds.delete(bookId);
+    seenUniqueBookIds.delete(bookId);
+    diagnostics.purgedRows = (diagnostics.purgedRows || 0) + 1;
+  }
+
+  function purgeAllBooksInArchive(archiveName, diagnostics) {
+    for (const id of listBookIdsForArchive(archiveName)) {
+      purgeInpxBook(id, diagnostics);
+    }
+  }
+
+  function reconcileArchiveOrphans(archiveName, seenIds, diagnostics) {
+    if (!incremental) return;
+    for (const id of listBookIdsForArchive(archiveName)) {
+      if (!seenIds.has(id)) purgeInpxBook(id, diagnostics);
+    }
+  }
+
+  if (incremental) {
+    const currentPaths = new Set(inpEntries.map((entry) => entry.path));
+    for (const oldPath of Object.keys(previousSizes)) {
+      if (!currentPaths.has(oldPath)) {
+        delete newSizes[oldPath];
+        const removedArchive = resolveArchiveNameForInp(archiveRoot, oldPath);
+        purgeAllBooksInArchive(removedArchive, diagnosticsTotal);
+        console.log(`[index] INPX incremental: removed .inp ${oldPath} → purged ${removedArchive}`);
+      }
+    }
+  }
+
   function inpxImportChunkTarget() {
     return 500;
   }
@@ -1905,6 +2333,48 @@ export async function rebuildIndex(inpxPath, incremental = false, sourceId = nul
   }
 
   const archiveSeenIds = new Set();
+
+  function resolveInpxRowBookId(row, diagnostics, { respectSuppression = true } = {}) {
+    const legacyId = sourceId != null && sourceId !== ''
+      ? `${Number(sourceId)}:${String(row.libId || row.fileName || '').trim()}`
+      : row.id;
+    const rowSignature = `${String(row.archiveName || '')}\u0000${String(row.fileName || '')}\u0000${String(row.ext || '').toLowerCase()}`;
+    const knownOwner = legacyIdOwners.get(legacyId);
+    let usesScopedId = false;
+    if (legacyIdCollisions.has(legacyId)) {
+      usesScopedId = true;
+      row.id = buildScopedBookId({
+        rawId: row.libId || row.fileName || '',
+        sourceId,
+        archiveName: row.archiveName,
+        fileName: row.fileName,
+        ext: row.ext
+      });
+    } else if (knownOwner === undefined) {
+      legacyIdOwners.set(legacyId, rowSignature);
+      row.id = legacyId;
+    } else if (knownOwner !== rowSignature) {
+      legacyIdCollisions.add(legacyId);
+      usesScopedId = true;
+      row.id = buildScopedBookId({
+        rawId: row.libId || row.fileName || '',
+        sourceId,
+        archiveName: row.archiveName,
+        fileName: row.fileName,
+        ext: row.ext
+      });
+    } else {
+      row.id = legacyId;
+    }
+    if (usesScopedId) diagnostics.collisionScopedRows += 1;
+    else diagnostics.legacyRows += 1;
+    if (respectSuppression && (suppressedIds.has(row.id) || suppressedIds.has(legacyId))) {
+      diagnostics.suppressedRows += 1;
+      return null;
+    }
+    return row;
+  }
+
   const processChunk = db.transaction((batch, archiveName, diagnostics) => {
     for (const line of batch) {
       diagnostics.totalLines += 1;
@@ -1916,86 +2386,55 @@ export async function rebuildIndex(inpxPath, incremental = false, sourceId = nul
       diagnostics.parsedRows += 1;
       if (row.deleted) {
         diagnostics.deletedRows += 1;
+        const resolved = resolveInpxRowBookId(row, diagnostics, { respectSuppression: false });
+        if (resolved) {
+          archiveSeenIds.add(resolved.id);
+          purgeInpxBook(resolved.id, diagnostics);
+        }
         continue;
       }
-      {
-        const legacyId = sourceId != null && sourceId !== ''
-          ? `${Number(sourceId)}:${String(row.libId || row.fileName || '').trim()}`
-          : row.id;
-        const rowSignature = `${String(row.archiveName || '')}\u0000${String(row.fileName || '')}\u0000${String(row.ext || '').toLowerCase()}`;
-        const knownOwner = legacyIdOwners.get(legacyId);
-        let usesScopedId = false;
-        if (legacyIdCollisions.has(legacyId)) {
-          usesScopedId = true;
-          row.id = buildScopedBookId({
-            rawId: row.libId || row.fileName || '',
-            sourceId,
-            archiveName: row.archiveName,
-            fileName: row.fileName,
-            ext: row.ext
-          });
-        } else if (knownOwner === undefined) {
-          legacyIdOwners.set(legacyId, rowSignature);
-          row.id = legacyId;
-        } else if (knownOwner !== rowSignature) {
-          legacyIdCollisions.add(legacyId);
-          usesScopedId = true;
-          row.id = buildScopedBookId({
-            rawId: row.libId || row.fileName || '',
-            sourceId,
-            archiveName: row.archiveName,
-            fileName: row.fileName,
-            ext: row.ext
-          });
-        } else {
-          row.id = legacyId;
-        }
-        if (usesScopedId) diagnostics.collisionScopedRows += 1;
-        else diagnostics.legacyRows += 1;
-        if (suppressedIds.has(row.id) || suppressedIds.has(legacyId)) {
-          diagnostics.suppressedRows += 1;
-          continue;
-        }
-        row.sourceId = sourceId;
-        insert.run(row);
-        if (!seenUniqueBookIds.has(row.id)) {
-          seenUniqueBookIds.add(row.id);
-          indexState.uniqueBooks += 1;
-        }
-        diagnostics.importedRows += 1;
-        // Incremental: duplicate book IDs across .inp files may change authors/series/genres
-        // — stale junction rows must be removed before re-linking.
-        // Full reindex: junction tables were already cleared at start, skip 3 pointless
-        // DELETEs per book (~2M saved operations for large libraries).
-        if (incremental && !archiveSeenIds.has(row.id)) {
-          archiveSeenIds.add(row.id);
-          unlinkAuthors.run(row.id);
-          unlinkSeries.run(row.id);
-          unlinkGenres.run(row.id);
-        }
-        for (const authorName of splitAuthorValues(row.authors)) {
-          const authorId = resolveAuthorId(authorName);
-          if (authorId) {
-            linkAuthor.run(row.id, authorId);
-          }
-        }
-
-        if (row.series) {
-          const seriesId = resolveSeriesId(row.series);
-          if (seriesId) {
-            linkSeries.run(row.id, seriesId, row.seriesNo || '');
-          }
-        }
-
-        for (const genreName of splitFacetValues(row.genres)) {
-          const genreId = resolveGenreId(genreName);
-          if (genreId) {
-            linkGenre.run(row.id, genreId);
-          }
-        }
-
-        indexState.importedBooks += 1;
+      const resolved = resolveInpxRowBookId(row, diagnostics);
+      if (!resolved) continue;
+      resolved.sourceId = sourceId;
+      insert.run(resolved);
+      if (incremental && !existingBookIds.has(resolved.id)) bumpIndexNewBooks();
+      if (incremental) existingBookIds.add(resolved.id);
+      if (!seenUniqueBookIds.has(resolved.id)) {
+        seenUniqueBookIds.add(resolved.id);
+        indexState.uniqueBooks += 1;
       }
+      diagnostics.importedRows += 1;
+      const firstInArchive = !archiveSeenIds.has(resolved.id);
+      archiveSeenIds.add(resolved.id);
+      // Авторы/жанры при инкременте пересобираем при первом появлении book_id в .inp.
+      // Серии не сбрасываем: несколько серий на одну книгу — через повторные строки INP
+      // с тем же lib_id и разным SERIES (авторская + издательская и т.п.).
+      if (incremental && firstInArchive) {
+        unlinkAuthors.run(resolved.id);
+        unlinkGenres.run(resolved.id);
+      }
+      for (const authorName of splitAuthorValues(resolved.authors)) {
+        const authorId = resolveAuthorId(authorName);
+        if (authorId) {
+          linkAuthor.run(resolved.id, authorId);
+        }
+      }
+
+      if (resolved.series) {
+        const seriesId = resolveSeriesId(resolved.series);
+        if (seriesId) {
+          linkSeries.run(resolved.id, seriesId, resolved.seriesNo || '');
+        }
+      }
+
+      for (const genreName of splitFacetValues(resolved.genres)) {
+        const genreId = resolveGenreId(genreName);
+        if (genreId) {
+          linkGenre.run(resolved.id, genreId);
+        }
+      }
+
+      indexState.importedBooks += 1;
     }
   });
 
@@ -2036,7 +2475,7 @@ export async function rebuildIndex(inpxPath, incremental = false, sourceId = nul
         uncompressedBytes: uc,
         limit: MAX_INP_ENTRY_BYTES
       });
-      newSizes[entry.path] = entry.uncompressedSize;
+      newSizes[entry.path] = inpEntryFingerprint(entry);
       indexState.processedArchives += 1;
       continue;
     }
@@ -2151,6 +2590,7 @@ export async function rebuildIndex(inpxPath, incremental = false, sourceId = nul
     }
     flush();
     addIndexDiagnostics(diagnosticsTotal, archiveDiagnostics);
+    reconcileArchiveOrphans(archiveName, archiveSeenIds, diagnosticsTotal);
     indexState.currentArchive = `${archiveName} … готово ${lineCount} строк (${chunkSeq} чанков)`;
     console.log(`[index] INPX: ${archiveName} готово: ${lineCount} строк, чанков импорта ${chunkSeq}`);
     console.log(`[index] INPX diagnostics ${archiveName}: ${JSON.stringify(archiveDiagnostics)}`);
@@ -2158,7 +2598,10 @@ export async function rebuildIndex(inpxPath, incremental = false, sourceId = nul
     await yieldEventLoop();
     await checkIndexControlPoint();
 
-    newSizes[entry.path] = entry.uncompressedSize;
+    newSizes[entry.path] = inpEntryFingerprint(entry);
+    if (incremental) {
+      setMeta(sizesKey, JSON.stringify(newSizes));
+    }
     indexState.processedArchives += 1;
     authorIdCache.clear();
     seriesIdCache.clear();
@@ -2178,7 +2621,7 @@ export async function rebuildIndex(inpxPath, incremental = false, sourceId = nul
 
   if (!incremental) {
     for (const entry of inpEntries) {
-      newSizes[entry.path] = entry.uncompressedSize;
+      newSizes[entry.path] = inpEntryFingerprint(entry);
     }
   }
 
@@ -2204,11 +2647,13 @@ export async function rebuildIndex(inpxPath, incremental = false, sourceId = nul
     const { warmupBookDetailsCache } = await import('./folder-indexer.js');
     setImmediate(() => warmupBookDetailsCache(sourceId, { limit: 300 }));
   }
+
+  repairBookJunctionLinks();
   
   completedSuccessfully = true;
   } finally {
     if (ftsBulkMode && completedSuccessfully) {
-      indexState.currentArchive = 'FTS: полная пересборка поиска…';
+      assignIndexStage('index.stage.ftsFull');
       indexState.phase = 'fts';
       indexState.phaseDone = 0;
       indexState.phaseTotal = 0;
@@ -2220,7 +2665,7 @@ export async function rebuildIndex(inpxPath, incremental = false, sourceId = nul
       try {
         await rebuildBooksFtsFromContent({
           onProgress: ({ done, total }) => {
-            indexState.currentArchive = `FTS: поиск ${done}/${total}…`;
+            assignIndexStage('index.stage.ftsProgress', { done, total });
             indexState.phaseDone = done;
             indexState.phaseTotal = total;
           }
@@ -2237,7 +2682,7 @@ export async function rebuildIndex(inpxPath, incremental = false, sourceId = nul
       }
       ensureBooksFtsTriggers();
       setMeta(BOOKS_FTS_DIRTY_META_KEY, '0');
-      indexState.currentArchive = '';
+      clearIndexStageDisplay();
     } else if (ftsBulkMode) {
       // Indexing was interrupted (cancelled / error). FTS is out of sync with books table.
       // We MUST rebuild FTS before restoring triggers, otherwise any DELETE/UPDATE on
@@ -2256,7 +2701,30 @@ export async function rebuildIndex(inpxPath, incremental = false, sourceId = nul
       }
     }
     if (ftsBulkMode) {
-      ensureBulkImportIndexes();
+      indexState.phase = 'indexes';
+      indexState.phaseDone = 0;
+      indexState.phaseTotal = 0;
+      assignIndexStage('index.stage.dbRestore');
+      await ensureBulkImportIndexesAsync({
+        onProgress: ({ done, total, name, phase }) => {
+          assignIndexStage('index.stage.dbIndexesLine', {
+            done,
+            total,
+            labelKey: getBulkIndexLabelKey(name),
+            phaseKey: phase === 'building' ? 'index.stage.dbPhaseBuilding' : 'index.stage.dbPhaseDone'
+          });
+          indexState.phaseDone = done;
+          indexState.phaseTotal = total;
+          writeClusterIndexProgress();
+        }
+      });
+      indexState.phase = '';
+      indexState.phaseDone = 0;
+      indexState.phaseTotal = 0;
+      assignIndexStage('index.stage.catalogShort');
+      writeClusterIndexProgress();
+    }
+    if (useFastSqlite) {
       endFastSqliteImport();
     }
     endExclusiveOperation('indexing');
@@ -2397,6 +2865,9 @@ function buildBookSearchSql(field, query) {
   if (parsed.operator === 'empty' || parsed.operator === '~') {
     return null;
   }
+  if (field === 'authors' && findAuthorNamesForBookSearch(parsed.value || query).length) {
+    return null;
+  }
 
   const needleNormalized = normalizeYo(normalizeText(parsed.value)).toLowerCase();
   const needleSortKey = createSortKey(parsed.value);
@@ -2524,7 +2995,13 @@ export function getDistinctFormats() {
 
 function buildAuthorWhereForBooks(query) {
   const parsed = parseSearchOperator(query);
-  const needleKey = createSortKey(parsed.value || query);
+  const queryValue = parsed.value || query;
+  const matchedNames = findAuthorNamesForBookSearch(queryValue);
+  if (matchedNames.length) {
+    return buildAuthorWhereFromMatchedNames(matchedNames);
+  }
+
+  const needleKey = createSortKey(queryValue);
   const tokens = needleKey.split(/\s+/).filter(Boolean);
   if (!tokens.length) return null;
 
@@ -2664,7 +3141,7 @@ export function searchBooks({ query = '', page = 1, pageSize = 24, field = 'all'
 
   if (['all', 'title', 'authors', 'series', 'genres', 'keywords'].includes(field)) {
     const sqlSearch = buildBookSearchSql(field, query);
-    const authorMatch = (field === 'all') ? buildAuthorWhereForBooks(query) : null;
+    const authorMatch = (field === 'all' || field === 'authors') ? buildAuthorWhereForBooks(query) : null;
 
     if (sqlSearch || authorMatch) {
       const needleKey = createSortKey(parsedQuery.value || query);
@@ -3316,6 +3793,24 @@ export function listAuthors({ page = 1, pageSize = 50, query = '', sort = 'name'
   const needleKey = createSortKey(parsed.value || query);
   const needleTokens = needleKey.split(/\s+/).filter(Boolean);
   const letterNorm = String(letter || '').trim().toLowerCase();
+
+  if (parsed.operator !== '=') {
+    const initialPattern = parseAuthorInitialPattern(parsed.value || query);
+    if (initialPattern) {
+      return paginateAuthorSearchMatches(
+        findAuthorsMatchingInitialPattern(initialPattern),
+        { offset, pageSize, sort, order, letterNorm, scoreKey: 'initialScore' }
+      );
+    }
+
+    const subsetMatches = findAuthorsMatchingTokenSubset(parsed.value || query);
+    if (subsetMatches.length) {
+      return paginateAuthorSearchMatches(
+        subsetMatches,
+        { offset, pageSize, sort, order, letterNorm, scoreKey: 'subsetScore' }
+      );
+    }
+  }
 
   if (!needleTokens.length) {
     const orderBy = sort === 'name'
@@ -4023,6 +4518,21 @@ function buildAuthorSeriesGroupEntry(name, displayNameFromOrder, g, sort) {
   return { name, displayName, books, _latestMs: latestMs };
 }
 
+let _stmtAuthorGroupedRowCount = null;
+function getAuthorGroupedFetchLimit(authorName, totalBooks) {
+  if (totalBooks <= 0) return 0;
+  _stmtAuthorGroupedRowCount ??= db.prepare(`
+    SELECT COUNT(*) AS c
+    FROM book_authors ba
+    JOIN authors a ON a.id = ba.author_id
+    JOIN active_books b ON b.id = ba.book_id
+    LEFT JOIN book_series bs ON bs.book_id = b.id
+    WHERE a.name = ?
+  `);
+  const expanded = _stmtAuthorGroupedRowCount.get(authorName)?.c ?? totalBooks;
+  return Math.min(AUTHOR_GROUPED_FETCH_CAP, Math.max(expanded, totalBooks, 1));
+}
+
 function orderAuthorSeriesGroups(series, sort) {
   if (sort === 'title' || sort === 'author') {
     return [...series].sort((a, b) =>
@@ -4068,7 +4578,7 @@ export function getAuthorBooksGrouped(authorName, sort = 'title', order = '', { 
       WHERE a.name = ?
   `;
 
-  const fetchLimit = Math.min(AUTHOR_GROUPED_FETCH_CAP, Math.max(totalBooks, 1));
+  const fetchLimit = getAuthorGroupedFetchLimit(authorName, totalBooks);
 
   const rows = db.prepare(`
     SELECT
@@ -5019,14 +5529,16 @@ export function getReadingHistory(username, limit = 20) {
   _stmtGetReadHistory ??= db.prepare(`
     SELECT b.id, b.title, b.authors, b.ext, b.series, b.series_no AS seriesNo,
            b.lib_rate AS libRate,
-           rh.last_opened_at AS lastOpenedAt, rh.open_count AS openCount
+           rh.last_opened_at AS lastOpenedAt, rh.open_count AS openCount,
+           COALESCE(rp.progress, 0) AS readProgress
     FROM reading_history rh
     JOIN active_books b ON b.id = rh.book_id
+    LEFT JOIN reading_positions rp ON rp.book_id = b.id AND rp.username = ?
     WHERE rh.username = ?
     ORDER BY rh.last_opened_at DESC
     LIMIT ?
   `);
-  return _stmtGetReadHistory.all(username, limit);
+  return _stmtGetReadHistory.all(username, username, limit);
 }
 
 export function toggleFavoriteAuthor(username, authorName) {
@@ -5352,14 +5864,28 @@ export function toggleReadBook(username, bookId) {
   const exists = isBookRead(username, bookId);
   if (exists) {
     db.prepare('DELETE FROM read_books WHERE username = ? AND book_id = ?').run(username, bookId);
+    touchUserReaderRevision(username, 'read_books_rev');
     invalidateReadCache(username);
     return false;
   }
   db.prepare('INSERT OR IGNORE INTO users(username) VALUES(?)').run(username);
   db.prepare('INSERT OR IGNORE INTO read_books(username, book_id) VALUES(?, ?)').run(username, bookId);
   deleteReadingHistoryEntry(username, bookId);
+  touchUserReaderRevision(username, 'read_books_rev');
   invalidateReadCache(username);
   return true;
+}
+
+export function removeReadBookIfPresent(username, bookId) {
+  const result = db.prepare(
+    'DELETE FROM read_books WHERE username = ? AND book_id = ?',
+  ).run(username, bookId);
+  if (result.changes > 0) {
+    touchUserReaderRevision(username, 'read_books_rev');
+    invalidateReadCache(username);
+    return true;
+  }
+  return false;
 }
 
 export function addReadBooksIfMissing(username, bookIds) {
@@ -5380,7 +5906,10 @@ export function addReadBooksIfMissing(username, bookIds) {
     db.prepare('INSERT OR IGNORE INTO read_books(username, book_id) VALUES(?, ?)').run(username, bookId);
     added++;
   }
-  if (added > 0) invalidateReadCache(username);
+  if (added > 0) {
+    touchUserReaderRevision(username, 'read_books_rev');
+    invalidateReadCache(username);
+  }
   return { added, already, missing };
 }
 

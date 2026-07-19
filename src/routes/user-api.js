@@ -1,4 +1,5 @@
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { t, tp, translateKnownErrorMessage, countLabel } from '../i18n.js';
 import { requireApiAuth } from '../middleware/auth.js';
 import { ApiErrorCode, apiFail } from '../api-errors.js';
@@ -6,14 +7,16 @@ import {
   db, getUserShelves, getShelfById, createShelf, updateShelf, deleteShelf,
   addBookToShelf, removeBookFromShelf, getShelfBooks, getBookShelves,
   getEreaderEmail, setEreaderEmail, getSmtpSettings, getUserByUsername, isEreaderEmailAllowedForUser,
+  getMeta, setMeta,
 } from '../db.js';
 import {
   getBookById, getBooksByIds, getReadingHistory, getBookmarks, getFavoriteAuthors, getFavoriteSeries,
-  getFavoriteAuthorsLight, getFavoriteSeriesLight,
+  getFavoriteAuthorsLight, getFavoriteSeriesLight, getBookmarksPage,
   isBookmarked, toggleBookmark, addBookmarksIfMissing,
   toggleFavoriteAuthor, toggleFavoriteSeries, getAllBookIdsByFacet,
   toggleReadBook, addReadBooksIfMissing, isSeriesFullyRead, removeReadBooksForSeries
 } from '../inpx.js';
+import { safePage } from '../utils/safe-int.js';
 import { resolveDownload } from '../conversion.js';
 import { createSmtpTransport } from '../services/email.js';
 import { invalidateUserPageCaches } from '../services/cache.js';
@@ -53,6 +56,25 @@ export function registerUserApiRoutes(app, deps) {
   });
 
   /* ── Bookmarks ─────────────────────────────────────────────────── */
+
+  app.get('/api/bookmarks', requireApiAuth, (req, res) => {
+    const page = safePage(req.query.page);
+    const pageSizeRaw = Number(req.query.pageSize);
+    const pageSize = Number.isFinite(pageSizeRaw) && pageSizeRaw > 0 && pageSizeRaw <= 500
+      ? Math.floor(pageSizeRaw)
+      : 24;
+    const sort = ['date', 'title', 'author'].includes(String(req.query.sort || '')) ? String(req.query.sort) : 'date';
+    const result = getBookmarksPage(req.user.username, { sort, page, pageSize });
+    res.json({
+      items: result.items.map((b) => ({
+        ...b,
+        authorsDisplay: formatAuthorLabel(b.authors),
+      })),
+      total: result.total,
+      page,
+      pageSize,
+    });
+  });
 
   app.post('/api/bookmarks/:id', requireApiAuth, (req, res) => {
     const book = getBookById(req.params.id);
@@ -462,5 +484,46 @@ export function registerUserApiRoutes(app, deps) {
       }
       res.status(500).json({ ok: false, code: ApiErrorCode.SMTP_ERROR, error: msg });
     }
+  });
+
+  /* ── Device tokens (Android reader) ───────────────────────────── */
+
+  function deviceTokenMetaKey(username, tokenId) {
+    return `device_token:${username}:${tokenId}`;
+  }
+
+  function hashDeviceToken(token) {
+    return crypto.createHash('sha256').update(String(token)).digest('hex');
+  }
+
+  app.post('/api/auth/device', requireApiAuth, (req, res) => {
+    const token = crypto.randomBytes(32).toString('hex');
+    const tokenId = token.slice(0, 16);
+    const deviceName = String(req.body?.deviceName || 'INPX Reader').slice(0, 128);
+    setMeta(deviceTokenMetaKey(req.user.username, tokenId), JSON.stringify({
+      user: req.user.username,
+      tokenHash: hashDeviceToken(token),
+      deviceName,
+      createdAt: new Date().toISOString(),
+    }));
+    setMeta(`device_token_hash:${hashDeviceToken(token)}`, `${req.user.username}:${tokenId}`);
+    res.json({ ok: true, token, tokenId, deviceName });
+  });
+
+  app.delete('/api/auth/device/:tokenId', requireApiAuth, (req, res) => {
+    const tokenId = String(req.params.tokenId || '').slice(0, 32);
+    if (!tokenId) {
+      return apiFail(res, 400, ApiErrorCode.BAD_REQUEST, t('api.error.unknown'));
+    }
+    const metaKey = deviceTokenMetaKey(req.user.username, tokenId);
+    const raw = getMeta(metaKey);
+    if (raw) {
+      try {
+        const meta = JSON.parse(raw);
+        if (meta.tokenHash) setMeta(`device_token_hash:${meta.tokenHash}`, '');
+      } catch { /* ignore */ }
+    }
+    setMeta(metaKey, '');
+    res.json({ ok: true });
   });
 }

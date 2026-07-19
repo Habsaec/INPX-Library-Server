@@ -400,7 +400,7 @@ export async function resolveDownload(book, requestedFormat, options = {}) {
   const sourceFormat = String(book?.ext || 'fb2').toLowerCase();
   const format = normalizeDownloadFormat(book, requestedFormat);
   if (format === sourceFormat && sourceFormat !== 'fb2') {
-    const content = await readBookBuffer(book);
+    const content = await readBookBufferForDelivery(book);
     return {
       format,
       fileName: getBookFormatFileName(book, sourceFormat),

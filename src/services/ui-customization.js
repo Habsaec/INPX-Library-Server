@@ -16,15 +16,29 @@ import {
   hexToRgb,
   relativeLuminance,
   radiusPresetToCssVars,
+  customRadiusToCssVars,
   shadowPresetToCssVars,
   fontSizeToCssVars,
+  backgroundLayoutToCssVars,
   DEFAULT_FONT_SIZE_PX,
   MIN_FONT_SIZE_PX,
   MAX_FONT_SIZE_PX,
+  DEFAULT_HEADING_SCALE,
+  MIN_HEADING_SCALE,
+  MAX_HEADING_SCALE,
+  UI_RADIUS_PRESETS,
+  MIN_RADIUS_SCALE,
+  MAX_RADIUS_SCALE,
+  DEFAULT_RADIUS_SCALE,
+  BG_SIZE_PRESETS,
+  BG_POSITION_PRESETS,
   densityToCssVars,
   fontFamilyToCssVars,
   resolveFontFamilyStack,
   UI_FONT_FAMILY_PRESETS,
+  FONT_FAMILY_WEBFONT,
+  THEME_PRESETS,
+  getThemePresetById,
 } from './theme-engine.js';
 import { extractThemeFromImageFile } from './bg-theme-extractor.js';
 
@@ -38,15 +52,29 @@ export {
   hexToRgb,
   relativeLuminance,
   radiusPresetToCssVars,
+  customRadiusToCssVars,
   shadowPresetToCssVars,
   fontSizeToCssVars,
+  backgroundLayoutToCssVars,
   DEFAULT_FONT_SIZE_PX,
   MIN_FONT_SIZE_PX,
   MAX_FONT_SIZE_PX,
+  DEFAULT_HEADING_SCALE,
+  MIN_HEADING_SCALE,
+  MAX_HEADING_SCALE,
+  UI_RADIUS_PRESETS,
+  MIN_RADIUS_SCALE,
+  MAX_RADIUS_SCALE,
+  DEFAULT_RADIUS_SCALE,
+  BG_SIZE_PRESETS,
+  BG_POSITION_PRESETS,
   densityToCssVars,
   fontFamilyToCssVars,
   resolveFontFamilyStack,
   UI_FONT_FAMILY_PRESETS,
+  FONT_FAMILY_WEBFONT,
+  THEME_PRESETS,
+  getThemePresetById,
 } from './theme-engine.js';
 
 const UI_DIR = path.join(config.dataDir, 'ui');
@@ -169,6 +197,38 @@ function isFontSizeCustomized() {
   return legacy === 'small' || legacy === 'large';
 }
 
+function readHeadingScale() {
+  const raw = getSetting('ui_heading_scale');
+  if (raw === '') return DEFAULT_HEADING_SCALE;
+  return clampInt(raw, MIN_HEADING_SCALE, MAX_HEADING_SCALE, DEFAULT_HEADING_SCALE);
+}
+
+function isHeadingScaleCustomized() {
+  const raw = getSetting('ui_heading_scale');
+  return raw !== '' && clampInt(raw, MIN_HEADING_SCALE, MAX_HEADING_SCALE, DEFAULT_HEADING_SCALE) !== DEFAULT_HEADING_SCALE;
+}
+
+function readRadiusPreset() {
+  const raw = getSetting('ui_radius_preset');
+  return UI_RADIUS_PRESETS.includes(raw) ? raw : 'rounded';
+}
+
+function readRadiusScale() {
+  const raw = getSetting('ui_radius_scale');
+  if (raw === '') return DEFAULT_RADIUS_SCALE;
+  return clampInt(raw, MIN_RADIUS_SCALE, MAX_RADIUS_SCALE, DEFAULT_RADIUS_SCALE);
+}
+
+function readBgSize() {
+  const raw = getSetting('ui_bg_size');
+  return BG_SIZE_PRESETS.includes(raw) ? raw : 'cover';
+}
+
+function readBgPosition() {
+  const raw = getSetting('ui_bg_position');
+  return BG_POSITION_PRESETS.includes(raw) ? raw : 'center';
+}
+
 function hasCustomFontFile() {
   return Boolean(readCustomFontExt() && fs.existsSync(path.join(UI_DIR, customFontFileName())));
 }
@@ -239,6 +299,13 @@ export async function refreshBgThemePaletteFromFile({ resetTypography = false } 
   return palette;
 }
 
+/** Re-sample palette from background file and enable dynamic theme (admin action). */
+export async function refreshBgThemePaletteForAdmin() {
+  if (!hasUiBackgroundImage()) throw new Error('admin.ui.errorNoBackground');
+  setSetting('ui_dynamic_theme_from_bg', '1');
+  return refreshBgThemePaletteFromFile();
+}
+
 /** Saved appearance theme settings (independent of custom background image). */
 export function hasUiThemeConfigured() {
   return hasUiThemeColorsConfigured() || hasUiThemeSlidersConfigured();
@@ -255,6 +322,12 @@ export function hasUiThemeColorsConfigured() {
   const linkDark = getSetting('ui_glass_link_dark');
   const linkLight = getSetting('ui_glass_link_light');
   if (linkDark !== '' || linkLight !== '') return true;
+  const accentDark = getSetting('ui_accent_dark');
+  const accentLight = getSetting('ui_accent_light');
+  if (accentDark !== '' || accentLight !== '') return true;
+  const overlayDark = getSetting('ui_bg_overlay_color_dark');
+  const overlayLight = getSetting('ui_bg_overlay_color_light');
+  if (overlayDark !== '' || overlayLight !== '') return true;
   const dark = getSetting('ui_glass_color_dark');
   const light = getSetting('ui_glass_color_light');
   if (dark !== '' && normalizeHexColor(dark, LEGACY_SURFACE_DARK) !== LEGACY_SURFACE_DARK) return true;
@@ -262,7 +335,7 @@ export function hasUiThemeColorsConfigured() {
   return false;
 }
 
-const UI_BACKGROUND_SLIDER_KEYS = ['ui_bg_blur', 'ui_bg_overlay'];
+const UI_BACKGROUND_SLIDER_KEYS = ['ui_bg_blur', 'ui_bg_overlay', 'ui_bg_size', 'ui_bg_position'];
 const UI_PANEL_SLIDER_KEYS = [
   'ui_surface_opacity',
   'ui_surface_blur',
@@ -283,13 +356,24 @@ export function hasUiThemeSlidersConfigured() {
   return hasUiBackgroundSlidersConfigured() || hasUiPanelSlidersConfigured();
 }
 
+/** Panel glass (opacity/blur) — needed with custom colors, custom panel sliders, or a background image. */
+export function hasUiBackgroundImage() {
+  ensureUiDir();
+  return fs.existsSync(path.join(UI_DIR, 'background.webp'));
+}
+
+export function usesPanelGlass() {
+  return hasUiPanelSlidersConfigured() || hasUiThemeColorsConfigured() || hasUiBackgroundImage();
+}
+
 export function hasUiThemeShapeConfigured() {
-  const keys = ['ui_radius_preset', 'ui_shadow_preset'];
+  const keys = ['ui_radius_preset', 'ui_shadow_preset', 'ui_radius_scale'];
   return keys.some((key) => getSetting(key) !== '');
 }
 
 export function hasUiThemeTypographyConfigured() {
   if (isFontSizeCustomized()) return true;
+  if (isHeadingScaleCustomized()) return true;
   if (getSetting('ui_density') !== '') return true;
   if (getSetting('ui_font_family') !== '') return true;
   return hasCustomFontFile();
@@ -300,6 +384,10 @@ export function resetUiThemeColors() {
   clearExtractedBgPalette();
   setSetting('ui_glass_color_dark', '');
   setSetting('ui_glass_color_light', '');
+  setSetting('ui_accent_dark', '');
+  setSetting('ui_accent_light', '');
+  setSetting('ui_bg_overlay_color_dark', '');
+  setSetting('ui_bg_overlay_color_light', '');
   clearManualGlassTypographyColors();
   invalidateUiCustomizationCache();
 }
@@ -329,6 +417,8 @@ export function resetUiThemeSliders() {
   for (const key of [
     'ui_bg_blur',
     'ui_bg_overlay',
+    'ui_bg_size',
+    'ui_bg_position',
     'ui_surface_opacity',
     'ui_surface_blur',
     'ui_panel_opacity',
@@ -343,12 +433,14 @@ export function resetUiThemeSliders() {
 export function resetUiThemeShape() {
   setSetting('ui_radius_preset', '');
   setSetting('ui_shadow_preset', '');
+  setSetting('ui_radius_scale', '');
   invalidateUiCustomizationCache();
 }
 
 export function resetUiThemeTypography() {
   setSetting('ui_font_size', '');
   setSetting('ui_font_scale', '');
+  setSetting('ui_heading_scale', '');
   setSetting('ui_density', '');
   setSetting('ui_font_family', '');
   setSetting('ui_custom_font_name', '');
@@ -387,6 +479,14 @@ export function getUiCustomization() {
   const glassMutedLightRaw = getSetting('ui_glass_muted_light');
   const glassLinkDarkRaw = getSetting('ui_glass_link_dark');
   const glassLinkLightRaw = getSetting('ui_glass_link_light');
+  const accentDarkRaw = getSetting('ui_accent_dark');
+  const accentLightRaw = getSetting('ui_accent_light');
+  const overlayColorDarkRaw = getSetting('ui_bg_overlay_color_dark');
+  const overlayColorLightRaw = getSetting('ui_bg_overlay_color_light');
+  const bgSize = readBgSize();
+  const bgPosition = readBgPosition();
+  const headingScale = readHeadingScale();
+  const radiusScale = readRadiusScale();
   const dynamicThemeFromBg = hasUiDynamicThemeFromBg() && hasExtractedBgPalette();
   const paletteDarkRaw = getSetting('ui_bg_palette_dark');
   const paletteLightRaw = getSetting('ui_bg_palette_light');
@@ -408,12 +508,16 @@ export function getUiCustomization() {
     displayLight,
     glassTextDarkRaw,
     glassTextLightRaw,
+    accentDarkRaw,
+    accentLightRaw,
   );
   if (hasUiThemeColorsConfigured() && !glassTextLightRaw) {
     themePair.light = adjustLightTextForGlassOpacity(themePair.light, surfaceOpacity);
   }
   applyGlassPaletteOverrides(themePair.dark, { mutedRaw: glassMutedDarkRaw, linkRaw: glassLinkDarkRaw });
   applyGlassPaletteOverrides(themePair.light, { mutedRaw: glassMutedLightRaw, linkRaw: glassLinkLightRaw });
+  if (overlayColorDarkRaw) themePair.dark.bgOverlayColor = normalizeHexColor(overlayColorDarkRaw, themePair.dark.bgOverlayColor);
+  if (overlayColorLightRaw) themePair.light.bgOverlayColor = normalizeHexColor(overlayColorLightRaw, themePair.light.bgOverlayColor);
   const logoUrl = fileMtimeUrl('/custom/ui/logo', 'logo.png');
   const faviconUrl = fileMtimeUrl('/custom/ui/favicon', 'favicon-32.png');
   const faviconAppleUrl = fileMtimeUrl('/custom/ui/favicon-192', 'favicon-192.png');
@@ -433,12 +537,24 @@ export function getUiCustomization() {
     glassMutedLight: themePair.light.muted,
     glassLinkDark: themePair.dark.link,
     glassLinkLight: themePair.light.link,
+    glassAccentDark: themePair.dark.accent,
+    glassAccentLight: themePair.light.accent,
     glassTextAutoDark: themePair.dark.textAuto,
     glassTextAutoLight: themePair.light.textAuto,
     glassMutedAutoDark: glassMutedDarkRaw === '',
     glassMutedAutoLight: glassMutedLightRaw === '',
     glassLinkAutoDark: glassLinkDarkRaw === '',
     glassLinkAutoLight: glassLinkLightRaw === '',
+    glassAccentAutoDark: accentDarkRaw === '',
+    glassAccentAutoLight: accentLightRaw === '',
+    overlayColorDark: themePair.dark.bgOverlayColor,
+    overlayColorLight: themePair.light.bgOverlayColor,
+    overlayColorAutoDark: overlayColorDarkRaw === '',
+    overlayColorAutoLight: overlayColorLightRaw === '',
+    bgSize,
+    bgPosition,
+    headingScale,
+    radiusScale,
     themePair,
     logoUrl,
     faviconUrl,
@@ -467,10 +583,9 @@ export function getUiCustomization() {
 export function getThemeCssVars() {
   const ui = getUiCustomization();
   const colors = hasUiThemeColorsConfigured();
-  const panelSliders = hasUiPanelSlidersConfigured();
+  const panelGlass = usesPanelGlass();
   const shape = hasUiThemeShapeConfigured();
   const typography = hasUiThemeTypographyConfigured();
-  const panelGlass = panelSliders;
   if (!colors && !panelGlass && !ui.hasBackground && !shape && !typography) return [];
   const vars = [];
   if (colors) {
@@ -492,20 +607,166 @@ export function getThemeCssVars() {
       `--ui-bg-image:url("${ui.backgroundUrl}")`,
       `--ui-bg-blur:${ui.blur}px`,
       `--ui-bg-overlay:${ui.overlay}`,
+      ...backgroundLayoutToCssVars(ui.bgSize, ui.bgPosition),
     );
   }
   if (shape) {
-    vars.push(...radiusPresetToCssVars(ui.radiusPreset));
+    vars.push(...(ui.radiusPreset === 'custom'
+      ? customRadiusToCssVars(ui.radiusScale)
+      : radiusPresetToCssVars(ui.radiusPreset)));
     vars.push(...shadowPresetToCssVars(ui.shadowPreset));
   }
   if (typography) {
-    vars.push(...fontSizeToCssVars(ui.fontSize));
+    vars.push(...fontSizeToCssVars(ui.fontSize, ui.headingScale));
     vars.push(...densityToCssVars(ui.density));
   }
   if (ui.fontFamily !== 'inter') {
     vars.push(...fontFamilyToCssVars(ui.fontFamily, ui.customFontName));
   }
   return vars;
+}
+
+// ── Live preview (admin appearance) ──
+function draftStr(value, fallback = '') {
+  if (value === undefined || value === null) return fallback;
+  const v = Array.isArray(value) ? value[value.length - 1] : value;
+  return String(v);
+}
+
+function draftFlag(value) {
+  const s = draftStr(value, '').toLowerCase();
+  return s === '1' || s === 'true' || s === 'on' || s === 'yes';
+}
+
+function draftAutoFlag(draft, key, savedAuto) {
+  if (draft[key] !== undefined && draft[key] !== null) return draftFlag(draft[key]);
+  return savedAuto;
+}
+
+/** Manual glass color from draft, or saved value when the field is omitted (e.g. disabled inputs). */
+function draftManualColor(draft, colorKey, autoKey, savedAuto, savedColor) {
+  if (draftAutoFlag(draft, autoKey, savedAuto)) return '';
+  return draftStr(draft[colorKey], savedColor);
+}
+
+/**
+ * Compute theme CSS variables + root attributes from an unsaved draft form payload.
+ * Reused by POST /api/admin/ui/preview so the admin sees changes live before saving.
+ * Never writes settings; falls back to saved state for background image / custom font.
+ */
+export function getThemePreviewFromDraft(draft = {}) {
+  const saved = getUiCustomization();
+  const hasBg = saved.hasBackground;
+
+  const dyn = draft.dynamicThemeFromBg !== undefined
+    ? draftFlag(draft.dynamicThemeFromBg)
+    : saved.dynamicThemeFromBg;
+  const useExtractedPalette = dyn && hasExtractedBgPalette();
+
+  let darkSurface;
+  let lightSurface;
+  if (useExtractedPalette) {
+    darkSurface = normalizeHexColor(getSetting('ui_bg_palette_dark'), LEGACY_SURFACE_DARK);
+    lightSurface = normalizeHexColor(getSetting('ui_bg_palette_light'), LEGACY_SURFACE_LIGHT);
+  } else {
+    darkSurface = normalizeHexColor(draftStr(draft.glassColorDark, saved.glassColorDark), LEGACY_SURFACE_DARK);
+    lightSurface = normalizeHexColor(draftStr(draft.glassColorLight, saved.glassColorLight), LEGACY_SURFACE_LIGHT);
+  }
+
+  const textDark = draftManualColor(
+    draft, 'glassTextDark', 'glassTextAutoDark', saved.glassTextAutoDark, saved.glassTextDark,
+  );
+  const textLight = draftManualColor(
+    draft, 'glassTextLight', 'glassTextAutoLight', saved.glassTextAutoLight, saved.glassTextLight,
+  );
+  const accentDark = draftManualColor(
+    draft, 'accentDark', 'accentAutoDark', saved.glassAccentAutoDark, saved.glassAccentDark,
+  );
+  const accentLight = draftManualColor(
+    draft, 'accentLight', 'accentAutoLight', saved.glassAccentAutoLight, saved.glassAccentLight,
+  );
+
+  const surfaceOpacity = clampInt(draftStr(draft.surfaceOpacity, String(saved.surfaceOpacity)), 0, 100, 88);
+
+  const themePair = buildThemePair(darkSurface, lightSurface, textDark, textLight, accentDark, accentLight);
+  if (!textLight) themePair.light = adjustLightTextForGlassOpacity(themePair.light, surfaceOpacity);
+
+  const mutedDark = draftManualColor(
+    draft, 'glassMutedDark', 'glassMutedAutoDark', saved.glassMutedAutoDark, saved.glassMutedDark,
+  );
+  const mutedLight = draftManualColor(
+    draft, 'glassMutedLight', 'glassMutedAutoLight', saved.glassMutedAutoLight, saved.glassMutedLight,
+  );
+  const linkDark = draftManualColor(
+    draft, 'glassLinkDark', 'glassLinkAutoDark', saved.glassLinkAutoDark, saved.glassLinkDark,
+  );
+  const linkLight = draftManualColor(
+    draft, 'glassLinkLight', 'glassLinkAutoLight', saved.glassLinkAutoLight, saved.glassLinkLight,
+  );
+  applyGlassPaletteOverrides(themePair.dark, { mutedRaw: mutedDark, linkRaw: linkDark });
+  applyGlassPaletteOverrides(themePair.light, { mutedRaw: mutedLight, linkRaw: linkLight });
+
+  const overlayColorDark = draftManualColor(
+    draft, 'overlayColorDark', 'overlayColorAutoDark', saved.overlayColorAutoDark, saved.overlayColorDark,
+  );
+  const overlayColorLight = draftManualColor(
+    draft, 'overlayColorLight', 'overlayColorAutoLight', saved.overlayColorAutoLight, saved.overlayColorLight,
+  );
+  if (overlayColorDark) themePair.dark.bgOverlayColor = normalizeHexColor(overlayColorDark, themePair.dark.bgOverlayColor);
+  if (overlayColorLight) themePair.light.bgOverlayColor = normalizeHexColor(overlayColorLight, themePair.light.bgOverlayColor);
+
+  const vars = [...themePairToCssVars(themePair)];
+
+  vars.push(
+    `--ui-surface-opacity:${surfaceOpacity}`,
+    `--ui-surface-blur:${clampInt(draftStr(draft.surfaceBlur, String(saved.surfaceBlur)), 0, 24, 0)}px`,
+  );
+
+  if (hasBg) {
+    const blur = clampInt(draftStr(draft.bgBlur, String(saved.blur)), 0, 24, 0);
+    const bgContrast = clampInt(draftStr(draft.bgOverlay, String(saved.bgContrast)), 0, BG_OVERLAY_MAX, BG_OVERLAY_MAX);
+    const overlay = BG_OVERLAY_MAX - bgContrast;
+    const bgSize = draftStr(draft.bgSize, saved.bgSize);
+    const bgPosition = draftStr(draft.bgPosition, saved.bgPosition);
+    vars.push(
+      `--ui-bg-image:url("${saved.backgroundUrl}")`,
+      `--ui-bg-blur:${blur}px`,
+      `--ui-bg-overlay:${overlay}`,
+      ...backgroundLayoutToCssVars(bgSize, bgPosition),
+    );
+  }
+
+  const radiusPreset = UI_RADIUS_PRESETS.includes(draftStr(draft.radiusPreset)) ? draftStr(draft.radiusPreset) : saved.radiusPreset;
+  const radiusScale = clampInt(draftStr(draft.radiusScale, String(saved.radiusScale)), MIN_RADIUS_SCALE, MAX_RADIUS_SCALE, DEFAULT_RADIUS_SCALE);
+  vars.push(...(radiusPreset === 'custom' ? customRadiusToCssVars(radiusScale) : radiusPresetToCssVars(radiusPreset)));
+  const shadowPreset = draftStr(draft.shadowPreset, saved.shadowPreset);
+  vars.push(...shadowPresetToCssVars(shadowPreset));
+
+  const fontSize = clampInt(draftStr(draft.fontSize, String(saved.fontSize)), MIN_FONT_SIZE_PX, MAX_FONT_SIZE_PX, DEFAULT_FONT_SIZE_PX);
+  const headingScale = clampInt(draftStr(draft.headingScale, String(saved.headingScale)), MIN_HEADING_SCALE, MAX_HEADING_SCALE, DEFAULT_HEADING_SCALE);
+  vars.push(...fontSizeToCssVars(fontSize, headingScale));
+  const density = draftStr(draft.density, saved.density);
+  vars.push(...densityToCssVars(density));
+  let fontFamily = draftStr(draft.fontFamily, saved.fontFamily);
+  if (!UI_FONT_FAMILY_PRESETS.includes(fontFamily)) fontFamily = 'inter';
+  if (fontFamily === 'custom' && !saved.hasCustomFont) fontFamily = 'inter';
+  vars.push(...fontFamilyToCssVars(fontFamily, saved.customFontName));
+
+  const webfont = FONT_FAMILY_WEBFONT[fontFamily] || '';
+
+  // Live preview always injects full theme vars — enable matching root attrs so CSS mappings apply.
+  return {
+    vars,
+    attrs: {
+      theme: true,
+      sliders: true,
+      bg: hasBg,
+      shape: true,
+      typography: true,
+    },
+    webfont,
+    fontFamily,
+  };
 }
 
 export function saveUiSettings({
@@ -527,6 +788,16 @@ export function saveUiSettings({
   glassLinkLight,
   glassLinkAutoDark,
   glassLinkAutoLight,
+  accentDark,
+  accentLight,
+  accentAutoDark,
+  accentAutoLight,
+  overlayColorDark,
+  overlayColorLight,
+  overlayColorAutoDark,
+  overlayColorAutoLight,
+  bgSize,
+  bgPosition,
   showLogoOnLogin,
   dynamicThemeFromBg,
 } = {}) {
@@ -604,6 +875,32 @@ export function saveUiSettings({
       setSetting('ui_glass_link_light', normalizeHexColor(glassLinkLight, ''));
     }
   }
+  if (accentAutoDark !== undefined || accentDark !== undefined) {
+    const auto = accentAutoDark === true || accentAutoDark === '1' || accentAutoDark === 1;
+    if (auto) setSetting('ui_accent_dark', '');
+    else if (accentDark !== undefined) setSetting('ui_accent_dark', normalizeHexColor(accentDark, ''));
+  }
+  if (accentAutoLight !== undefined || accentLight !== undefined) {
+    const auto = accentAutoLight === true || accentAutoLight === '1' || accentAutoLight === 1;
+    if (auto) setSetting('ui_accent_light', '');
+    else if (accentLight !== undefined) setSetting('ui_accent_light', normalizeHexColor(accentLight, ''));
+  }
+  if (overlayColorAutoDark !== undefined || overlayColorDark !== undefined) {
+    const auto = overlayColorAutoDark === true || overlayColorAutoDark === '1' || overlayColorAutoDark === 1;
+    if (auto) setSetting('ui_bg_overlay_color_dark', '');
+    else if (overlayColorDark !== undefined) setSetting('ui_bg_overlay_color_dark', normalizeHexColor(overlayColorDark, ''));
+  }
+  if (overlayColorAutoLight !== undefined || overlayColorLight !== undefined) {
+    const auto = overlayColorAutoLight === true || overlayColorAutoLight === '1' || overlayColorAutoLight === 1;
+    if (auto) setSetting('ui_bg_overlay_color_light', '');
+    else if (overlayColorLight !== undefined) setSetting('ui_bg_overlay_color_light', normalizeHexColor(overlayColorLight, ''));
+  }
+  if (bgSize !== undefined) {
+    setSetting('ui_bg_size', BG_SIZE_PRESETS.includes(bgSize) && bgSize !== 'cover' ? bgSize : '');
+  }
+  if (bgPosition !== undefined) {
+    setSetting('ui_bg_position', BG_POSITION_PRESETS.includes(bgPosition) && bgPosition !== 'center' ? bgPosition : '');
+  }
   if (showLogoOnLogin !== undefined) {
     setSetting('ui_show_logo_login', showLogoOnLogin ? '1' : '0');
   }
@@ -612,11 +909,16 @@ export function saveUiSettings({
 
 export function saveUiShapeSettings({
   radiusPreset,
+  radiusScale,
   shadowPreset,
 } = {}) {
   if (radiusPreset !== undefined) {
-    const valid = ['sharp', 'rounded', 'pill'].includes(radiusPreset) ? radiusPreset : '';
+    const valid = UI_RADIUS_PRESETS.includes(radiusPreset) ? radiusPreset : '';
     setSetting('ui_radius_preset', valid);
+  }
+  if (radiusScale !== undefined) {
+    const scale = clampInt(radiusScale, MIN_RADIUS_SCALE, MAX_RADIUS_SCALE, DEFAULT_RADIUS_SCALE);
+    setSetting('ui_radius_scale', String(scale));
   }
   if (shadowPreset !== undefined) {
     const valid = ['none', 'subtle', 'normal', 'pronounced'].includes(shadowPreset) ? shadowPreset : '';
@@ -627,6 +929,7 @@ export function saveUiShapeSettings({
 
 export function saveUiTypographySettings({
   fontSize,
+  headingScale,
   density,
   fontFamily,
 } = {}) {
@@ -634,6 +937,10 @@ export function saveUiTypographySettings({
     const size = clampInt(fontSize, MIN_FONT_SIZE_PX, MAX_FONT_SIZE_PX, DEFAULT_FONT_SIZE_PX);
     setSetting('ui_font_size', size === DEFAULT_FONT_SIZE_PX ? '' : String(size));
     setSetting('ui_font_scale', '');
+  }
+  if (headingScale !== undefined) {
+    const scale = clampInt(headingScale, MIN_HEADING_SCALE, MAX_HEADING_SCALE, DEFAULT_HEADING_SCALE);
+    setSetting('ui_heading_scale', scale === DEFAULT_HEADING_SCALE ? '' : String(scale));
   }
   if (density !== undefined) {
     const valid = ['compact', 'normal', 'comfortable'].includes(density) ? density : '';
@@ -760,13 +1067,100 @@ export function serveUiAsset(asset, res) {
   return true;
 }
 
-export function getPublicUiSettingsJson() {
+/** Snapshot for admin appearance form sync after partial section reset (no page reload). */
+export function getUiAppearanceFormState() {
   const ui = getUiCustomization();
   return {
+    hasCustomThemeSliders: ui.hasCustomThemeSliders,
+    hasCustomThemeColors: ui.hasCustomThemeColors,
+    hasCustomThemeShape: ui.hasCustomThemeShape,
+    hasCustomThemeTypography: ui.hasCustomThemeTypography,
+    blur: ui.blur,
+    bgContrast: ui.bgContrast,
+    surfaceOpacity: ui.surfaceOpacity,
+    surfaceBlur: ui.surfaceBlur,
+    bgSize: ui.bgSize,
+    bgPosition: ui.bgPosition,
+    glassColorDark: ui.glassColorDark,
+    glassColorLight: ui.glassColorLight,
+    glassTextDark: ui.glassTextDark,
+    glassTextLight: ui.glassTextLight,
+    glassTextAutoDark: ui.glassTextAutoDark,
+    glassTextAutoLight: ui.glassTextAutoLight,
+    glassMutedDark: ui.glassMutedDark,
+    glassMutedLight: ui.glassMutedLight,
+    glassMutedAutoDark: ui.glassMutedAutoDark,
+    glassMutedAutoLight: ui.glassMutedAutoLight,
+    glassLinkDark: ui.glassLinkDark,
+    glassLinkLight: ui.glassLinkLight,
+    glassLinkAutoDark: ui.glassLinkAutoDark,
+    glassLinkAutoLight: ui.glassLinkAutoLight,
+    glassAccentDark: ui.glassAccentDark,
+    glassAccentLight: ui.glassAccentLight,
+    glassAccentAutoDark: ui.glassAccentAutoDark,
+    glassAccentAutoLight: ui.glassAccentAutoLight,
+    overlayColorDark: ui.overlayColorDark,
+    overlayColorLight: ui.overlayColorLight,
+    overlayColorAutoDark: ui.overlayColorAutoDark,
+    overlayColorAutoLight: ui.overlayColorAutoLight,
+    dynamicThemeFromBg: ui.dynamicThemeFromBg,
+    radiusPreset: ui.radiusPreset,
+    radiusScale: ui.radiusScale,
+    shadowPreset: ui.shadowPreset,
+    fontSize: ui.fontSize,
+    headingScale: ui.headingScale,
+    density: ui.density,
+    fontFamily: ui.fontFamily,
+    hasCustomFont: ui.hasCustomFont,
+  };
+}
+
+export function getPublicUiSettingsJson() {
+  const ui = getUiCustomization();
+  const siteName = String(getSetting('site_name') || '').trim();
+  const pair = buildThemePair(
+    ui.glassColorDark,
+    ui.glassColorLight,
+    ui.glassTextDark,
+    ui.glassTextLight,
+  );
+  const mapAppPalette = (p) => ({
+    bg: p.shellBg,
+    surface: p.surface,
+    surfaceHover: p.surfaceHover,
+    text: p.text,
+    muted: p.muted,
+    link: p.link,
+    linkHover: p.linkHover,
+    accentHover: p.accentHover,
+    border: p.border,
+    fieldBg: p.fieldBg,
+    cardBg: p.cardBg,
+    cardBgHover: p.cardBgHover,
+    panelSoft: p.panelSoftBg,
+    topbarBg: p.topbarBg,
+    topbarBorder: p.topbarBorder,
+    coverBorder: p.cardCoverBorder,
+  });
+  const themeVersion = [
+    ui.glassColorDark,
+    ui.glassColorLight,
+    ui.glassTextDark,
+    ui.glassTextLight,
+    ui.fontFamily,
+    ui.fontSize,
+    ui.density,
+    ui.radiusPreset,
+  ].join(':');
+  return {
+    siteName,
     logoUrl: ui.logoUrl,
     faviconUrl: ui.faviconUrl,
     faviconAppleUrl: ui.faviconAppleUrl,
     backgroundUrl: ui.backgroundUrl,
+    hasLogo: ui.hasLogo,
+    hasBackground: ui.hasBackground,
+    hasCustomFont: ui.hasCustomFont,
     bgBlur: ui.blur,
     bgOverlay: ui.bgContrast,
     surfaceOpacity: ui.surfaceOpacity,
@@ -785,5 +1179,8 @@ export function getPublicUiSettingsJson() {
     fontFamily: ui.fontFamily,
     customFontUrl: ui.customFontUrl,
     dynamicThemeFromBg: ui.dynamicThemeFromBg,
+    themeVersion,
+    appPaletteDark: mapAppPalette(pair.dark),
+    appPaletteLight: mapAppPalette(pair.light),
   };
 }

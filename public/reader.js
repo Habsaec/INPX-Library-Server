@@ -1,10 +1,34 @@
-import '/foliate/view.js';
-import { Overlayer } from '/foliate/overlayer.js';
+import '/foliate/view.js?v=fb2seek4';
+import { Overlayer } from '/foliate/overlayer.js?v=fb2seek4';
 import {
   FootnoteHandler,
   footnoteTargetFragmentFromHref,
   shouldTrySpineFootnoteClone,
-} from '/foliate/footnotes.js';
+} from '/foliate/footnotes.js?v=fb2seek4';
+import {
+  buildCrossDevicePromptLines,
+  savedFraction as sharedSavedFraction,
+} from '/position-sync.js';
+import {
+  normalizeFraction,
+  fractionToProgress,
+  foliateIdFromRange,
+  resolveFb2Href,
+  positionFromLocation as sharedPositionFromLocation,
+} from '/reader-shared/reader-position.js';
+import { createSuppressionCounter } from '/reader-shared/suppression-counter.js';
+import {
+  acceptPositionSave,
+  acceptServerPosition,
+  decidePositionOnOpen,
+  dismissServerPosition,
+  hasMeaningfulPosition,
+  markPositionDirty,
+  normalizeSeenContext,
+  observeServerConflict,
+  POSITION_VERSION,
+  positionFields,
+} from '/reader-shared/position-revision.js';
 
 (function () {
   'use strict';
@@ -70,6 +94,7 @@ import {
   /* ===== Constants & DOM refs ===== */
   const bookId = window.__READER_BOOK_ID;
   const bookExt = window.__READER_BOOK_EXT;
+  let effectiveBookExt = bookExt;
   const READER_LITE = Boolean(window.__READER_LITE);
   const SETTINGS_STORAGE_KEY = READER_LITE ? 'reader-settings-lite' : 'reader-settings';
 
@@ -104,23 +129,28 @@ import {
 
   const isTouch = window.matchMedia('(pointer: coarse)');
 
-  /* ===== Screen Wake Lock: экран не гаснет во время чтения (Chrome/Android, Safari 16.4+, нужен HTTPS) ===== */
+  /**
+   * ===== Screen Wake Lock =====
+   * Экран не гаснет во время чтения (Chrome/Android, Safari 16.4+, нужен HTTPS).
+   * Во время TTS удержание экрана ОБЯЗАТЕЛЬНО: на Android Chrome останавливает
+   * SpeechSynthesis на уровне платформы, как только у страницы пропадает видимое окно
+   * (TtsPlatformImpl в Chromium игнорирует речь фоновых/невидимых вкладок) — никакой
+   * аудио-keepalive или Media Session это не обходят. Поэтому пока идёт озвучка,
+   * держим wake lock, чтобы экран не гас сам по таймауту бездействия. Против ручной
+   * блокировки экрана (кнопка питания) Wake Lock API бессилен — это ограничение ОС/Chrome.
+   */
   let wakeLock = null;
   async function acquireReaderWakeLock() {
     if (!('wakeLock' in navigator)) return;
     if (wakeLock) return;
-    /* Во время TTS экран можно погасить — удерживаем сессию через audio keepalive. */
-    if (ttsChainActive && !ttsPausedByUser) return;
     try {
       wakeLock = await navigator.wakeLock.request('screen');
       wakeLock.addEventListener('release', () => {
         wakeLock = null;
-        if (document.visibilityState === 'visible' && !(ttsChainActive && !ttsPausedByUser)) {
-          void acquireReaderWakeLock();
-        }
+        if (document.visibilityState === 'visible') void acquireReaderWakeLock();
       });
     } catch {
-      /* Нет активного жеста пользователя, запрет ОС или API недоступен */
+      /* Нет активного жеста пользователя, запрет ОС (энергосбережение) или API недоступен */
     }
   }
   function releaseReaderWakeLock() {
@@ -136,43 +166,47 @@ import {
     }
   }
 
+  /**
+   * Пока страница скрыта (ручная блокировка экрана / переход в другое приложение — Wake Lock
+   * это не предотвращает), синтез речи на Android всё равно не работает. Раньше здесь
+   * форсировался переход к следующему сегменту по таймауту простоя — из-за этого отменённая
+   * платформой фраза мгновенно дёргала onend/onerror и цепочка проматывала книгу вперёд
+   * (иногда на главы), пока не находилась в невидимой вкладке. Теперь просто поддерживаем
+   * keepalive/Media Session и ждём возврата видимости — сегмент, прерванный платформой,
+   * не пропускается (guard на document.visibilityState в onend/onerror), а повторяется.
+   */
   function maintainTtsInBackground() {
     clearTtsBackgroundMaintain();
     if (!ttsChainActive || ttsPausedByUser) return;
     const tick = () => {
-      if (!ttsChainActive || ttsPausedByUser) {
-        clearTtsBackgroundMaintain();
-        return;
-      }
-      if (document.visibilityState === 'visible') {
+      if (!ttsChainActive || ttsPausedByUser || document.visibilityState === 'visible') {
         clearTtsBackgroundMaintain();
         return;
       }
       void startTtsKeepalivePlayback();
       syncTtsMediaSessionPlayback();
-      try {
-        if (speechSynthesis.paused) speechSynthesis.resume();
-      } catch { /* */ }
-      const idle = Date.now() - lastTtsSpeechAt;
-      if (idle > 2800 && !speechSynthesis.speaking && !speechSynthesis.pending) {
-        try { ttsKickSpeak?.(); } catch (e) { console.warn('[reader TTS bg]', e); }
-        lastTtsSpeechAt = Date.now();
-      }
     };
     tick();
-    ttsBgMaintainTimer = setInterval(tick, 1500);
+    ttsBgMaintainTimer = setInterval(tick, 2000);
+  }
+
+  /** Возврат из фона/разблокировка: если платформа прервала фразу без реальной озвучки — повторяем её, а не пропускаем. */
+  function resumeTtsAfterHidden() {
+    if (!ttsChainActive || ttsPausedByUser) return;
+    if (speechSynthesis.speaking || speechSynthesis.pending) return;
+    try { ttsKickSpeak?.(); } catch (e) { console.warn('[reader TTS resume]', e); }
   }
 
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') {
       clearTtsBackgroundMaintain();
-      if (!(ttsChainActive && !ttsPausedByUser)) void acquireReaderWakeLock();
+      void acquireReaderWakeLock();
       if (ttsChainActive && !ttsPausedByUser) {
         void startTtsKeepalivePlayback();
         try { speechSynthesis.resume(); } catch { /* */ }
+        resumeTtsAfterHidden();
       }
     } else if (ttsChainActive && !ttsPausedByUser) {
-      releaseReaderWakeLock();
       maintainTtsInBackground();
     } else {
       releaseReaderWakeLock();
@@ -193,7 +227,6 @@ import {
   document.body.addEventListener(
     'touchstart',
     () => {
-      if (ttsChainActive && !ttsPausedByUser) return;
       void acquireReaderWakeLock();
     },
     { capture: true, passive: true }
@@ -231,10 +264,17 @@ import {
   let chromeTimer = null;
   let activePanelTab = 'toc';
 
-  /** Тихий зацикленный WAV (Blob URL), чтобы ОС считала вкладку «воспроизводящей медиа» — иногда помогает при выключенном экране (Chrome/Android; на iOS не гарантировано). */
+  /**
+   * Едва слышимый зацикленный WAV (Blob URL), чтобы ОС считала вкладку «воспроизводящей медиа» —
+   * помогает пережить выключение экрана (Chrome/Android; на iOS не гарантировано).
+   * Важно: сэмплы НЕ должны быть полной цифровой тишиной (все нули) — Chrome/Android определяют
+   * «слышимость» по реальному уровню сигнала (RMS) и не выдают вкладке медиа-сессию/foreground-статус
+   * для абсолютно пустого потока, из-за чего страница всё равно замораживается при блокировке экрана.
+   * Поэтому пишем очень тихий низкочастотный тон (почти не воспроизводится динамиком телефона).
+   */
   function createSilentWavKeepaliveUrl() {
     const sampleRate = 8000;
-    const numSamples = Math.floor(sampleRate * 0.2);
+    const numSamples = Math.floor(sampleRate * 1);
     const dataSize = numSamples * 2;
     const buffer = new ArrayBuffer(44 + dataSize);
     const v = new DataView(buffer);
@@ -264,8 +304,12 @@ import {
     wstr('data');
     v.setUint32(o, dataSize, true);
     o += 4;
+    /** ~-36 dBFS, 30 Гц: заметно выше типичного порога «тишины» у браузера, но ниже слышимого баса большинства динамиков. */
+    const amplitude = 500;
+    const freqHz = 30;
     for (let i = 0; i < numSamples; i++) {
-      v.setInt16(o, 0, true);
+      const sample = Math.round(amplitude * Math.sin((2 * Math.PI * freqHz * i) / sampleRate));
+      v.setInt16(o, sample, true);
       o += 2;
     }
     return URL.createObjectURL(new Blob([buffer], { type: 'audio/wav' }));
@@ -280,7 +324,7 @@ import {
     a.playsInline = true;
     a.setAttribute('aria-hidden', 'true');
     a.loop = true;
-    a.volume = 0.04;
+    a.volume = 0.15;
     a.src = ttsKeepaliveUrl;
     a.preload = 'auto';
     document.body.appendChild(a);
@@ -500,7 +544,8 @@ import {
     return Math.max(320, Math.min(Number(S.maxWidth) || 720, w));
   }
   function layoutMode() {
-    if (mobileMq.matches && innerWidth <= 640 && S.layout === 'dual') return 'paginated';
+    if (S.layout === 'scrolled') return 'scrolled';
+    if (mobileMq.matches) return 'paginated';
     return S.layout;
   }
 
@@ -601,6 +646,33 @@ import {
       pre { white-space: pre-wrap !important; }
       aside[epub|type~="endnote"],aside[epub|type~="footnote"],aside[epub|type~="note"],aside[epub|type~="rearnote"] { display: none; }
       a { color: ${READER_LITE ? fg : c.link}; }
+      /* EPUB / residual in-document chapter starts (FB2 chapters are split in fb2.js). */
+      body:not(.notesBodyType) h1 {
+        break-before: column !important;
+        -webkit-column-break-before: always !important;
+        page-break-before: always !important;
+      }
+      body:not(.notesBodyType) section[epub|type~="chapter"],
+      body:not(.notesBodyType) div[epub|type~="chapter"],
+      body:not(.notesBodyType) article[epub|type~="chapter"],
+      body:not(.notesBodyType) section.chapter,
+      body:not(.notesBodyType) div.chapter {
+        break-before: column !important;
+        -webkit-column-break-before: always !important;
+        page-break-before: always !important;
+      }
+      body > h1:first-child,
+      body > header:first-child,
+      body > section:first-child > h1:first-child,
+      body > section.chapter:first-child,
+      body > div.chapter:first-child,
+      body > section[epub|type~="chapter"]:first-child,
+      body > div[epub|type~="chapter"]:first-child,
+      body > article[epub|type~="chapter"]:first-child {
+        break-before: auto !important;
+        -webkit-column-break-before: auto !important;
+        page-break-before: auto !important;
+      }
       ${READER_LITE ? 'img,svg image { filter: grayscale(100%) contrast(115%) !important; }' : ''}
     `;
     const gf = GOOGLE_FONTS[S.font];
@@ -785,11 +857,20 @@ import {
   }
 
   /* ===== Utilities ===== */
-  function api(method, path, body) {
+  async function api(method, path, body) {
     const opts = { method, credentials: 'same-origin', headers: {} };
     if (body !== undefined) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
     const base = globalThis.apiBookPath ? globalThis.apiBookPath(bookId) : `/api/books/${encodeURIComponent(bookId)}`;
-    return fetch(base + path, opts).then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); });
+    const response = await fetch(base + path, opts);
+    let data = null;
+    try { data = await response.json(); } catch { /* empty/non-JSON response */ }
+    if (!response.ok) {
+      const error = new Error(data?.message || ('HTTP ' + response.status));
+      error.status = response.status;
+      error.data = data;
+      throw error;
+    }
+    return data;
   }
   function esc(s) { const d = document.createElement('div'); d.appendChild(document.createTextNode(s)); return d.innerHTML; }
   let toastTimer = null;
@@ -863,19 +944,127 @@ import {
   /* ===== Progress ===== */
   let currentTocHref = '';
   let currentFraction = 0;
+  let fb2FlatToc = [];
+
+  function flattenTocForSeek(toc, out = []) {
+    for (const item of toc ?? []) {
+      if (item?.href != null && item.href !== '') out.push(item);
+      if (item?.subitems?.length) flattenTocForSeek(item.subitems, out);
+    }
+    return out;
+  }
+
+  /** Flat TOC для подписи главы в диалоге: [{ href, label, startFraction }] в порядке чтения.
+   *  startFraction — доля по объёму текста (как Foliate считает fraction), чтобы глава
+   *  в диалоге была согласована с процентом. */
+  function flatTocForPrompt() {
+    const sections = view?.book?.sections || [];
+    const sizes = sections.map((s) => (s?.linear === 'no' ? 0 : Math.max(0, Number(s?.size) || 0)));
+    const total = sizes.reduce((a, b) => a + b, 0) || 1;
+    const cumStart = [];
+    let run = 0;
+    for (let i = 0; i < sizes.length; i++) { cumStart[i] = run / total; run += sizes[i]; }
+    const innerCount = {};
+    for (const t of fb2FlatToc) {
+      const [sStr, kStr] = String(t.href).split('#');
+      if (kStr != null) { const s = Number(sStr); innerCount[s] = (innerCount[s] || 0) + 1; }
+    }
+    const sectionDocs = new Map();
+    const textOffsetFor = (sectionIndex, fragmentIndex) => {
+      if (fragmentIndex == null) return 0;
+      try {
+        let doc = sectionDocs.get(sectionIndex);
+        if (!doc) {
+          doc = sections[sectionIndex]?.createDocument?.();
+          if (!doc) return null;
+          sectionDocs.set(sectionIndex, doc);
+        }
+        const marker = [...doc.querySelectorAll('[data-foliate-id]')]
+          .find((el) => Number(el.getAttribute('data-foliate-id')) === fragmentIndex);
+        if (!marker || !doc.body) return null;
+        const prefix = doc.createRange();
+        prefix.setStart(doc.body, 0);
+        prefix.setEndBefore(marker);
+        return String(prefix.toString() || '').replace(/[\t\n\f\r ]+/g, ' ').trim().length;
+      } catch {
+        return null;
+      }
+    };
+    return fb2FlatToc.map((t) => {
+      const [sStr, kStr] = String(t.href).split('#');
+      const s = Number(sStr);
+      const k = kStr != null ? Number(kStr) : null;
+      let startFraction = Number.isFinite(cumStart[s]) ? cumStart[s] : null;
+      if (startFraction != null && k != null) {
+        const secFrac = (sizes[s] || 0) / total;
+        const n = innerCount[s] || 1;
+        startFraction = cumStart[s] + secFrac * (Math.max(0, k) / n);
+      }
+      return {
+        href: t.href,
+        label: String(t.label || '').trim(),
+        startFraction,
+        sectionIndex: Number.isFinite(s) ? s : null,
+        textOffset: Number.isFinite(s) ? textOffsetFor(s, k) : null,
+        sectionStartFraction: Number.isFinite(cumStart[s]) ? cumStart[s] : null,
+        sectionFraction: Number.isFinite(sizes[s]) ? sizes[s] / total : null,
+        sectionTextLength: Number.isFinite(sizes[s]) ? sizes[s] : null,
+      };
+    });
+  }
+
+  function isFb2Active() {
+    // Формат книги известен серверу (__READER_BOOK_EXT) — доверяем расширению.
+    // Раньше приоритет был у view.book.isFB2; если foliate его не выставлял,
+    // FB2 сохранялась как EPUB-CFI (fb2_href=null) и ломался кросс-девайс restore.
+    const ext = String(effectiveBookExt || bookExt || '').toLowerCase().replace(/^\./, '').replace(/\.zip$/, '');
+    if (ext === 'fb2' || ext === 'fbz') return true;
+    return Boolean(view?.book?.isFB2);
+  }
+
+  function fractionFromFb2TocHref(href) {
+    if (!href || fb2FlatToc.length < 2) return null;
+    const idx = fb2FlatToc.findIndex((t) => t.href === href);
+    if (idx < 0) return null;
+    return normalizeFraction(idx / fb2FlatToc.length);
+  }
+
+  /** Доля книги для отображения и сохранения — только Foliate loc.fraction (не TOC). */
+  function readingFractionFromLocation(loc) {
+    return normalizeFraction(loc?.fraction ?? 0);
+  }
+
+  function displayFractionFromLocation(loc) {
+    return readingFractionFromLocation(loc);
+  }
+
+  async function seekReaderToFraction(f) {
+    if (!view) return;
+    const frac = normalizeFraction(f);
+    // Size-based (по объёму текста, как считается сам fraction). Индексный пересчёт
+    // по TOC (floor(frac × N)) промахивается на неравных главах — 95% попадало бы
+    // в «Приложение» вместо Части VI.
+    await view.goToFraction(frac);
+  }
 
   function updateSeekbar() {
     if (!seekBar) return;
-    seekBar.style.setProperty('--seek-pct', (currentFraction * 100).toFixed(1) + '%');
+    seekBar.style.setProperty('--seek-pct', (currentFraction * 100).toFixed(4) + '%');
   }
 
   function setProgress(pct, tocItem) {
-    pct = Math.max(0, Math.min(100, pct));
-    currentFraction = pct / 100;
-    if (seekBar) seekBar.value = currentFraction;
-    const txt = Math.round(pct) + '%';
-    if (pctLabel) pctLabel.textContent = txt;
-    if (progressText) progressText.textContent = txt;
+    setProgressFromFraction(pct / 100, tocItem);
+  }
+  function setProgressFromFraction(fraction, tocItem) {
+    const f = normalizeFraction(fraction);
+    if (!seekBarUserActive) {
+      currentFraction = f;
+      const pctDisplay = String(fractionToProgress(f));
+      if (seekBar) seekBar.value = f;
+      updateSeekbar();
+      if (pctLabel) pctLabel.textContent = pctDisplay + '%';
+      if (progressText) progressText.textContent = pctDisplay + '%';
+    }
     if (tocItem?.label) {
       if (ftChapter) ftChapter.textContent = tocItem.label;
       if (toolbarChapter) toolbarChapter.textContent = tocItem.label;
@@ -889,32 +1078,524 @@ import {
 
   /* ===== Seekbar ===== */
   let seekTimer = null;
+  let seekBarUserActive = false;
+  let seekNavToken = 0;
+
+  seekBar?.addEventListener('pointerdown', () => { seekBarUserActive = true; });
+  seekBar?.addEventListener('pointercancel', () => { seekBarUserActive = false; });
+
   seekBar?.addEventListener('input', () => {
     const f = parseFloat(seekBar.value);
-    if (pctLabel) pctLabel.textContent = Math.round(f * 100) + '%';
-    seekBar.style.setProperty('--seek-pct', Math.round(f * 100) + '%');
+    if (pctLabel) pctLabel.textContent = fractionToProgress(f) + '%';
+    seekBar.style.setProperty('--seek-pct', (f * 100).toFixed(4) + '%');
     scheduleChromeHide();
     clearTimeout(seekTimer);
-    seekTimer = setTimeout(() => { if (view && !isNaN(f)) view.goToFraction(f); }, 150);
+    const token = ++seekNavToken;
+    seekTimer = setTimeout(() => {
+      seekTimer = null;
+      void (async () => {
+        if (!view || isNaN(f)) {
+          seekBarUserActive = false;
+          return;
+        }
+        try {
+          await seekReaderToFraction(f);
+          await waitForLayoutSettled(800);
+        } catch { /* */ }
+        if (token !== seekNavToken) return;
+        seekBarUserActive = false;
+        const loc = view?.lastLocation;
+        if (loc) {
+          setProgressFromFraction(readingFractionFromLocation(loc), loc.tocItem);
+        }
+      })();
+    }, 150);
+  });
+
+  seekBar?.addEventListener('pointerup', () => {
+    window.setTimeout(() => {
+      if (!seekTimer) seekBarUserActive = false;
+    }, 250);
   });
 
   /* ===== Position sync ===== */
   let syncTimer = null;
+  let positionSaveEpoch = 0;
+  let positionSaveChain = Promise.resolve();
   let autoReadToastShown = false;
-  function savePosition(cfi, pct) {
+  const positionSaveSuppression = createSuppressionCounter();
+  const pendingStyleDocs = new Set();
+
+  async function applySectionStyles(doc) {
+    if (!doc) return;
+    await syncReaderGoogleFont(doc);
+    applyBookStyles();
+    await waitForLayoutSettled(3000);
+  }
+
+  async function flushPendingSectionStyles() {
+    const docs = pendingStyleDocs.size
+      ? [...pendingStyleDocs]
+      : (getLoadedSectionDoc() ? [getLoadedSectionDoc()] : []);
+    pendingStyleDocs.clear();
+    for (const doc of docs) {
+      await applySectionStyles(doc);
+    }
+  }
+
+  function isFb2Href(href) {
+    const h = String(href || '').trim();
+    if (!h) return false;
+    const hashPos = h.indexOf('#');
+    const section = hashPos === -1 ? h : h.slice(0, hashPos);
+    const id = hashPos === -1 ? '' : h.slice(hashPos + 1);
+    if (!section || Number.isNaN(Number(section))) return false;
+    if (id !== '' && Number.isNaN(Number(id))) return false;
+    return true;
+  }
+
+  function isFb2Book() {
+    const ext = String(effectiveBookExt || bookExt || '').toLowerCase();
+    if (ext.includes('fb2') || ext === 'fbz') return true;
+    return Boolean(view?.book && !view.book.resolveCFI);
+  }
+
+  function fb2ResolveHref(loc) {
+    return resolveFb2Href(loc, isFb2Book());
+  }
+
+  function fb2PositionFromLocation(loc) {
+    return sharedPositionFromLocation(loc, isFb2Active());
+  }
+
+  function savedFraction(saved) {
+    return sharedSavedFraction(saved);
+  }
+
+  function savedFractionLocal(saved) {
+    return savedFraction(saved);
+  }
+
+  function posSeenStorageKey() {
+    return `inpx_reader_pos_seen_${bookId}`;
+  }
+
+  function readPosSeenCtx() {
+    try {
+      const raw = localStorage.getItem(posSeenStorageKey());
+      const parsed = raw ? JSON.parse(raw) : null;
+      const normalized = normalizeSeenContext(parsed, { isFb2: isFb2Active() });
+      if (!raw || Number(parsed?.positionVersion) < POSITION_VERSION) writePosSeenCtx(normalized);
+      return normalized;
+    } catch {
+      return normalizeSeenContext(null, { isFb2: isFb2Active() });
+    }
+  }
+
+  function writePosSeenCtx(ctx) {
+    try {
+      localStorage.setItem(posSeenStorageKey(), JSON.stringify(
+        normalizeSeenContext(ctx, { isFb2: isFb2Active() }),
+      ));
+    } catch { /* */ }
+  }
+
+  function buildLocalCtxForPrompt() {
+    return readPosSeenCtx();
+  }
+
+  function rememberPosSeenFromServer(saved) {
+    if (!saved) return;
+    writePosSeenCtx(acceptServerPosition(readPosSeenCtx(), saved));
+  }
+
+  function rememberDismissedServerPosition(saved, localCtx) {
+    if (!saved) return;
+    writePosSeenCtx(dismissServerPosition(localCtx || readPosSeenCtx(), saved));
+  }
+
+  function savedToRestorePayload(saved) {
+    if (!saved) return null;
+    return {
+      ...positionFields(saved),
+      updatedAt: saved.updatedAt || null,
+      revision: Number(saved.revision) || 0,
+    };
+  }
+
+  function localCtxToRestorePayload(localCtx) {
+    if (!localCtx) return null;
+    return {
+      ...positionFields(localCtx),
+      updatedAt: localCtx.updatedAt || null,
+    };
+  }
+
+  let crossDevicePromptPromise = null;
+  let pendingCrossDevicePrompt = null;
+
+  function ensureCrossDevicePromptShell() {
+    let el = $('reader-cross-device-prompt');
+    if (el) return el;
+    el = document.createElement('div');
+    el.id = 'reader-cross-device-prompt';
+    el.className = 'reader-cross-device-prompt';
+    el.hidden = true;
+    el.setAttribute('role', 'alertdialog');
+    el.setAttribute('aria-modal', 'true');
+    el.innerHTML =
+      '<div class="reader-cross-device-backdrop" tabindex="-1"></div>' +
+      '<div class="reader-cross-device-panel">' +
+      `<p class="reader-cross-device-message">${esc(rt('readerJs.crossDevicePosition'))}</p>` +
+      '<div class="reader-cross-device-compare">' +
+      '<div class="reader-cross-device-row"><span class="reader-cross-device-label">Сейчас</span><span class="reader-cross-device-value" data-role="local-line"></span></div>' +
+      '<div class="reader-cross-device-row reader-cross-device-row-server"><span class="reader-cross-device-label">На другом устройстве</span><span class="reader-cross-device-value" data-role="server-line"></span></div>' +
+      '</div>' +
+      '<div class="reader-cross-device-actions">' +
+      `<button type="button" class="reader-cross-device-decline">${esc(rt('readerJs.crossDeviceStay'))}</button>` +
+      `<button type="button" class="reader-cross-device-accept">${esc(rt('readerJs.crossDeviceGo'))}</button>` +
+      '</div></div>';
+    document.body.appendChild(el);
+    return el;
+  }
+
+  function confirmCrossDevicePosition(lines) {
+    if (crossDevicePromptPromise) return crossDevicePromptPromise;
+    crossDevicePromptPromise = new Promise((resolve) => {
+      const el = ensureCrossDevicePromptShell();
+      const localLineEl = el.querySelector('[data-role="local-line"]');
+      const serverLineEl = el.querySelector('[data-role="server-line"]');
+      if (localLineEl) localLineEl.textContent = lines?.localLine || '0%';
+      if (serverLineEl) serverLineEl.textContent = lines?.serverLine || '0%';
+      const acceptBtn = el.querySelector('.reader-cross-device-accept');
+      const declineBtn = el.querySelector('.reader-cross-device-decline');
+      const backdrop = el.querySelector('.reader-cross-device-backdrop');
+      if (!acceptBtn || !declineBtn) {
+        crossDevicePromptPromise = null;
+        resolve(null);
+        return;
+      }
+      let settled = false;
+      const finish = (accepted) => {
+        if (settled) return;
+        settled = true;
+        el.hidden = true;
+        document.body.classList.remove('reader-cross-device-open');
+        acceptBtn.removeEventListener('click', onAccept);
+        declineBtn.removeEventListener('click', onDecline);
+        backdrop?.removeEventListener('click', onDecline);
+        crossDevicePromptPromise = null;
+        resolve(accepted);
+      };
+      const onAccept = () => finish(true);
+      const onDecline = () => finish(false);
+      acceptBtn.addEventListener('click', onAccept);
+      declineBtn.addEventListener('click', onDecline);
+      backdrop?.addEventListener('click', onDecline);
+      el.hidden = false;
+      document.body.classList.add('reader-cross-device-open');
+      acceptBtn.focus();
+    });
+    return crossDevicePromptPromise;
+  }
+
+  async function maybeShowDeferredCrossDevicePrompt() {
+    const pending = pendingCrossDevicePrompt;
+    pendingCrossDevicePrompt = null;
+    if (!pending || !view) return false;
     clearTimeout(syncTimer);
+    syncTimer = null;
+    try {
+      const liveLocal = view.lastLocation
+        ? { ...pending.localCtx, ...positionFromLocation(view.lastLocation) }
+        : pending.localCtx;
+      const accepted = await confirmCrossDevicePosition(
+        buildCrossDevicePromptLines(liveLocal, pending.saved, flatTocForPrompt()),
+      );
+      if (accepted === true) {
+        const serverTarget = savedToRestorePayload(pending.saved);
+        const restored = serverTarget
+          ? await restoreReadingPosition(serverTarget, null)
+          : false;
+        if (restored) {
+          rememberPosSeenFromServer(pending.saved);
+          return true;
+        }
+        writePosSeenCtx(observeServerConflict(pending.localCtx, pending.saved));
+        return false;
+      }
+      if (accepted === false) {
+        rememberDismissedServerPosition(pending.saved, pending.localCtx);
+      } else {
+        writePosSeenCtx(observeServerConflict(pending.localCtx, pending.saved));
+      }
+      return false;
+    } catch (err) {
+      console.warn('[reader] deferred cross-device prompt failed', err);
+      writePosSeenCtx(observeServerConflict(pending.localCtx, pending.saved));
+      return false;
+    }
+  }
+
+  /** Куда восстанавливать при открытии (учитывает pending-диалог и отклонённую правку). */
+  let crossDeviceRestoreTarget = null;
+
+  async function resolveCrossDevicePositionOnOpen(saved, urlPos) {
+    pendingCrossDevicePrompt = null;
+    crossDeviceRestoreTarget = saved;
+    if (urlPos || !saved) return saved;
+    try {
+      const localCtx = buildLocalCtxForPrompt();
+      const decision = decidePositionOnOpen(localCtx, saved);
+      if (decision === 'prompt') {
+        writePosSeenCtx(observeServerConflict(localCtx, saved));
+        pendingCrossDevicePrompt = { saved, localCtx };
+        // Local-first: открываем на локальной позиции, диалог предложит серверную.
+        crossDeviceRestoreTarget = localCtxToRestorePayload(localCtx);
+      } else if (decision === 'server') {
+        rememberPosSeenFromServer(saved);
+        crossDeviceRestoreTarget = saved;
+      } else {
+        if (
+          localCtx.positionDirty
+          || hasMeaningfulPosition(localCtx)
+          || (
+            localCtx.dismissedServerRevision != null
+            && Number(localCtx.dismissedServerRevision) === Number(saved.revision)
+          )
+        ) {
+          crossDeviceRestoreTarget = localCtxToRestorePayload(localCtx) || saved;
+        }
+        if (Number(saved.revision) > Number(localCtx.serverRevision)) {
+          writePosSeenCtx(observeServerConflict(localCtx, saved));
+        }
+      }
+    } catch (err) {
+      console.warn('[reader] cross-device position check failed', err);
+    }
+    return crossDeviceRestoreTarget;
+  }
+
+  function positionFromLocation(loc) {
+    const payload = fb2PositionFromLocation(loc);
+    const sectionIndex = Number(loc?.section?.current);
+    const page = Number(view?.renderer?.page);
+    const pages = Number(view?.renderer?.pages);
+    if (Number.isFinite(sectionIndex)) payload.sectionIndex = sectionIndex;
+    if (Number.isFinite(page)) payload.paginatorPage = page;
+    if (Number.isFinite(pages)) payload.paginatorPages = pages;
+    if (Number.isFinite(page) && Number.isFinite(pages) && pages > 2) {
+      payload.sectionPageFraction = normalizeFraction((page - 1) / (pages - 2));
+    }
+    payload.layoutMode = layoutMode();
+    return payload;
+  }
+
+  function buildPositionBody(payload) {
+    const f = sharedSavedFraction(payload);
+    return {
+      ...positionFields({ ...payload, fraction: f, progress: fractionToProgress(f) }),
+      positionVersion: POSITION_VERSION,
+    };
+  }
+
+  async function postPositionPayload(body, changedAt, baseRevision) {
+    const requestBody = { ...body, baseRevision };
+    try {
+      const response = await api('POST', '/position', requestBody);
+      writePosSeenCtx(acceptPositionSave(readPosSeenCtx(), body, response, changedAt));
+      if (response?.markedRead && !autoReadToastShown) {
+        autoReadToastShown = true;
+        toast(rt('readerJs.autoMarkedRead'));
+      }
+    } catch (error) {
+      if (error?.status === 409 && error?.data?.current) {
+        positionSaveEpoch += 1;
+        clearTimeout(syncTimer);
+        syncTimer = null;
+        const current = error.data.current;
+        const localCtx = readPosSeenCtx();
+        writePosSeenCtx(observeServerConflict(localCtx, current));
+        pendingCrossDevicePrompt = { saved: current, localCtx };
+        await positionSaveSuppression.run(() => maybeShowDeferredCrossDevicePrompt());
+      }
+    }
+  }
+
+  function savePositionPayload(payload) {
+    if (positionSaveSuppression.isSuppressed()) return;
+    clearTimeout(syncTimer);
+    const body = buildPositionBody(payload);
+    const changedAt = new Date().toISOString();
+    const epoch = positionSaveEpoch;
+    const dirty = markPositionDirty(readPosSeenCtx(), body, changedAt);
+    const baseRevision = dirty.baseRevision;
+    writePosSeenCtx(dirty);
     syncTimer = setTimeout(() => {
-      api('POST', '/position', { position: String(cfi), progress: pct })
-        .then(r => {
-          if (r && r.markedRead && !autoReadToastShown) {
-            autoReadToastShown = true;
-            toast(rt('readerJs.autoMarkedRead'));
-          }
+      syncTimer = null;
+      positionSaveChain = positionSaveChain
+        .then(() => {
+          if (epoch !== positionSaveEpoch) return undefined;
+          return postPositionPayload(body, changedAt, baseRevision);
         })
         .catch(() => {});
     }, 1500);
   }
-  async function loadSavedPosition() { try { const d = await api('GET', '/position'); return d?.position ? d : null; } catch { return null; } }
+
+  async function loadSavedPosition() {
+    try {
+      const d = await api('GET', '/position');
+      if (Number(d?.positionVersion) === POSITION_VERSION) return d;
+      const pos = String(d?.position || '').trim();
+      if (pos && !isAppReaderPosition(pos)) return d;
+      const fb2Href = String(d?.fb2Href || '').trim();
+      if (fb2Href && isFb2Href(fb2Href)) return d;
+      if (savedFraction(d) > 0) return d;
+      return null;
+    } catch { return null; }
+  }
+
+  function isAppReaderPosition(pos) {
+    return /^(?:app:)?ch\d+:p\d+$/.test(String(pos || '').trim());
+  }
+
+  function getLoadedSectionDoc() {
+    const contents = view?.renderer?.getContents?.() || [];
+    return contents[0]?.doc || null;
+  }
+
+  function waitForRelocateQuiet(quietMs = 400, maxMs = 3000) {
+    return new Promise((resolve) => {
+      let quietTimer = null;
+      const deadline = setTimeout(finish, maxMs);
+      function finish() {
+        clearTimeout(deadline);
+        clearTimeout(quietTimer);
+        view?.removeEventListener('relocate', onRelocate);
+        resolve();
+      }
+      function onRelocate() {
+        clearTimeout(quietTimer);
+        quietTimer = setTimeout(finish, quietMs);
+      }
+      view?.addEventListener('relocate', onRelocate);
+      quietTimer = setTimeout(finish, quietMs);
+    });
+  }
+
+  async function waitForFontsReady(doc, timeoutMs = 2000) {
+    if (!doc?.fonts?.ready) return;
+    try {
+      await Promise.race([
+        doc.fonts.ready,
+        new Promise((r) => setTimeout(r, timeoutMs)),
+      ]);
+    } catch { /* */ }
+  }
+
+  async function waitForLayoutSettled(timeoutMs = 3000) {
+    const doc = getLoadedSectionDoc();
+    await waitForFontsReady(doc, Math.min(2000, timeoutMs));
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    await waitForRelocateQuiet(Math.min(450, Math.max(200, timeoutMs / 5)), timeoutMs);
+  }
+
+  function isRestoredPositionVerified(saved) {
+    if (!saved || !hasMeaningfulPosition(saved)) return true;
+    const landed = view?.lastLocation;
+    if (!landed) return false;
+    const targetSectionIndex = Number(saved.sectionIndex);
+    const targetTextOffset = Number(saved.textOffset);
+    if (
+      Number.isInteger(targetSectionIndex)
+      && targetSectionIndex >= 0
+      && Number.isInteger(targetTextOffset)
+      && targetTextOffset >= 0
+    ) {
+      if (Number(landed?.section?.current) !== targetSectionIndex) return false;
+      const targetQuote = String(saved.textQuote || '').replace(/\s+/g, ' ').trim();
+      const visibleText = String(landed?.range?.toString?.() || '').replace(/\s+/g, ' ').trim();
+      const probe = targetQuote.slice(0, Math.min(32, targetQuote.length));
+      if (probe && visibleText.includes(probe)) return true;
+      return Math.abs(Number(landed?.textOffset) - targetTextOffset) <= 8;
+    }
+    const targetFraction = savedFraction(saved);
+    const landedFraction = savedFraction(positionFromLocation(landed));
+    if (targetFraction > 0) return Math.abs(targetFraction - landedFraction) <= 0.035;
+    const targetCfi = String(saved.position || '').trim();
+    if (targetCfi && !isAppReaderPosition(targetCfi)) {
+      return String(landed.cfi || '').trim() === targetCfi;
+    }
+    const targetFb2 = String(saved.fb2Href || '').trim();
+    if (targetFb2) return fb2ResolveHref(landed) === targetFb2;
+    if (Number.isFinite(Number(saved.sectionIndex))) {
+      return Number(landed?.section?.current) === Number(saved.sectionIndex);
+    }
+    if (Number.isFinite(Number(saved.paginatorPage))) {
+      return Math.abs(Number(view?.renderer?.page) - Number(saved.paginatorPage)) <= 1;
+    }
+    return false;
+  }
+
+  /** Стандартный Foliate: view.init({ lastLocation }) с CFI, href или fraction. */
+  async function restoreReadingPosition(saved, urlPos) {
+    if (urlPos) {
+      try { await view.goTo(urlPos); } catch { await view.renderer.next(); }
+      return true;
+    }
+    if (!saved) {
+      await view.renderer.next();
+      return true;
+    }
+    const cfi = String(saved.position || '').trim();
+    const fb2Href = String(saved.fb2Href || '').trim();
+    const frac = savedFraction(saved);
+    const hasCfi = cfi && !isAppReaderPosition(cfi);
+    try {
+      if (isFb2Active()) {
+        // v4 text anchor is layout-independent and exact. Fraction remains the
+        // book-wide display/fallback coordinate; fb2Href is the coarsest fallback.
+        const sectionIndex = Number(saved.sectionIndex);
+        const textOffset = Number(saved.textOffset);
+        let restoredByTextAnchor = false;
+        if (
+          Number.isInteger(sectionIndex)
+          && sectionIndex >= 0
+          && Number.isInteger(textOffset)
+          && textOffset >= 0
+          && typeof view.goToTextAnchor === 'function'
+        ) {
+          try {
+            await view.goToTextAnchor(sectionIndex, textOffset, String(saved.textQuote || ''));
+            restoredByTextAnchor = true;
+          } catch { /* fall through to fraction/href */ }
+        }
+        if (restoredByTextAnchor) {
+          // Exact anchor restored.
+        } else if (frac > 0) {
+          await view.goToFraction(frac);
+        } else if (fb2Href && isFb2Href(fb2Href)) {
+          await view.init({ lastLocation: fb2Href });
+        } else if (hasCfi) {
+          await view.init({ lastLocation: cfi });
+        } else {
+          await view.renderer.next();
+        }
+      } else if (hasCfi) {
+        await view.init({ lastLocation: cfi });
+      } else if (fb2Href && isFb2Href(fb2Href)) {
+        await view.init({ lastLocation: fb2Href });
+      } else if (frac > 0) {
+        await view.goToFraction(frac);
+      } else {
+        await view.renderer.next();
+      }
+    } catch {
+      await view.renderer.next();
+    }
+    await waitForLayoutSettled(1200);
+    return isRestoredPositionVerified(saved);
+  }
 
   /* ===== Auto-mark as read when finished ===== */
   // Handled server-side in position save endpoint when progress >= 95%
@@ -940,7 +1621,7 @@ import {
 
   function getSnapshot() {
     const ch = (ftChapter?.textContent || toolbarChapter?.textContent || '').trim() || rt('readerJs.currentPos');
-    return { chapter: ch, percent: Math.round(currentFraction * 100) };
+    return { chapter: ch, percent: Math.round(fractionToProgress(currentFraction)) };
   }
 
   function updateBmCard() {
@@ -1814,6 +2495,7 @@ import {
     ttsChainActive = false;
     ttsPausedByUser = false;
     ttsAdvancingSection = false;
+    releaseReaderWakeLock();
     updateTtsButtons();
   }
 
@@ -1882,6 +2564,7 @@ import {
       clearTtsBackgroundMaintain();
       ttsNav.skipBack = () => {};
       ttsNav.skipForward = () => {};
+      releaseReaderWakeLock();
       updateTtsButtons();
     }
 
@@ -1928,15 +2611,24 @@ import {
         lastTtsSpeechAt = Date.now();
         void startTtsKeepalivePlayback();
       };
+      /**
+       * Пока страница скрыта, Chrome/Android отменяет фразу без реального произнесения, и
+       * onend/onerror всё равно срабатывают — если в этот момент продвинуть idx, цепочка
+       * молча проматывается вперёд (иногда на главы) пока не вернётся видимость. Поэтому в
+       * скрытом состоянии просто выходим без advance; resumeTtsAfterHidden() повторит этот
+       * же сегмент, когда страница снова станет видимой.
+       */
       u.onend = () => {
         lastTtsSpeechAt = Date.now();
         if (!ttsChainActive || token !== ttsSpeakToken) return;
+        if (document.visibilityState === 'hidden') return;
         idx++;
         speakStep();
       };
       u.onerror = () => {
         lastTtsSpeechAt = Date.now();
         if (!ttsChainActive || token !== ttsSpeakToken) return;
+        if (document.visibilityState === 'hidden') return;
         idx++;
         speakStep();
       };
@@ -2044,7 +2736,7 @@ import {
     ttsChainActive = true;
     ttsPausedByUser = false;
     lastTtsSpeechAt = Date.now();
-    releaseReaderWakeLock();
+    void acquireReaderWakeLock();
     setChromeVisible(true);
     updateTtsButtons();
     void startTtsKeepalivePlayback();
@@ -2062,11 +2754,13 @@ import {
         speechSynthesis.resume();
       } catch { /* */ }
       ttsPausedByUser = false;
+      void acquireReaderWakeLock();
     } else {
       try {
         speechSynthesis.pause();
       } catch { /* */ }
       ttsPausedByUser = true;
+      releaseReaderWakeLock();
     }
     syncTtsKeepaliveWithSpeech();
     updateTtsButtons();
@@ -2739,6 +3433,74 @@ import {
     return 'unsupported';
   }
 
+  function isZipMagic(h) {
+    return h[0] === 0x50 && h[1] === 0x4b && h[2] === 0x03 && h[3] === 0x04;
+  }
+
+  function isSevenZipMagic(h) {
+    return h[0] === 0x37 && h[1] === 0x7a && h[2] === 0xbc && h[3] === 0xaf;
+  }
+
+  async function inspectZipBookKind(buffer) {
+    try {
+      const { configure, ZipReader, BlobReader, TextWriter } = await import('/foliate/vendor/zip.js');
+      configure({ useWebWorkers: false });
+      const reader = new ZipReader(new BlobReader(new Blob([buffer])));
+      const entries = await reader.getEntries();
+      const mimeEntry = entries.find((entry) => {
+        const p = String(entry.filename || '').replace(/\\/g, '/').toLowerCase();
+        return p === 'mimetype' || p.endsWith('/mimetype');
+      });
+      if (mimeEntry) {
+        const mime = String(await mimeEntry.getData(new TextWriter())).trim();
+        if (mime === 'application/epub+zip') {
+          await reader.close();
+          return 'epub';
+        }
+      }
+      if (entries.some((entry) => /meta-inf\/container\.xml$/i.test(String(entry.filename || '').replace(/\\/g, '/')))) {
+        await reader.close();
+        return 'epub';
+      }
+      const fb2Entry = entries.find((entry) => /\.fb2$/i.test(String(entry.filename || '')));
+      if (fb2Entry) {
+        await reader.close();
+        return 'fb2';
+      }
+      await reader.close();
+    } catch {
+      /* fall through */
+    }
+    return null;
+  }
+
+  /** Определяет реальный формат по содержимому — важно, если ext в URL/профиле неверный. */
+  async function sniffBookExt(buffer, fallbackExt) {
+    const fb = String(fallbackExt || 'fb2').toLowerCase().replace(/^\./, '').replace(/\.zip$/, '');
+    if (!buffer || buffer.byteLength < 4) return fb || 'fb2';
+    const h = new Uint8Array(buffer);
+    if (h[0] === 0x25 && h[1] === 0x50 && h[2] === 0x44 && h[3] === 0x46) return 'pdf';
+    if (isSevenZipMagic(h)) {
+      if (fb.includes('epub')) {
+        throw new Error(
+          'EPUB сохранён в формате 7z. Скачайте книгу заново — сервер перепакует файл в EPUB (ZIP).',
+        );
+      }
+      return fb || 'fb2';
+    }
+    if (isZipMagic(h)) {
+      const zipKind = await inspectZipBookKind(buffer);
+      if (zipKind) return zipKind;
+      if (fb.includes('epub')) return 'epub';
+      if (fb === 'fb2' || fb === 'fbz') return 'fb2';
+      if (fb.includes('mobi') || fb.includes('azw')) return fb;
+      return 'epub';
+    }
+    const sample = new TextDecoder('utf-8', { fatal: false }).decode(buffer.slice(0, Math.min(buffer.byteLength, 512)));
+    if (sample.includes('FictionBook') || /<\?xml/i.test(sample)) return 'fb2';
+    return fb || 'fb2';
+  }
+
   /**
    * PDF/DJVU are not supported by foliate-js. For PDF we fall back to the
    * browser's native PDF viewer (same-origin iframe, which Chrome/Edge/Firefox
@@ -2793,11 +3555,17 @@ import {
 
     const res = await fetch(url, { credentials: 'same-origin' });
     if (!res.ok) throw new Error(rtp('readerJs.loadError', { status: res.status }));
-    const file = new File([await res.blob()], 'book.' + bookExt.toLowerCase());
+    const buffer = await res.arrayBuffer();
+    const effectiveExt = await sniffBookExt(buffer, bookExt);
+    effectiveBookExt = effectiveExt;
+    const file = new File([buffer], 'book.' + effectiveExt.toLowerCase());
 
     view = document.createElement('foliate-view');
     readerBody.replaceChildren(view);
     await view.open(file);
+
+      fb2FlatToc = isFb2Active() ? flattenTocForSeek(view.book?.toc) : [];
+      window.__READER_FB2_FLAT_TOC__ = flatTocForPrompt();
 
     view.renderer.setAttribute('flow', S.layout === 'scrolled' ? 'scrolled' : 'paginated');
     applyRendererLayout();
@@ -2807,7 +3575,7 @@ import {
     view.addEventListener('load', ({ detail: { doc, index } }) => {
       if (!ttsAdvancingSection) stopReaderTts();
       if (doc && index != null) docIndexMap.set(doc, index);
-      syncReaderGoogleFont(doc).then(() => applyBookStyles());
+      void applySectionStyles(doc);
       wireDoc(doc);
       wireSelection(doc);
     });
@@ -2816,10 +3584,23 @@ import {
     wireFootnotes();
 
     view.addEventListener('relocate', ({ detail }) => {
-      const pct = (detail.fraction ?? 0) * 100;
-      setProgress(pct, detail.tocItem);
-      updateBookPageDisplay(detail);
-      if (detail.cfi) savePosition(detail.cfi, pct);
+      const loc = view.lastLocation || detail;
+      const payload = positionFromLocation(loc);
+      if (!seekBarUserActive) {
+        setProgressFromFraction(payload.fraction, loc.tocItem ?? detail.tocItem);
+      }
+      updateBookPageDisplay(loc);
+      if (
+        !seekBarUserActive
+        && (
+          payload.position
+          || payload.fb2Href
+          || payload.fraction > 0
+          || Number.isFinite(Number(payload.sectionIndex))
+        )
+      ) {
+        savePositionPayload(payload);
+      }
       const why = detail.reason;
       if (why === 'snap' || why === 'page' || why === 'navigation') {
         try { view.deselect?.(); } catch { /* */ }
@@ -2831,15 +3612,14 @@ import {
     if (view.book?.toc) { tocData = []; buildToc(view.book.toc, 1); }
     renderTocTab(); updateTocBtnState();
 
-    const urlPos = new URLSearchParams(location.search).get('pos');
-    if (urlPos) {
-      try { await view.goTo(urlPos); } catch { await view.renderer.next(); }
-    } else {
+    await positionSaveSuppression.run(async () => {
+      const urlPos = new URLSearchParams(location.search).get('pos');
       const saved = await loadSavedPosition();
-      if (saved?.position) {
-        try { await view.goTo(saved.position); } catch { await view.renderer.next(); }
-      } else { await view.renderer.next(); }
-    }
+      const restoreTarget = await resolveCrossDevicePositionOnOpen(saved, urlPos);
+      await restoreReadingPosition(restoreTarget, urlPos);
+      await waitForLayoutSettled(2000);
+      await maybeShowDeferredCrossDevicePrompt();
+    });
     clearTimeout(chromeTimer);
     setChromeVisible(false);
     void acquireReaderWakeLock();
@@ -2849,10 +3629,13 @@ import {
   let resizeTimer = null;
   function onViewportResize() {
     clearTimeout(resizeTimer);
-    resizeTimer = setTimeout(() => {
+    resizeTimer = setTimeout(async () => {
       if (!view?.renderer) return;
-      applyRendererLayout();
-      if (view.lastLocation) updateBookPageDisplay(view.lastLocation);
+      await positionSaveSuppression.run(async () => {
+        applyRendererLayout();
+        if (view.lastLocation) updateBookPageDisplay(view.lastLocation);
+        await waitForLayoutSettled(1500);
+      });
     }, 120);
   }
   window.addEventListener('resize', onViewportResize);

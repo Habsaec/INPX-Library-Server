@@ -1,15 +1,26 @@
-import { t } from '../i18n.js';
+import {
+  fractionToProgress,
+  normalizeReadingFraction,
+  progressToFraction,
+} from '../../public/position-sync.js';
 import { requireApiAuth } from '../middleware/auth.js';
 import { ApiErrorCode, apiFail } from '../api-errors.js';
+import { t } from '../i18n.js';
 import { asyncHandler } from '../utils/async-handler.js';
 import {
-  getReadingPosition, setReadingPosition,
+  getReadingPosition, migrateReadingPositionToV4, setReadingPositionCas,
   getReaderBookmarks, addReaderBookmark, deleteReaderBookmark,
   getReaderAnnotations, addReaderAnnotation, updateReaderAnnotation, deleteReaderAnnotation,
-  upsertReadingHistoryEntry, deleteReadingHistoryEntry
+  upsertReadingHistoryEntry, deleteReadingHistoryEntry,
+  getReaderBookSyncMeta, getUserReaderActivitySyncMeta,
 } from '../db.js';
 import { invalidateUserPageCaches, clearPageDataCache } from '../services/cache.js';
-import { isBookRead, getBookById, addReadBooksIfMissing } from '../inpx.js';
+import {
+  isBookRead,
+  getBookById,
+  addReadBooksIfMissing,
+  removeReadBookIfPresent,
+} from '../inpx.js';
 
 /**
  * Reader-related API routes: position tracking, bookmarks, reading history.
@@ -18,28 +29,157 @@ export function registerReaderRoutes(app) {
   /* ── Reading position ──────────────────────────────────────────── */
 
   app.get('/api/books/:id/position', requireApiAuth, asyncHandler(async (req, res) => {
-    const pos = getReadingPosition(req.user.username, req.params.id);
-    res.json(pos || { position: '', progress: 0 });
+    const username = req.user.username;
+    const bookId = req.params.id;
+    let pos = getReadingPosition(username, bookId);
+    if (pos && pos.positionVersion < 4) {
+      const ext = String(getBookById(bookId)?.ext || '').replace(/^\./, '').toLowerCase();
+      pos = migrateReadingPositionToV4(username, bookId, {
+        reset: ext === 'fb2' || ext === 'fbz',
+      });
+    }
+    res.json(pos || {
+      position: '',
+      progress: 0,
+      fraction: null,
+      fb2Href: null,
+      sectionIndex: null,
+      sectionPageFraction: null,
+      paginatorPage: null,
+      paginatorPages: null,
+      layoutMode: null,
+      textOffset: null,
+      textQuote: null,
+      textSectionLength: null,
+      updatedAt: null,
+      positionVersion: 4,
+      revision: 0,
+    });
+  }));
+
+  app.get('/api/books/:id/reader-sync-meta', requireApiAuth, asyncHandler(async (req, res) => {
+    res.json(getReaderBookSyncMeta(req.user.username, req.params.id));
+  }));
+
+  app.get('/api/reader-activity-sync-meta', requireApiAuth, asyncHandler(async (req, res) => {
+    res.json(getUserReaderActivitySyncMeta(req.user.username));
   }));
 
   app.post('/api/books/:id/position', requireApiAuth, asyncHandler(async (req, res) => {
-    const { position, progress } = req.body;
+    const {
+      position,
+      progress,
+      fraction,
+      fb2Href,
+      sectionIndex,
+      sectionPageFraction,
+      paginatorPage,
+      paginatorPages,
+      layoutMode,
+      textOffset,
+      textQuote,
+      textSectionLength,
+      positionVersion,
+      baseRevision,
+    } = req.body;
     const bookId = req.params.id;
     const username = req.user.username;
+    const hasBaseRevision = Object.prototype.hasOwnProperty.call(req.body || {}, 'baseRevision');
+    const normalizedBaseRevision = baseRevision === null ? 0 : baseRevision;
+    if (
+      positionVersion !== 4
+      || !hasBaseRevision
+      || !Number.isInteger(normalizedBaseRevision)
+      || normalizedBaseRevision < 0
+    ) {
+      return apiFail(
+        res,
+        428,
+        ApiErrorCode.POSITION_PROTOCOL_REQUIRED,
+        t('api.position.protocolRequired'),
+        { requiredPositionVersion: 4 },
+      );
+    }
     if (!getBookById(bookId)) {
       return apiFail(res, 404, ApiErrorCode.BOOK_NOT_FOUND, t('book.notFound'));
     }
-    const progressNum = Number.isFinite(Number(progress)) ? Math.max(0, Math.min(100, Number(progress))) : 0;
+    const hasExplicitFraction =
+      fraction != null
+      && !(typeof fraction === 'string' && fraction.trim() === '');
+    const progressFromBody = Number.isFinite(Number(progress)) ? Math.max(0, Math.min(100, Number(progress))) : 0;
+    const fractionNum =
+      hasExplicitFraction && Number.isFinite(Number(fraction))
+        ? normalizeReadingFraction(Number(fraction))
+        : progressToFraction(progressFromBody);
+    const progressNum = fractionToProgress(fractionNum);
     const posStr = String(position || '');
-    setReadingPosition(username, bookId, posStr, progressNum);
+    const fb2HrefStr = fb2Href != null && String(fb2Href).trim() ? String(fb2Href).trim() : null;
+    const nullableNonnegativeInteger = (value) =>
+      value == null || value === ''
+        ? null
+        : (Number.isInteger(value) && value >= 0 ? value : undefined);
+    const textOffsetValue = nullableNonnegativeInteger(textOffset);
+    const textSectionLengthValue = nullableNonnegativeInteger(textSectionLength);
+    const textQuoteValue = textQuote == null ? null : String(textQuote);
+    if (
+      textOffsetValue === undefined
+      || textSectionLengthValue === undefined
+      || (textQuoteValue != null && textQuoteValue.length > 256)
+    ) {
+      return apiFail(
+        res,
+        400,
+        ApiErrorCode.VALIDATION,
+        'Invalid text anchor',
+      );
+    }
+    const finite = (value) => {
+      if (value == null || value === '') return null;
+      const number = Number(value);
+      return Number.isFinite(number) ? number : null;
+    };
+    const saved = setReadingPositionCas(username, bookId, normalizedBaseRevision, posStr, progressNum, fractionNum, fb2HrefStr, {
+      sectionIndex: finite(sectionIndex),
+      sectionPageFraction: finite(sectionPageFraction),
+      paginatorPage: finite(paginatorPage),
+      paginatorPages: finite(paginatorPages),
+      layoutMode: layoutMode != null ? String(layoutMode) : null,
+      textOffset: textOffsetValue,
+      textQuote: textQuoteValue,
+      textSectionLength: textSectionLengthValue,
+    });
+    if (!saved) {
+      return apiFail(
+        res,
+        409,
+        ApiErrorCode.POSITION_CONFLICT,
+        t('api.position.conflict'),
+        { current: getReadingPosition(username, bookId) },
+      );
+    }
     invalidateUserPageCaches(username);
     // Auto-mark as read when progress reaches 99%+
     let markedRead = false;
+    let unmarkedRead = false;
     if (progressNum >= 99 && !isBookRead(username, bookId)) {
       addReadBooksIfMissing(username, [bookId]);
       markedRead = true;
+    } else if (progressNum < 95 && isBookRead(username, bookId)) {
+      // Starting the book again makes it an active read. Keep a small
+      // hysteresis below the 99% completion threshold to avoid page-end jitter.
+      unmarkedRead = removeReadBookIfPresent(username, bookId);
     }
-    res.json({ ok: true, markedRead });
+    res.json({
+      ok: true,
+      markedRead,
+      unmarkedRead,
+      updatedAt: saved.updatedAt,
+      positionVersion: saved.positionVersion,
+      revision: saved.revision,
+      textOffset: saved.textOffset,
+      textQuote: saved.textQuote,
+      textSectionLength: saved.textSectionLength,
+    });
   }));
 
   /* ── Auto-mark as read when finished ────────────────────────── */

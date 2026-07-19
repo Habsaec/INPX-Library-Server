@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { readFileSync, writeFileSync, statSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, statSync, existsSync, readdirSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -83,21 +83,37 @@ async function main() {
   // Обновляем CACHE_NAME в sw.js хешем от собранного кода: и клиентского JS,
   // и reader.js (последний обслуживается как отдельный файл, не входит в
   // app.min.js), чтобы Service Worker гарантированно инвалидировал кэш при
-  // любых изменениях клиентского кода. Также миксуем hash styles.min.css.
-  const swPath = path.join(publicDir, 'sw.js');
+  // любых изменениях клиентского кода. Также миксуем hash styles.min.css,
+  // position-sync.js и reader-shared/*.
+  const readerSharedInputs = readdirSync(publicDir, { withFileTypes: true })
+    .flatMap((entry) => {
+      if (entry.isDirectory() && entry.name === 'reader-shared') {
+        return readdirSync(path.join(publicDir, 'reader-shared'))
+          .filter((name) => name.endsWith('.js'))
+          .sort()
+          .map((name) => readFileSync(path.join(publicDir, 'reader-shared', name), 'utf8'));
+      }
+      return [];
+    });
   const hashInputs = [
     readFileSync(path.join(publicDir, 'app.min.js'), 'utf8'),
     readFileSync(path.join(publicDir, 'styles.min.css'), 'utf8'),
     readFileSync(path.join(publicDir, 'reader.js'), 'utf8'),
-    readFileSync(path.join(publicDir, 'reader.css'), 'utf8')
+    readFileSync(path.join(publicDir, 'reader.css'), 'utf8'),
+    readFileSync(path.join(publicDir, 'position-sync.js'), 'utf8'),
+    ...readerSharedInputs
   ].join('\n');
+  const swPath = path.join(publicDir, 'sw.js');
   const hash = createHash('md5').update(hashInputs).digest('hex').slice(0, 8);
   let sw = readFileSync(swPath, 'utf8');
-  const prev = sw;
-  sw = sw.replace(/^const CACHE_NAME = .*;\s*$/m, `const CACHE_NAME = \`inpx-v1-${hash}\`;`);
-  if (sw === prev) {
+  const cacheNameLine = `const CACHE_NAME = \`inpx-v1-${hash}\`;`;
+  const cacheNamePattern = /^const CACHE_NAME = .*;\s*$/m;
+  if (!cacheNamePattern.test(sw)) {
     console.warn('[assets] WARNING: could not update CACHE_NAME in sw.js — regex did not match');
+  } else if (sw.includes(cacheNameLine)) {
+    console.log(`[assets] sw.js CACHE_NAME already up-to-date: inpx-v1-${hash}`);
   } else {
+    sw = sw.replace(cacheNamePattern, cacheNameLine);
     writeFileSync(swPath, sw, 'utf8');
     console.log(`[assets] sw.js CACHE_NAME → inpx-v1-${hash}`);
   }

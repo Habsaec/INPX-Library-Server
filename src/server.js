@@ -14,6 +14,7 @@ import { runWithLocale, t, setDefaultLocale } from './i18n.js';
 import { ApiErrorCode, apiFail } from './api-errors.js';
 import { registerHealthRoutes } from './routes/health.js';
 import { registerBrowseApiRoutes } from './routes/browse-api.js';
+import { registerProfileApiRoutes } from './routes/profile-api.js';
 import { registerOpdsRoutes } from './routes/opds.js';
 import { registerOpdsV2Routes } from './routes/opds-v2.js';
 import { registerAuthRoutes } from './routes/auth-routes.js';
@@ -46,7 +47,7 @@ import { logSystemEvent } from './services/system-events.js';
 import { mirrorIndexingLogsToDataFile, appendIndexDiaryLine } from './services/file-log.js';
 import { installRuntimeLogCapture } from './services/runtime-logs.js';
 import { startScanScheduler } from './services/scheduler.js';
-import { startTelegramBot, stopTelegramBot, restartTelegramBot, isTelegramBotRunning, shouldRunTelegramBotInThisProcess, registerTelegramBotRoutes } from './services/telegram-bot.js';
+import { startTelegramBot, stopTelegramBot, restartTelegramBot, isTelegramBotRunning, shouldRunTelegramBotInThisProcess, registerTelegramBotRoutes, announceNewBooksInTelegram, testAnnounceNewBooksInTelegram, syncTelegramBotProfilePhoto } from './services/telegram-bot.js';
 import {
   STATS_CACHE_TTL_MS, HOME_SECTIONS_CACHE_TTL_MS
 } from './constants.js';
@@ -59,7 +60,8 @@ import {
   getLibrarySections,
   getStats,
   setConfiguredInpxFile,
-  startBackgroundIndexing
+  startBackgroundIndexing,
+  onIndexComplete
 } from './inpx.js';
 
 import {
@@ -668,6 +670,7 @@ app.use(browseLimiter);
 // Публичные диагностические маршруты — до express.static, чтобы не пересекаться с файлами из public/.
 registerHealthRoutes(app, { getCachedStats, getServiceValidation, getPerfSnapshot });
 registerBrowseApiRoutes(app);
+registerProfileApiRoutes(app);
 
 app.get('/custom/ui/:asset', (req, res) => {
   if (!serveUiAsset(String(req.params.asset || ''), res)) {
@@ -683,9 +686,19 @@ app.use(express.static(config.publicDir, {
   maxAge: '365d',
   immutable: true,
   etag: false,
+  lastModified: true,
   setHeaders: (res, filePath) => {
     if (filePath.endsWith('sw.js')) {
       res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+      return;
+    }
+    // JS/CSS-модули (reader.js, position-sync.js, foliate/*.js …) импортируются по
+    // относительным путям БЕЗ кэш-бастера `?v=`. С `immutable, max-age=365d` браузер
+    // держал бы устаревшие копии год — после обновления foliate/position-sync читалка
+    // ломалась бы (старый progress.js без EqualSectionProgress, старые подписи глав).
+    // Отдаём их с `no-cache` → браузер ревалидирует (обычно дешёвый 304 по Last-Modified).
+    if (filePath.endsWith('.js') || filePath.endsWith('.css')) {
+      res.setHeader('Cache-Control', 'no-cache');
     }
   }
 }));
@@ -962,6 +975,8 @@ registerAdminRoutes(app, {
   setSiteName,
   restartTelegramBot,
   isTelegramBotRunning,
+  testAnnounceNewBooksInTelegram,
+  syncTelegramBotProfilePhoto,
   templates: {
     renderOperations, renderAdminUsers, renderAdminUpdate, renderAdminSmtp,
     renderAdminTelegram, renderAdminEvents, renderAdminSources, renderAdminDuplicates, renderAdminContent,
@@ -1078,6 +1093,14 @@ app.use((err, req, res, next) => {
 
 async function bootstrap() {
   initDb();
+  onIndexComplete(({ newBooksCount }) => {
+    if (newBooksCount <= 0) return;
+    if (!shouldRunTelegramBotInThisProcess()) return;
+    announceNewBooksInTelegram(newBooksCount).catch((err) => {
+      logSystemEvent('warn', 'telegram-bot', 'ошибка анонса новинок', { error: err.message, count: newBooksCount });
+    });
+    try { setMeta('index_last_new_books_count', ''); } catch { /* ignore */ }
+  });
   // Индексы создаём в фоне — на большой БД это секунды-минуты блокировки event loop.
   setImmediate(() => ensureSchemaIndexes());
   // Run DB optimize manually/offline; in-process optimize can block HTTP loop on large datasets.

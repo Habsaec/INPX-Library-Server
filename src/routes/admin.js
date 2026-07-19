@@ -3,6 +3,14 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import express from 'express';
 import { config } from '../config.js';
+import { validateNewBooksAnnounceTemplate } from '../telegram-bot-defaults.js';
+
+function normalizeNewBooksAnnounceTemplate(template = '') {
+  return String(template || '')
+    .replace(/\{\{(https?:\/\/[^}]+)\}\}/gi, '{{url}}')
+    .trim()
+    .slice(0, 4096);
+}
 import { getConfiguredDownloadFormats, setDisabledDownloadFormats } from '../download-formats.js';
 import { runWithLocaleLang, resolveLocale, t, tp, countLabel, translateKnownErrorMessage, setDefaultLocale } from '../i18n.js';
 import { ApiErrorCode, apiFail } from '../api-errors.js';
@@ -25,15 +33,15 @@ import {
   resetUiThemeColors, resetUiThemeSliders,
   resetUiThemeShape, resetUiThemeTypography,
   saveUiShapeSettings, saveUiTypographySettings,
-  refreshBgThemePaletteFromFile,
-  getPublicUiSettingsJson
+  refreshBgThemePaletteForAdmin, refreshBgThemePaletteFromFile,
+  getPublicUiSettingsJson, getThemePreviewFromDraft, getUiAppearanceFormState
 } from '../services/ui-customization.js';
 import {
   setSetting, getSetting, encryptValue, decryptValue, getSources, getSourceById,
   addSource, updateSource, deleteSourceProgressive, forceDetachSourceRowUnsafe,
-  getSmtpSettings, setSmtpSettings, getTelegramSettings, setTelegramSettings, resolveTelegramTokenForAdmin, hasAdminUser, listUsers, countAdminUsers,
+  getSmtpSettings, setSmtpSettings, getTelegramSettings, setTelegramSettings, resolveTelegramTokenForAdmin, syncTelegramChatsFromLinkedUsers, hasAdminUser, listUsers, countAdminUsers,
   isPasswordResetEnabled, getPublicBaseUrlSetting, setPasswordResetSettings,
-  getUserByUsername, upsertUser, updateUser, deleteUser, blockUser, unblockUser, setUserTelegramId, setUserTelegramBotAllowed, setUserEreaderEmailAllowed, setUserEreaderEmail, getEreaderEmail,
+  getUserByUsername, upsertUser, updateUser, deleteUser, blockUser, unblockUser, getUserByTelegramId, normalizeTelegramId, setUserTelegramId, setUserTelegramBotAllowed, setUserEreaderEmailAllowed, setUserEreaderEmail, getEreaderEmail,
   db, getDistinctLanguages, getDistinctGenres, rebuildActiveBooksView, refreshCatalogBookCounts,
   getSuppressedBooks, unsuppressBook, unsuppressAll, getScheduleLog
 } from '../db.js';
@@ -131,6 +139,11 @@ function readAdminAccountUsername(body) {
   return String(raw ?? '').trim();
 }
 
+/** Exported for tests: scoped TG/email fields were hydrated in the browser before submit. */
+export function isAdminUserScopedFieldsReady(body, username) {
+  return isFormFlagEnabled(readAdminUserField(body, username, 'accountFieldsReady'));
+}
+
 export function registerAdminRoutes(app, deps) {
   const {
     operationsState,
@@ -147,6 +160,8 @@ export function registerAdminRoutes(app, deps) {
     setSiteName,
     restartTelegramBot,
     isTelegramBotRunning,
+    testAnnounceNewBooksInTelegram,
+    syncTelegramBotProfilePhoto,
     templates: {
       renderOperations, renderAdminUsers, renderAdminUpdate, renderAdminSmtp,
       renderAdminTelegram, renderAdminEvents, renderAdminSources, renderAdminDuplicates, renderAdminContent,
@@ -638,6 +653,8 @@ export function registerAdminRoutes(app, deps) {
       ui: getUiCustomization(),
       siteName: getSetting('site_name') || '',
       homeSubtitle: getSetting('home_subtitle') || '',
+      homeNewestCount: getSetting('home_newest_count') || '',
+      homeNewestCountDefault: config.homeNewestCount,
       flash: String(req.query.flash || ''),
       csrfToken: req.csrfToken || ''
     }));
@@ -650,7 +667,17 @@ export function registerAdminRoutes(app, deps) {
       setSiteName(name);
       const subtitle = String(req.body.homeSubtitle ?? '').trim();
       setSetting('home_subtitle', subtitle);
+      const rawHomeNewestCount = String(req.body.homeNewestCount ?? '').trim();
+      if (!rawHomeNewestCount) {
+        setSetting('home_newest_count', '');
+      } else {
+        const homeNewestCount = Math.max(1, Math.min(200, Math.floor(Number(rawHomeNewestCount) || config.homeNewestCount)));
+        setSetting('home_newest_count', String(homeNewestCount));
+      }
       const dynamicThemeFromBg = isFormFlagEnabled(req.body.dynamicThemeFromBg);
+      if (dynamicThemeFromBg) {
+        await refreshBgThemePaletteFromFile();
+      }
       saveUiSettings({
         bgBlur: lastFormFieldValue(req.body.bgBlur),
         bgOverlay: lastFormFieldValue(req.body.bgOverlay),
@@ -671,17 +698,26 @@ export function registerAdminRoutes(app, deps) {
         glassLinkLight: lastFormFieldValue(req.body.glassLinkLight),
         glassLinkAutoDark: isFormFlagEnabled(req.body.glassLinkAutoDark),
         glassLinkAutoLight: isFormFlagEnabled(req.body.glassLinkAutoLight),
+        accentDark: lastFormFieldValue(req.body.accentDark),
+        accentLight: lastFormFieldValue(req.body.accentLight),
+        accentAutoDark: isFormFlagEnabled(req.body.accentAutoDark),
+        accentAutoLight: isFormFlagEnabled(req.body.accentAutoLight),
+        overlayColorDark: lastFormFieldValue(req.body.overlayColorDark),
+        overlayColorLight: lastFormFieldValue(req.body.overlayColorLight),
+        overlayColorAutoDark: isFormFlagEnabled(req.body.overlayColorAutoDark),
+        overlayColorAutoLight: isFormFlagEnabled(req.body.overlayColorAutoLight),
+        bgSize: lastFormFieldValue(req.body.bgSize),
+        bgPosition: lastFormFieldValue(req.body.bgPosition),
         showLogoOnLogin: isFormFlagEnabled(req.body.showLogoOnLogin),
       });
-      if (dynamicThemeFromBg) {
-        await refreshBgThemePaletteFromFile();
-      }
       saveUiShapeSettings({
         radiusPreset: lastFormFieldValue(req.body.radiusPreset),
+        radiusScale: lastFormFieldValue(req.body.radiusScale),
         shadowPreset: lastFormFieldValue(req.body.shadowPreset),
       });
       saveUiTypographySettings({
         fontSize: lastFormFieldValue(req.body.fontSize),
+        headingScale: lastFormFieldValue(req.body.headingScale),
         density: lastFormFieldValue(req.body.density),
         fontFamily: lastFormFieldValue(req.body.fontFamily),
       });
@@ -703,6 +739,11 @@ export function registerAdminRoutes(app, deps) {
       removeUiAsset(asset);
       clearPageDataCache();
       logSystemEvent('info', 'settings', 'ui asset removed', { actor: req.user.username, asset });
+      if (asset === 'logo') {
+        void syncTelegramBotProfilePhoto({ force: true }).catch((err) => {
+          logSystemEvent('warn', 'telegram-bot', 'аватар бота не сброшен после удаления логотипа', { error: err.message });
+        });
+      }
       res.redirect('/admin/appearance?flash=' + encodeURIComponent(t('admin.ui.flashRemoved')));
     } catch (error) {
       res.redirect('/admin/appearance?flash=' + encodeURIComponent(uiAdminFlashMessage(error)));
@@ -744,8 +785,7 @@ export function registerAdminRoutes(app, deps) {
 
   app.post('/admin/settings/ui/refresh-bg-palette', requireAdminWeb, async (req, res) => {
     try {
-      saveUiSettings({ dynamicThemeFromBg: true });
-      await refreshBgThemePaletteFromFile({ resetTypography: true });
+      await refreshBgThemePaletteForAdmin();
       clearPageDataCache();
       logSystemEvent('info', 'settings', 'ui background palette refreshed', { actor: req.user.username });
       res.redirect('/admin/appearance?flash=' + encodeURIComponent(t('admin.ui.flashBgPaletteRefreshed')));
@@ -773,7 +813,69 @@ export function registerAdminRoutes(app, deps) {
       await saveUiAsset(asset, buffer, { originalName });
       clearPageDataCache();
       logSystemEvent('info', 'settings', 'ui asset uploaded', { actor: req.user.username, asset, size: buffer.length });
-      res.json({ ok: true, ui: getPublicUiSettingsJson() });
+      if (asset === 'logo') {
+        void syncTelegramBotProfilePhoto({ force: true }).catch((err) => {
+          logSystemEvent('warn', 'telegram-bot', 'аватар бота не обновлён после загрузки логотипа', { error: err.message });
+        });
+      }
+      res.json({ ok: true, ui: getPublicUiSettingsJson(), appearance: getUiAppearanceFormState() });
+    } catch (error) {
+      return apiFail(res, 400, ApiErrorCode.VALIDATION, uiAdminFlashMessage(error));
+    }
+  });
+
+  app.post('/api/admin/ui/remove', requireAdminApi, (req, res) => {
+    const asset = String(req.body?.asset || '').trim();
+    try {
+      removeUiAsset(asset);
+      clearPageDataCache();
+      logSystemEvent('info', 'settings', 'ui asset removed', { actor: req.user.username, asset });
+      if (asset === 'logo') {
+        void syncTelegramBotProfilePhoto({ force: true }).catch((err) => {
+          logSystemEvent('warn', 'telegram-bot', 'аватар бота не сброшен после удаления логотипа', { error: err.message });
+        });
+      }
+      res.json({ ok: true, ui: getPublicUiSettingsJson(), appearance: getUiAppearanceFormState() });
+    } catch (error) {
+      return apiFail(res, 400, ApiErrorCode.VALIDATION, uiAdminFlashMessage(error));
+    }
+  });
+
+  app.post('/api/admin/ui/refresh-bg-palette', requireAdminApi, async (req, res) => {
+    try {
+      await refreshBgThemePaletteForAdmin();
+      clearPageDataCache();
+      logSystemEvent('info', 'settings', 'ui background palette refreshed', { actor: req.user.username });
+      res.json({ ok: true, state: getUiAppearanceFormState() });
+    } catch (error) {
+      return apiFail(res, 400, ApiErrorCode.VALIDATION, uiAdminFlashMessage(error));
+    }
+  });
+
+  app.post('/api/admin/ui/preview', requireAdminApi, (req, res) => {
+    try {
+      const preview = getThemePreviewFromDraft(req.body || {});
+      res.json({ ok: true, ...preview });
+    } catch (error) {
+      return apiFail(res, 400, ApiErrorCode.VALIDATION, uiAdminFlashMessage(error));
+    }
+  });
+
+  const UI_APPEARANCE_RESET = {
+    sliders: { fn: resetUiThemeSliders, log: 'ui theme sliders reset', flash: 'admin.ui.flashResetSliders' },
+    colors: { fn: resetUiThemeColors, log: 'ui theme colors reset', flash: 'admin.ui.flashResetColors' },
+    shape: { fn: resetUiThemeShape, log: 'ui theme shape reset', flash: 'admin.ui.flashResetShape' },
+    typography: { fn: resetUiThemeTypography, log: 'ui theme typography reset', flash: 'admin.ui.flashResetTypography' },
+  };
+
+  app.post('/api/admin/ui/reset/:section', requireAdminApi, (req, res) => {
+    const spec = UI_APPEARANCE_RESET[String(req.params.section || '')];
+    if (!spec) return apiFail(res, 404, ApiErrorCode.NOT_FOUND, 'Not found');
+    try {
+      spec.fn();
+      clearPageDataCache();
+      logSystemEvent('info', 'settings', spec.log, { actor: req.user.username });
+      res.json({ ok: true, state: getUiAppearanceFormState() });
     } catch (error) {
       return apiFail(res, 400, ApiErrorCode.VALIDATION, uiAdminFlashMessage(error));
     }
@@ -803,6 +905,52 @@ export function registerAdminRoutes(app, deps) {
     }));
   });
 
+  async function handleTelegramTestAnnounce(req, res) {
+    const rawToken = String(req.body.token ?? '').trim();
+    const newBooksAnnounceTemplate = normalizeNewBooksAnnounceTemplate(
+      String(req.body.newBooksAnnounceTemplate ?? '').trim()
+    );
+    const newBooksAnnounceTestCount = Math.max(1, Math.min(99_999, Math.floor(Number(req.body.newBooksAnnounceTestCount) || 3)));
+    const token = resolveTelegramTokenForAdmin(rawToken);
+
+    if (!token) {
+      return res.redirect('/admin/telegram?flash=' + encodeURIComponent(t('admin.telegram.flashNoToken')));
+    }
+    const templateCheck = validateNewBooksAnnounceTemplate(newBooksAnnounceTemplate);
+    if (!templateCheck.ok) {
+      return res.redirect('/admin/telegram?flash=' + encodeURIComponent(templateCheck.warnings.join(' · ')));
+    }
+    try {
+      const result = await testAnnounceNewBooksInTelegram({
+        count: newBooksAnnounceTestCount,
+        template: newBooksAnnounceTemplate,
+        token,
+      });
+      if (result.reason === 'no_chats') {
+        return res.redirect('/admin/telegram?flash=' + encodeURIComponent(t('admin.telegram.flashTestAnnounceNoChats')));
+      }
+      if (result.skipped && result.reason === 'no_token') {
+        return res.redirect('/admin/telegram?flash=' + encodeURIComponent(t('admin.telegram.flashNoToken')));
+      }
+      if (!result.sent) {
+        const apiErr = result.errors?.[0]?.description;
+        const flash = apiErr
+          ? tp('admin.telegram.flashTestAnnounceErr', { message: apiErr })
+          : t('admin.telegram.flashTestAnnounceFailed');
+        return res.redirect('/admin/telegram?flash=' + encodeURIComponent(flash));
+      }
+      return res.redirect('/admin/telegram?flash=' + encodeURIComponent(
+        tp('admin.telegram.flashTestAnnounceOk', { sent: result.sent, total: result.totalChats })
+      ));
+    } catch (err) {
+      return res.redirect('/admin/telegram?flash=' + encodeURIComponent(
+        tp('admin.telegram.flashTestAnnounceErr', { message: err.message })
+      ));
+    }
+  }
+
+  app.post('/admin/telegram/test-announce', requireAdminWeb, handleTelegramTestAnnounce);
+
   app.post('/admin/telegram', requireAdminWeb, async (req, res) => {
     const rawToken = String(req.body.token ?? '').trim();
     const allowedUsers = String(req.body.allowedUsers ?? '').trim();
@@ -810,7 +958,9 @@ export function registerAdminRoutes(app, deps) {
     const welcomeMessage = String(req.body.welcomeMessage ?? '').trim().slice(0, 4096);
     const profileDescription = String(req.body.profileDescription ?? '').trim().slice(0, 512);
     const profileShortDescription = String(req.body.profileShortDescription ?? '').trim().slice(0, 120);
+    const newBooksAnnounceTemplate = String(req.body.newBooksAnnounceTemplate ?? '').trim().slice(0, 4096);
     const enabled = req.body.enabled === '1';
+    const newBooksAnnounceEnabled = req.body.newBooksAnnounceEnabled === '1';
     const isTest = req.body.test === '1';
 
     const token = resolveTelegramTokenForAdmin(rawToken);
@@ -837,8 +987,11 @@ export function registerAdminRoutes(app, deps) {
       welcomeMessage,
       profileDescription,
       profileShortDescription,
+      newBooksAnnounceEnabled,
+      newBooksAnnounceTemplate: normalizeNewBooksAnnounceTemplate(newBooksAnnounceTemplate),
       enabled,
     });
+    syncTelegramChatsFromLinkedUsers();
     restartTelegramBot().catch((err) => {
       logSystemEvent('warn', 'telegram-bot', 'ошибка перезапуска из админки', { error: err.message });
     });
@@ -1145,25 +1298,35 @@ export function registerAdminRoutes(app, deps) {
       if (!existing) {
         return res.redirect('/admin/users?flash=' + encodeURIComponent(t('validation.userNotFound')));
       }
-      updateUser({ username, password, role });
-      if (password) invalidateSessionUserCache(username);
       const rawTelegramId = readAdminUserField(req.body, username, 'accountTelegramId')
         || readAdminUserField(req.body, username, 'telegramId');
       const prevTelegramId = String(existing.telegramId ?? '').trim();
-      if (rawTelegramId !== prevTelegramId) {
-        setUserTelegramId(username, rawTelegramId);
-      }
-      setUserTelegramBotAllowed(username, isFormFlagEnabled(req.body.telegramBotAllowed));
-      setUserEreaderEmailAllowed(username, isFormFlagEnabled(req.body.ereaderEmailAllowed));
       const rawEreaderEmail = readAdminUserField(req.body, username, 'accountEreaderEmail')
         || readAdminUserField(req.body, username, 'ereaderEmail');
       if (rawEreaderEmail && !/^[^\s@,;<>]+@[^\s@,;<>]+\.[^\s@,;<>]+$/.test(rawEreaderEmail)) {
         throw new Error('Invalid email');
       }
-      const prevEreaderEmail = String(getEreaderEmail(username) || '').trim();
-      if (rawEreaderEmail !== prevEreaderEmail) {
-        setUserEreaderEmail(username, rawEreaderEmail);
+      if (rawTelegramId !== prevTelegramId && rawTelegramId) {
+        const normalizedTg = normalizeTelegramId(rawTelegramId);
+        if (!normalizedTg) throw new Error('Invalid Telegram ID');
+        const owner = getUserByTelegramId(normalizedTg);
+        if (owner && owner.username !== username) {
+          throw new Error('This Telegram account is already linked to another user');
+        }
       }
+      updateUser({ username, password, role });
+      invalidateSessionUserCache(username);
+      if (isAdminUserScopedFieldsReady(req.body, username)) {
+        if (rawTelegramId !== prevTelegramId) {
+          setUserTelegramId(username, rawTelegramId);
+        }
+        const prevEreaderEmail = String(getEreaderEmail(username) || '').trim();
+        if (rawEreaderEmail !== prevEreaderEmail) {
+          setUserEreaderEmail(username, rawEreaderEmail);
+        }
+      }
+      setUserTelegramBotAllowed(username, isFormFlagEnabled(req.body.telegramBotAllowed));
+      setUserEreaderEmailAllowed(username, isFormFlagEnabled(req.body.ereaderEmailAllowed));
       logSystemEvent('info', 'auth', 'user updated', {
         actor: req.user.username,
         username,
@@ -1188,6 +1351,7 @@ export function registerAdminRoutes(app, deps) {
         return res.redirect('/admin/users?flash=' + encodeURIComponent(t('admin.users.flashCannotDeleteSelf')));
       }
       deleteUser(username);
+      invalidateSessionUserCache(username);
       logSystemEvent('info', 'auth', 'user deleted', { actor: req.user.username, username });
       res.redirect('/admin/users?flash=' + encodeURIComponent(tp('admin.users.flashDeleted', { username })));
     } catch (error) {
@@ -1207,10 +1371,12 @@ export function registerAdminRoutes(app, deps) {
       }
       if (action === 'unblock') {
         unblockUser(username);
+        invalidateSessionUserCache(username);
         logSystemEvent('info', 'admin', 'user unblocked', { actor: req.user.username, username });
         res.redirect('/admin/users?flash=' + encodeURIComponent(tp('admin.users.flashUnblocked', { username })));
       } else {
         blockUser(username);
+        invalidateSessionUserCache(username);
         logSystemEvent('info', 'admin', 'user blocked', { actor: req.user.username, username });
         res.redirect('/admin/users?flash=' + encodeURIComponent(tp('admin.users.flashBlocked', { username })));
       }

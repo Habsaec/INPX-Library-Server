@@ -10,7 +10,9 @@ const __dirname = path.dirname(__filename);
 const rootDir = path.resolve(__dirname, '..');
 const libraryRoot = process.env.LIBRARY_ROOT || (process.platform === 'win32' ? '' : '/library');
 const inpxFile = process.env.INPX_FILE || '';
-const dataDir = path.join(rootDir, 'data');
+const dataDir = process.env.DATA_DIR
+  ? path.resolve(process.env.DATA_DIR)
+  : path.join(rootDir, 'data');
 const dbPath = path.join(dataDir, 'library.db');
 const conversionCacheDir = path.join(dataDir, 'converted-books');
 const conversionTempDir = path.join(dataDir, 'tmp');
@@ -115,6 +117,8 @@ export const config = {
   sevenZipPath: (process.env.SEVEN_ZIP_PATH || '').trim(),
   /** Дублировать события (как в админке «События») в stdout/stderr для Docker. false / 0 — отключить. */
   eventsLogStdout: parseBoolean(process.env.EVENTS_STDOUT ?? process.env.EVENTS_LOG_STDOUT, true),
+  /** Количество плиток «Недавно добавленные» на главной (дефолт: 12). */
+  homeNewestCount: parseEnvInt('HOME_NEWEST_COUNT', process.env.HOME_NEWEST_COUNT, 12, { min: 1, max: 200 }),
   /** Задержка перед post-index wal_checkpoint + ANALYZE (мс), чтобы HTTP успел обработать очередь после снятия флага индексации. */
   postIndexMaintenanceDelayMs: parseEnvInt(
     'POST_INDEX_MAINTENANCE_DELAY_MS',

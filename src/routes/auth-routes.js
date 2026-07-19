@@ -88,7 +88,7 @@ export function registerAuthRoutes(app, deps) {
     };
   }
 
-  function buildProfileSettingsData(user, flash = '', csrfToken = '') {
+  function buildProfileSettingsData(user, flash = '', csrfToken = '', extra = {}) {
     const fullUser = getUserByUsername(user.username);
     const tgRuntime = resolveTelegramRuntimeConfig();
     return {
@@ -104,7 +104,8 @@ export function registerAuthRoutes(app, deps) {
       telegramBotAllowed: fullUser ? isTelegramBotAllowedForUser(fullUser) : true,
       ereaderEmailAllowed: fullUser ? isEreaderEmailAllowedForUser(fullUser) : true,
       flash,
-      csrfToken
+      csrfToken,
+      ...extra
     };
   }
 

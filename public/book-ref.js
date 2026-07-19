@@ -71,9 +71,76 @@
   function apiReadingHistoryPath(id) { return apiActionPath('/api/reading-history', id); }
   function apiSendToEreaderPath(id) { return apiActionPath('/api/send-to-ereader', id); }
 
+  function resolveBookRefAttr(ref) {
+    if (!ref) return null;
+    const decoded = decodeBookRef(ref);
+    return decoded || null;
+  }
+
+  function legacyEncodedId(value) {
+    if (!value || value === '1') return null;
+    try {
+      return decodeURIComponent(value).replace(/\uFFFD/g, '\0');
+    } catch {
+      return String(value).replace(/\uFFFD/g, '\0');
+    }
+  }
+
+  /** ID книги из DOM-элемента (карточка, кнопка «Прочитано» и т.д.). */
+  function resolveBookIdFromElement(el) {
+    if (!el) return null;
+    const host = el.closest('[data-book-id-ref]');
+    if (host) {
+      const decoded = resolveBookRefAttr(host.dataset.bookIdRef || host.getAttribute('data-book-id-ref'));
+      if (decoded) return decoded;
+    }
+    const directRef = el.getAttribute?.('data-book-id-ref');
+    if (directRef) {
+      const decoded = resolveBookRefAttr(directRef);
+      if (decoded) return decoded;
+    }
+    for (const key of ['readButton', 'bookmarkButton', 'addToShelf', 'sendToEreader']) {
+      const legacy = legacyEncodedId(el.dataset?.[key]);
+      if (legacy) return legacy;
+    }
+    const card = el.closest('[data-book-id]');
+    if (card?.dataset?.bookId) return card.dataset.bookId.replace(/\uFFFD/g, '\0');
+    return null;
+  }
+
+  function resolveBatchBookIdFromElement(el) {
+    if (!el) return null;
+    const ref = el.getAttribute('data-batch-book-id-ref');
+    if (ref) {
+      const decoded = resolveBookRefAttr(ref);
+      if (decoded) return decoded;
+    }
+    const legacy = el.getAttribute('data-batch-book-id');
+    if (legacy) return legacy.replace(/\uFFFD/g, '\0');
+    const card = el.closest('.card');
+    return card ? resolveBookIdFromElement(card) : null;
+  }
+
+  function findCardsByBookId(bookId) {
+    if (!bookId) return [];
+    const out = [];
+    const seen = new Set();
+    const ref = encodeBookRef(bookId);
+    document.querySelectorAll(`.card[data-book-id-ref="${CSS.escape(ref)}"]`).forEach((c) => {
+      if (!seen.has(c)) { seen.add(c); out.push(c); }
+    });
+    if (!bookIdNeedsSafeUrl(bookId)) {
+      document.querySelectorAll(`.card[data-book-id="${CSS.escape(bookId)}"]`).forEach((c) => {
+        if (!seen.has(c)) { seen.add(c); out.push(c); }
+      });
+    }
+    return out;
+  }
+
   const api = {
     bookIdNeedsSafeUrl, encodeBookRef, decodeBookRef, bookPagePath, readPagePath, liteBookPagePath, liteReadPagePath, apiBookPath, downloadBookPath,
-    apiReadPath, apiBookmarkPath, apiReadingHistoryPath, apiSendToEreaderPath
+    apiReadPath, apiBookmarkPath, apiReadingHistoryPath, apiSendToEreaderPath,
+    resolveBookIdFromElement, resolveBatchBookIdFromElement, findCardsByBookId
   };
   globalThis.bookRef = api;
   for (const [key, fn] of Object.entries(api)) {

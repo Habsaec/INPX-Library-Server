@@ -6,12 +6,12 @@
   "type": "module",
   "license": "MIT",
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=20.0.0"
   },
   "scripts": {
     "prestart": "node scripts/build-assets.js --if-stale",
     "start": "node src/server-entry.js",
-    "test": "node --test test/*.test.js",
+    "test": "node scripts/run-tests.js",
     "dev": "node --watch src/server-entry.js",
     "build:assets": "node scripts/build-assets.js",
     "build:assets:watch": "node scripts/build-assets.js --watch",

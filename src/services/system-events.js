@@ -103,6 +103,9 @@ export function logSystemEvent(level, category, message, details = '') {
       )
     `).run(SYSTEM_EVENTS_MAX_COUNT);
   } catch (error) {
+    // Best-effort persistence: migration unit tests use in-memory DBs without system_events.
+    if (process.env.INPX_TEST_RUN === '1') return;
+    if (error?.code === 'SQLITE_ERROR') return;
     console.error('Failed to write system event', error);
   }
 }

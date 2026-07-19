@@ -14,6 +14,7 @@ import {
   hasCoversArchives,
   hasImagesArchives
 } from './flibusta-sidecar.js';
+import { ensureEpubZipFromBookBuffer } from './epub-seven-zip.js';
 
 /** Кэш по корню источника: есть ли на диске covers|images (без обхода при каждой книге). */
 const coverImageMediaRootCache = new Map();
@@ -243,8 +244,11 @@ function decodeFb2BufferToString(buffer) {
  * FB2 для выдачи в читалку / скачивание / конвертацию: для Flibusta sidecar вшивает обложку и иллюстрации из ZIP.
  */
 export async function readBookBufferForDelivery(book) {
-  const buffer = await readBookBuffer(book);
+  let buffer = await readBookBuffer(book);
   const ext = String(book?.ext || 'fb2').toLowerCase();
+  if (ext === 'epub') {
+    buffer = await ensureEpubZipFromBookBuffer(buffer, book);
+  }
   if (ext !== 'fb2' || !shouldTryFlibustaCoverPaths(book)) {
     return buffer;
   }

@@ -885,6 +885,51 @@ body.chrome-hidden .reader-toast{
 }
 .reader-toast.is-visible{opacity:1;transform:translateX(-50%) translateY(0)}
 
+.reader-cross-device-prompt{
+  position:fixed;inset:0;z-index:395;display:flex;align-items:center;justify-content:center;
+  padding:16px;
+}
+.reader-cross-device-prompt[hidden]{display:none !important;}
+.reader-cross-device-backdrop{
+  position:absolute;inset:0;background:rgba(0,0,0,.45);pointer-events:auto;
+}
+.reader-cross-device-panel{
+  position:relative;z-index:1;max-width:min(92vw,400px);width:100%;
+  background:var(--r-bar);border:1px solid var(--r-border);border-radius:14px;
+  padding:18px 20px;box-shadow:var(--r-shadow);pointer-events:auto;
+}
+.reader-cross-device-message{
+  margin:0 0 14px;font-size:15px;line-height:1.45;color:var(--r-fg);
+}
+.reader-cross-device-compare{
+  margin:0 0 16px;padding:12px 14px;border-radius:12px;
+  background:var(--r-hover);border:1px solid var(--r-border);
+}
+.reader-cross-device-row{
+  display:flex;align-items:baseline;justify-content:space-between;gap:12px;
+}
+.reader-cross-device-row + .reader-cross-device-row{
+  margin-top:10px;padding-top:10px;border-top:1px solid var(--r-border);
+}
+.reader-cross-device-label{
+  font-size:12px;font-weight:600;color:var(--r-fg);opacity:.72;
+}
+.reader-cross-device-value{
+  font-size:15px;font-weight:700;color:var(--r-fg);text-align:right;font-variant-numeric:tabular-nums;
+}
+.reader-cross-device-row-server .reader-cross-device-value{color:var(--r-accent);}
+.reader-cross-device-actions{
+  display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap;
+}
+.reader-cross-device-actions button{
+  border:1px solid var(--r-border);border-radius:10px;padding:8px 14px;
+  font-size:14px;font-weight:600;cursor:pointer;background:var(--r-bg);
+  color:var(--r-fg);
+}
+.reader-cross-device-accept{
+  background:var(--r-accent);color:var(--r-bg);border-color:transparent;
+}
+
 /* E-Ink / lite reader — visual language matches public/lite.css */
 html[data-eink="1"] {
   --lite-touch: clamp(44px, 11vw, 52px);

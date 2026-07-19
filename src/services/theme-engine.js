@@ -91,12 +91,19 @@ function pickAutoText(surfaceHex) {
   return relativeLuminance(...hexToRgb(surfaceHex)) < 0.45 ? '#ece6dc' : '#2a2218';
 }
 
+/** Shift a hex color's lightness for a hover variant (lighter on dark, darker on light). */
+function shiftLightness(hex, deltaL) {
+  const { h, s, l } = hexToHsl(hex);
+  return hslToHex(h, s, Math.min(100, Math.max(0, l + deltaL)));
+}
+
 /**
  * Build full semantic palette for one theme mode from a surface tint.
  * @param {string} surfaceHex
  * @param {string} [textHex] - empty = auto from surface luminance
+ * @param {string} [accentHex] - empty = auto-derived accent from surface hue
  */
-export function buildThemePalette(surfaceHex, textHex = '') {
+export function buildThemePalette(surfaceHex, textHex = '', accentHex = '') {
   const surface = normalizeHexColor(surfaceHex, DEFAULT_GLASS_DARK);
   const textOverride = String(textHex || '').trim();
   const text = textOverride ? normalizeHexColor(textOverride, pickAutoText(surface)) : pickAutoText(surface);
@@ -104,8 +111,14 @@ export function buildThemePalette(surfaceHex, textHex = '') {
   const { h, s } = hexToHsl(surface);
   const hue = s < 8 ? 38 : h;
 
-  const accent = hslToHex(hue, Math.min(42, s + 12), isDark ? 58 : 42);
-  const accentHover = hslToHex(hue, Math.min(48, s + 18), isDark ? 52 : 36);
+  const accentOverride = String(accentHex || '').trim();
+  const hasAccentOverride = /^#[0-9a-fA-F]{3,6}$/.test(accentOverride);
+  const accent = hasAccentOverride
+    ? normalizeHexColor(accentOverride, hslToHex(hue, Math.min(42, s + 12), isDark ? 58 : 42))
+    : hslToHex(hue, Math.min(42, s + 12), isDark ? 58 : 42);
+  const accentHover = hasAccentOverride
+    ? shiftLightness(accent, isDark ? 8 : -8)
+    : hslToHex(hue, Math.min(48, s + 18), isDark ? 52 : 36);
   const link = hslToHex(hue, Math.min(55, s + 22), isDark ? 68 : 34);
   const linkHover = hslToHex(hue, Math.min(60, s + 28), isDark ? 74 : 28);
   const muted = mixHex(text, surface, isDark ? 0.42 : 0.38);
@@ -154,6 +167,7 @@ export function buildThemePalette(surfaceHex, textHex = '') {
     cardCoverFallbackBg: `linear-gradient(180deg, ${coverA} 0%, ${coverB} 100%)`,
     cardCoverBorder: isDark ? 'rgba(255,255,255,0.1)' : `color-mix(in srgb, ${text} 12%, transparent)`,
     textAuto: textOverride === '',
+    accentAuto: !hasAccentOverride,
   };
 }
 
@@ -171,10 +185,10 @@ export function deriveGlassTheme(glassHex) {
   };
 }
 
-export function buildThemePair(darkSurface, lightSurface, darkText = '', lightText = '') {
+export function buildThemePair(darkSurface, lightSurface, darkText = '', lightText = '', darkAccent = '', lightAccent = '') {
   return {
-    dark: buildThemePalette(darkSurface || DEFAULT_GLASS_DARK, darkText),
-    light: buildThemePalette(lightSurface || DEFAULT_GLASS_LIGHT, lightText),
+    dark: buildThemePalette(darkSurface || DEFAULT_GLASS_DARK, darkText, darkAccent),
+    light: buildThemePalette(lightSurface || DEFAULT_GLASS_LIGHT, lightText, lightAccent),
   };
 }
 
@@ -285,15 +299,47 @@ const FONT_SIZE_RATIOS = {
   '2xl': 26 / 14,
 };
 
-/** CSS custom properties for UI font sizes from base size in px */
-export function fontSizeToCssVars(basePx = DEFAULT_FONT_SIZE_PX) {
+export const DEFAULT_HEADING_SCALE = 100;
+export const MIN_HEADING_SCALE = 100;
+export const MAX_HEADING_SCALE = 170;
+
+/**
+ * CSS custom properties for UI font sizes from base size in px.
+ * @param {number} basePx        base body font size
+ * @param {number} headingScale  percentage (100–170) applied to heading sizes (xl / 2xl)
+ */
+export function fontSizeToCssVars(basePx = DEFAULT_FONT_SIZE_PX, headingScale = DEFAULT_HEADING_SCALE) {
   const base = Math.min(MAX_FONT_SIZE_PX, Math.max(MIN_FONT_SIZE_PX, Math.round(Number(basePx) || DEFAULT_FONT_SIZE_PX)));
+  const scale = Math.min(MAX_HEADING_SCALE, Math.max(MIN_HEADING_SCALE, Math.round(Number(headingScale) || DEFAULT_HEADING_SCALE))) / 100;
   return [
     `--font-size-sm:${Math.round(base * FONT_SIZE_RATIOS.sm)}px`,
     `--font-size-base:${base}px`,
     `--font-size-lg:${Math.round(base * FONT_SIZE_RATIOS.lg)}px`,
-    `--font-size-xl:${Math.round(base * FONT_SIZE_RATIOS.xl)}px`,
-    `--font-size-2xl:${Math.round(base * FONT_SIZE_RATIOS['2xl'])}px`,
+    `--font-size-xl:${Math.round(base * FONT_SIZE_RATIOS.xl * scale)}px`,
+    `--font-size-2xl:${Math.round(base * FONT_SIZE_RATIOS['2xl'] * scale)}px`,
+  ];
+}
+
+/** Background layout (size / position) CSS vars for a custom background image. */
+export const BG_SIZE_PRESETS = ['cover', 'contain', 'tile'];
+export const BG_POSITION_PRESETS = ['center', 'top', 'bottom', 'left', 'right'];
+
+export function backgroundLayoutToCssVars(size = 'cover', position = 'center') {
+  const sz = BG_SIZE_PRESETS.includes(size) ? size : 'cover';
+  const pos = BG_POSITION_PRESETS.includes(position) ? position : 'center';
+  if (sz === 'tile') {
+    return [
+      '--ui-bg-size:auto',
+      '--ui-bg-repeat:repeat',
+      `--ui-bg-position:${pos}`,
+      '--ui-bg-transform:none',
+    ];
+  }
+  return [
+    `--ui-bg-size:${sz}`,
+    '--ui-bg-repeat:no-repeat',
+    `--ui-bg-position:${pos}`,
+    `--ui-bg-transform:${sz === 'contain' ? 'none' : 'scale(1.06)'}`,
   ];
 }
 
@@ -304,13 +350,24 @@ const DENSITY_PRESETS = {
   comfortable: { xs: '6px', sm: '12px', md: '20px', lg: '28px', xl: '38px' },
 };
 
-export const UI_FONT_FAMILY_PRESETS = ['inter', 'system', 'serif', 'georgia', 'custom'];
+export const UI_FONT_FAMILY_PRESETS = ['inter', 'system', 'serif', 'georgia', 'merriweather', 'rounded', 'mono', 'custom'];
 
 export const FONT_FAMILY_STACKS = {
   inter: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
   system: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
   serif: "'Lora', Georgia, 'Times New Roman', serif",
   georgia: "Georgia, 'Times New Roman', serif",
+  merriweather: "'Merriweather', Georgia, 'Times New Roman', serif",
+  rounded: "'Nunito', 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif",
+  mono: "ui-monospace, 'SF Mono', 'JetBrains Mono', 'Cascadia Code', 'Consolas', 'Liberation Mono', monospace",
+};
+
+/** Google Fonts family spec for presets that require a web font (empty = system/available). */
+export const FONT_FAMILY_WEBFONT = {
+  inter: 'Inter:wght@400;500;600;700',
+  serif: 'Lora:ital,wght@0,400;0,600;1,400;1,600',
+  merriweather: 'Merriweather:wght@400;700',
+  rounded: 'Nunito:wght@400;600;700;800',
 };
 
 /** CSS font-family stack for UI preset (custom uses uploaded @font-face name). */
@@ -327,6 +384,11 @@ export function fontFamilyToCssVars(preset, customFontName = 'Custom Font') {
   return [`--ui-font-family:${resolveFontFamilyStack(preset, customFontName)}`];
 }
 
+export const UI_RADIUS_PRESETS = ['sharp', 'rounded', 'pill', 'custom'];
+export const MIN_RADIUS_SCALE = 0;
+export const MAX_RADIUS_SCALE = 28;
+export const DEFAULT_RADIUS_SCALE = 8;
+
 /** Генерация CSS-переменных радиусов по пресету */
 export function radiusPresetToCssVars(preset) {
   const r = RADIUS_PRESETS[preset] || RADIUS_PRESETS.rounded;
@@ -337,6 +399,20 @@ export function radiusPresetToCssVars(preset) {
     `--radius-xl:${r.xl}`,
     `--radius-button:${r.button}`,
     `--radius-card:${r.card}`,
+  ];
+}
+
+/** Генерация CSS-переменных радиусов по произвольному базовому значению (px). */
+export function customRadiusToCssVars(basePx) {
+  const base = Math.min(MAX_RADIUS_SCALE, Math.max(MIN_RADIUS_SCALE, Math.round(Number(basePx) || 0)));
+  const r = (mult) => `${Math.round(base * mult)}px`;
+  return [
+    `--radius-sm:${r(0.75)}`,
+    `--radius:${r(1)}`,
+    `--radius-lg:${r(1.5)}`,
+    `--radius-xl:${r(2)}`,
+    `--radius-button:${r(1.25)}`,
+    `--radius-card:${r(0.75)}`,
   ];
 }
 
@@ -408,4 +484,30 @@ export function themePairToCssVars(pair) {
     ...mapMode('dark', pair.dark),
     ...mapMode('light', pair.light),
   ];
+}
+
+/**
+ * One-click palette presets. Each entry defines surface + accent for both modes.
+ * `id: 'default'` restores the built-in palette.
+ */
+export const THEME_PRESETS = [
+  { id: 'default', dark: { surface: LEGACY_SURFACE_DARK, accent: '' }, light: { surface: LEGACY_SURFACE_LIGHT, accent: '' } },
+  { id: 'sepia', dark: { surface: '#2b2318', accent: '#c9a15a' }, light: { surface: '#f3e9d6', accent: '#a6741f' } },
+  { id: 'midnight', dark: { surface: '#12151f', accent: '#5b8cff' }, light: { surface: '#eef1f8', accent: '#3b5bdb' } },
+  { id: 'nord', dark: { surface: '#2e3440', accent: '#88c0d0' }, light: { surface: '#eceff4', accent: '#5e81ac' } },
+  { id: 'solarized', dark: { surface: '#002b36', accent: '#268bd2' }, light: { surface: '#fdf6e3', accent: '#268bd2' } },
+  { id: 'forest', dark: { surface: '#16221a', accent: '#6cc07a' }, light: { surface: '#e9f2e8', accent: '#2f7d46' } },
+  { id: 'rose', dark: { surface: '#241820', accent: '#e06c9f' }, light: { surface: '#fbeaf1', accent: '#c04277' } },
+  { id: 'slate', dark: { surface: '#1a1d21', accent: '#9aa7b3' }, light: { surface: '#eef1f4', accent: '#5b6b7a' } },
+  { id: 'ocean', dark: { surface: '#0d1b2a', accent: '#38bdf8' }, light: { surface: '#e8f4fc', accent: '#0284c7' } },
+  { id: 'wine', dark: { surface: '#2a1520', accent: '#f472b6' }, light: { surface: '#faf0f3', accent: '#be123c' } },
+  { id: 'graphite', dark: { surface: '#181818', accent: '#a3a3a3' }, light: { surface: '#f5f5f5', accent: '#525252' } },
+  { id: 'lavender', dark: { surface: '#1e1830', accent: '#a78bfa' }, light: { surface: '#f3f0fa', accent: '#7c3aed' } },
+  { id: 'amber', dark: { surface: '#251a0a', accent: '#fbbf24' }, light: { surface: '#fff8eb', accent: '#d97706' } },
+  { id: 'mint', dark: { surface: '#122420', accent: '#34d399' }, light: { surface: '#ecfdf5', accent: '#059669' } },
+  { id: 'copper', dark: { surface: '#231812', accent: '#ea580c' }, light: { surface: '#fdf4ee', accent: '#c2410c' } },
+];
+
+export function getThemePresetById(id) {
+  return THEME_PRESETS.find((preset) => preset.id === id) || null;
 }

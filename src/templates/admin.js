@@ -19,8 +19,9 @@ import {
   TELEGRAM_DEFAULT_PROFILE_DESCRIPTION,
   TELEGRAM_DEFAULT_PROFILE_SHORT,
   TELEGRAM_DEFAULT_WELCOME,
+  TELEGRAM_DEFAULT_NEW_BOOKS_ANNOUNCE,
 } from '../telegram-bot-defaults.js';
-import { buildGlassPanelBackground, adjustLightTextForGlassOpacity, DEFAULT_GLASS_LIGHT, DEFAULT_GLASS_DARK, MIN_FONT_SIZE_PX, MAX_FONT_SIZE_PX } from '../services/theme-engine.js';
+import { buildGlassPanelBackground, adjustLightTextForGlassOpacity, DEFAULT_GLASS_LIGHT, DEFAULT_GLASS_DARK, MIN_FONT_SIZE_PX, MAX_FONT_SIZE_PX, MIN_HEADING_SCALE, MAX_HEADING_SCALE, MIN_RADIUS_SCALE, MAX_RADIUS_SCALE, THEME_PRESETS } from '../services/theme-engine.js';
 export function renderOperations({ user, stats = {}, indexStatus = {}, operations = {}, defaultLocale = 'auto', csrfToken = '' }) {
   /* Сплошной цвет по тому же градиенту (для одиночных элементов — donut, иконки и т.п.).
      0-70% → зелёный → жёлтый; 70-100% → жёлтый → красный. */
@@ -380,6 +381,7 @@ export function renderAdminUsers({ user, stats, indexStatus, users = [], flash =
         <form class="user-admin-form" action="/admin/users/update" method="post" autocomplete="off">
           ${csrfHiddenField(csrfToken)}
           <input type="hidden" name="accountUsername" value="${escapeHtml(account.username)}" autocomplete="${escapeHtml(accountAutocompleteSection(account))} username">
+          <input type="hidden" name="${escapeHtml(userField('accountFieldsReady', account))}" value="0" data-admin-fields-ready>
           <div class="admin-form-grid">
             <div class="admin-field-group">
               <label>${escapeHtml(t('admin.users.role'))}</label>
@@ -1253,11 +1255,14 @@ export function renderAdminTelegram({ user, stats, indexStatus, tg = {}, botRunn
   const profileDescription = tg.profileDescription || TELEGRAM_DEFAULT_PROFILE_DESCRIPTION;
   const profileShortDescription = tg.profileShortDescription || TELEGRAM_DEFAULT_PROFILE_SHORT;
   const welcomeMessage = tg.welcomeMessage || TELEGRAM_DEFAULT_WELCOME;
+  const newBooksAnnounceTemplate = tg.newBooksAnnounceTemplate || TELEGRAM_DEFAULT_NEW_BOOKS_ANNOUNCE;
+  const announceChatCount = Number(tg.announceChatCount) || 0;
   const content = `
     ${flash ? renderAlert('success', flash) : ''}
     <div class="admin-card">
       <div class="admin-card-title">${escapeHtml(t('admin.telegram.cardTitle'))}</div>
       <div class="admin-card-subtitle">${escapeHtml(t('admin.telegram.cardSubtitle'))}</div>
+      <p class="admin-field-hint" style="margin:0 0 14px;">${escapeHtml(t('admin.telegram.botAvatarHint'))}</p>
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:18px;">
         <span style="width:10px;height:10px;border-radius:50%;background:${statusColor};display:inline-block;flex-shrink:0;"></span>
         <span class="muted" style="font-size:13px;">${statusLabel}</span>
@@ -1298,6 +1303,22 @@ export function renderAdminTelegram({ user, stats, indexStatus, tg = {}, botRunn
           <textarea name="welcomeMessage" rows="8">${escapeHtml(welcomeMessage)}</textarea>
           <span class="admin-field-hint">${escapeHtml(t('admin.telegram.welcomeMessageHint'))}</span>
         </div>
+        <div class="admin-field-group">
+          <label>${escapeHtml(t('admin.telegram.newBooksAnnounce'))}</label>
+          <span class="admin-field-hint" style="margin-bottom:8px;">${escapeHtml(tp('admin.telegram.newBooksAnnounceHint', { count: announceChatCount }))}</span>
+          <label class="admin-checkbox-label" style="text-transform:none;letter-spacing:0;margin-bottom:10px;">
+            <input type="checkbox" name="newBooksAnnounceEnabled" value="1" ${tg.newBooksAnnounceEnabled ? 'checked' : ''} style="accent-color:var(--accent);width:16px;height:16px;">
+            ${escapeHtml(t('admin.telegram.newBooksAnnounceEnabled'))}
+          </label>
+          <textarea name="newBooksAnnounceTemplate" rows="6">${escapeHtml(newBooksAnnounceTemplate)}</textarea>
+          <span class="admin-field-hint">${escapeHtml(t('admin.telegram.newBooksAnnounceTemplateHint'))}</span>
+          <div style="display:flex;align-items:center;gap:10px;margin-top:10px;flex-wrap:wrap;">
+            <label style="font-size:13px;color:var(--muted);">${escapeHtml(t('admin.telegram.newBooksAnnounceTestCount'))}</label>
+            <input type="number" name="newBooksAnnounceTestCount" value="3" min="1" max="99999" style="width:90px;">
+            <button type="submit" formaction="/admin/telegram/test-announce" formmethod="post">${escapeHtml(t('admin.telegram.testAnnounce'))}</button>
+          </div>
+          <span class="admin-field-hint">${escapeHtml(t('admin.telegram.testAnnounceHint'))}</span>
+        </div>
         <div class="admin-field-group" style="flex-direction:row;align-items:center;gap:10px;margin-top:4px;">
           <label class="admin-checkbox-label" style="text-transform:none;letter-spacing:0;">
             <input type="checkbox" name="enabled" value="1" ${tg.enabled !== false ? 'checked' : ''} style="accent-color:var(--accent);width:16px;height:16px;">
@@ -1313,7 +1334,10 @@ export function renderAdminTelegram({ user, stats, indexStatus, tg = {}, botRunn
   return pageShell({ title: t('admin.telegram.title'), content, user, stats, indexStatus, breadcrumbs: [{ label: t('admin.telegram.title') }], mode: 'admin', currentPath: '/admin/telegram', csrfToken });
 }
 
-export function renderAdminAppearance({ user, stats, indexStatus, ui = {}, siteName = '', homeSubtitle = '', flash = '', csrfToken = '' }) {
+export function renderAdminAppearance({
+  user, stats, indexStatus, ui = {}, siteName = '', homeSubtitle = '',
+  homeNewestCount = '', homeNewestCountDefault = 12, flash = '', csrfToken = ''
+}) {
   const logoPreview = ui.logoUrl
     ? `<img src="${escapeHtml(ui.logoUrl)}" alt="" class="ui-asset-preview">`
     : `<span class="muted">${escapeHtml(t('admin.ui.defaultAsset'))}</span>`;
@@ -1351,6 +1375,10 @@ export function renderAdminAppearance({ user, stats, indexStatus, ui = {}, siteN
     const textAuto = isLight ? ui.glassTextAutoLight : ui.glassTextAutoDark;
     const mutedAuto = isLight ? ui.glassMutedAutoLight : ui.glassMutedAutoDark;
     const linkAuto = isLight ? ui.glassLinkAutoLight : ui.glassLinkAutoDark;
+    const accentField = isLight ? 'accentLight' : 'accentDark';
+    const accentAutoField = isLight ? 'accentAutoLight' : 'accentAutoDark';
+    const accentColor = isLight ? ui.glassAccentLight : ui.glassAccentDark;
+    const accentAuto = isLight ? ui.glassAccentAutoLight : ui.glassAccentAutoDark;
     return `
     <div class="ui-glass-theme-card" data-ui-glass-card="${theme}">
       <div class="ui-glass-theme-card-title">${escapeHtml(themeTitle)}</div>
@@ -1368,6 +1396,21 @@ export function renderAdminAppearance({ user, stats, indexStatus, ui = {}, siteN
           <code data-ui-glass-hex="${glassName}">${escapeHtml(palette.surface)}</code>
         </div>
         <span class="admin-field-hint">${escapeHtml(ui.dynamicThemeFromBg ? t('admin.ui.glassBaseColorLockedHint') : t('admin.ui.glassBaseColorHint'))}</span>
+      </div>
+      <div class="ui-color-field">
+        <div class="ui-color-field-head">
+          <label for="ui-accent-${theme}">${escapeHtml(t('admin.ui.accentColor'))}</label>
+          <label class="admin-checkbox-label ui-accent-auto-label">
+            <input type="checkbox" data-ui-accent-auto="${theme}" ${accentAuto ? 'checked' : ''}>
+            ${escapeHtml(t('admin.ui.accentAuto'))}
+          </label>
+        </div>
+        <div class="ui-color-field-row">
+          <input type="color" id="ui-accent-${theme}" name="${accentField}" form="ui-main-form" value="${escapeHtml(accentColor)}" data-ui-accent="${theme}"${accentAuto ? ' disabled' : ''}>
+          <code data-ui-accent-hex="${theme}">${escapeHtml(accentColor)}</code>
+        </div>
+        <input type="hidden" name="${accentAutoField}" id="ui-accent-auto-${theme}" value="${accentAuto ? '1' : '0'}" form="ui-main-form">
+        <span class="admin-field-hint">${escapeHtml(t('admin.ui.accentColorHint'))}</span>
       </div>
     </div>`;
   };
@@ -1432,9 +1475,25 @@ export function renderAdminAppearance({ user, stats, indexStatus, ui = {}, siteN
       <span class="admin-field-hint">${escapeHtml(t('admin.ui.fontCustomHint'))}</span>
     </div>`;
 
+  const presetButtons = `
+    <div class="ui-preset-row" data-ui-presets>
+      ${THEME_PRESETS.map((p) => `
+        <button type="button" class="ui-preset-btn" data-ui-preset="${p.id}"
+          data-preset-dark="${escapeHtml(p.dark.surface)}" data-preset-light="${escapeHtml(p.light.surface)}"
+          data-preset-accent-dark="${escapeHtml(p.dark.accent || '')}" data-preset-accent-light="${escapeHtml(p.light.accent || '')}"
+          title="${escapeHtml(t('admin.ui.preset.' + p.id))}">
+          <span class="ui-preset-swatch" style="--preset-dark:${escapeHtml(p.dark.surface)};--preset-light:${escapeHtml(p.light.surface)};--preset-accent:${escapeHtml(p.dark.accent || p.light.accent || p.dark.surface)}"></span>
+          <span class="ui-preset-name">${escapeHtml(t('admin.ui.preset.' + p.id))}</span>
+        </button>`).join('')}
+    </div>`;
+
   const content = `
     ${flash ? renderAlert('success', flash) : ''}
     <div class="admin-appearance-layout" data-ui-appearance-page>
+      <div class="admin-appearance-preview-bar" data-ui-preview-bar hidden>
+        <span class="admin-appearance-preview-dot"></span>
+        <span>${escapeHtml(t('admin.ui.livePreviewActive'))}</span>
+      </div>
 
       <!-- 1. Брендинг -->
       <div class="admin-card">
@@ -1449,6 +1508,11 @@ export function renderAdminAppearance({ user, stats, indexStatus, ui = {}, siteN
           <label for="admin-home-subtitle">${escapeHtml(t('admin.homeSubtitle'))}</label>
           <input id="admin-home-subtitle" form="ui-main-form" name="homeSubtitle" value="${escapeHtml(homeSubtitle)}" placeholder="${escapeHtml(t('home.subtitle'))}" autocomplete="off">
           <span class="admin-field-hint">${escapeHtml(t('admin.homeSubtitleHint'))}</span>
+        </div>
+        <div class="admin-field-group" style="margin-top:12px">
+          <label for="admin-home-newest-count">${escapeHtml(t('admin.homeNewestCount'))}</label>
+          <input id="admin-home-newest-count" form="ui-main-form" name="homeNewestCount" type="number" min="1" max="200" step="1" value="${escapeHtml(homeNewestCount)}" placeholder="${escapeHtml(String(homeNewestCountDefault))}" autocomplete="off">
+          <span class="admin-field-hint">${escapeHtml(tp('admin.homeNewestCountHint', { default: homeNewestCountDefault }))}</span>
         </div>
       </div>
 
@@ -1471,7 +1535,7 @@ export function renderAdminAppearance({ user, stats, indexStatus, ui = {}, siteN
       <div class="admin-card">
         <div class="admin-card-title">${escapeHtml(t('admin.ui.sectionEffects'))}</div>
         <div class="admin-card-subtitle">${escapeHtml(t('admin.ui.sectionEffectsHint'))}</div>
-        ${ui.hasBackground ? `
+        ${`<div data-ui-bg-section${ui.hasBackground ? '' : ' hidden'}>`}
         <div class="admin-section-label">${escapeHtml(t('admin.ui.sectionBackgroundOverlay'))}</div>
         <div class="admin-form-grid admin-form-grid--gap-12">
           <div class="admin-field-group">
@@ -1485,8 +1549,60 @@ export function renderAdminAppearance({ user, stats, indexStatus, ui = {}, siteN
             <span class="admin-field-hint">${escapeHtml(t('admin.ui.bgOverlayHint'))} <strong data-ui-range-value="bgOverlay">${ui.bgContrast}</strong></span>
           </div>
         </div>
+        <div class="admin-form-grid admin-form-grid--gap-12" style="margin-top:12px">
+          <div class="admin-field-group">
+            <label for="ui-bg-size">${escapeHtml(t('admin.ui.bgSize'))}</label>
+            ${selectPreset('bgSize', ui.bgSize, ['cover', 'contain', 'tile'], {
+              cover: t('admin.ui.bgSizeCover'),
+              contain: t('admin.ui.bgSizeContain'),
+              tile: t('admin.ui.bgSizeTile'),
+            })}
+            <span class="admin-field-hint">${escapeHtml(t('admin.ui.bgSizeHint'))}</span>
+          </div>
+          <div class="admin-field-group">
+            <label for="ui-bg-position">${escapeHtml(t('admin.ui.bgPosition'))}</label>
+            ${selectPreset('bgPosition', ui.bgPosition, ['center', 'top', 'bottom', 'left', 'right'], {
+              center: t('admin.ui.bgPositionCenter'),
+              top: t('admin.ui.bgPositionTop'),
+              bottom: t('admin.ui.bgPositionBottom'),
+              left: t('admin.ui.bgPositionLeft'),
+              right: t('admin.ui.bgPositionRight'),
+            })}
+            <span class="admin-field-hint">${escapeHtml(t('admin.ui.bgPositionHint'))}</span>
+          </div>
+        </div>
+        <div class="admin-form-grid admin-form-grid--gap-12" style="margin-top:12px">
+          <div class="ui-color-field">
+            <div class="ui-color-field-head">
+              <label for="ui-overlay-dark">${escapeHtml(t('admin.ui.overlayColorDark'))}</label>
+              <label class="admin-checkbox-label ui-accent-auto-label">
+                <input type="checkbox" data-ui-overlay-auto="dark" ${ui.overlayColorAutoDark ? 'checked' : ''}>
+                ${escapeHtml(t('admin.ui.accentAuto'))}
+              </label>
+            </div>
+            <div class="ui-color-field-row">
+              <input type="color" id="ui-overlay-dark" name="overlayColorDark" form="ui-main-form" value="${escapeHtml(ui.overlayColorDark)}" data-ui-overlay="dark"${ui.overlayColorAutoDark ? ' disabled' : ''}>
+              <code data-ui-overlay-hex="dark">${escapeHtml(ui.overlayColorDark)}</code>
+            </div>
+            <input type="hidden" name="overlayColorAutoDark" id="ui-overlay-auto-dark" value="${ui.overlayColorAutoDark ? '1' : '0'}" form="ui-main-form">
+          </div>
+          <div class="ui-color-field">
+            <div class="ui-color-field-head">
+              <label for="ui-overlay-light">${escapeHtml(t('admin.ui.overlayColorLight'))}</label>
+              <label class="admin-checkbox-label ui-accent-auto-label">
+                <input type="checkbox" data-ui-overlay-auto="light" ${ui.overlayColorAutoLight ? 'checked' : ''}>
+                ${escapeHtml(t('admin.ui.accentAuto'))}
+              </label>
+            </div>
+            <div class="ui-color-field-row">
+              <input type="color" id="ui-overlay-light" name="overlayColorLight" form="ui-main-form" value="${escapeHtml(ui.overlayColorLight)}" data-ui-overlay="light"${ui.overlayColorAutoLight ? ' disabled' : ''}>
+              <code data-ui-overlay-hex="light">${escapeHtml(ui.overlayColorLight)}</code>
+            </div>
+            <input type="hidden" name="overlayColorAutoLight" id="ui-overlay-auto-light" value="${ui.overlayColorAutoLight ? '1' : '0'}" form="ui-main-form">
+          </div>
+        </div>
         <hr class="admin-divider">
-        ` : ''}
+        </div>
         <div class="admin-section-label">${escapeHtml(t('admin.ui.sectionPanels'))}</div>
         <div class="admin-form-grid admin-form-grid--gap-12">
           <div class="admin-field-group">
@@ -1500,27 +1616,33 @@ export function renderAdminAppearance({ user, stats, indexStatus, ui = {}, siteN
             <span class="admin-field-hint">${escapeHtml(t('admin.ui.surfaceBlurHint'))} <strong data-ui-range-value="surfaceBlur">${ui.surfaceBlur}</strong></span>
           </div>
         </div>
-        ${ui.hasCustomThemeSliders ? `<div class="admin-card-reset"><button type="submit" form="ui-reset-sliders-form" class="button-danger">${escapeHtml(t('admin.ui.resetSliders'))}</button></div>` : ''}
+        ${`<div class="admin-card-reset" data-ui-reset-wrap="sliders"${ui.hasCustomThemeSliders ? '' : ' hidden'}><button type="button" class="button-danger" data-ui-reset="sliders">${escapeHtml(t('admin.ui.resetSliders'))}</button></div>`}
       </div>
 
       <!-- 4. Цвета темы -->
       <div class="admin-card">
         <div class="admin-card-title">${escapeHtml(t('admin.ui.sectionColors'))}</div>
         <div class="admin-card-subtitle">${escapeHtml(t('admin.ui.glassSectionHint'))}</div>
+        <div class="admin-section-label">${escapeHtml(t('admin.ui.presetsTitle'))}</div>
+        ${presetButtons}
+        <span class="admin-field-hint">${escapeHtml(t('admin.ui.presetsHint'))}</span>
+        <hr class="admin-divider">
         <div class="admin-field-group admin-field-group--compact">
           <label class="admin-checkbox-label ui-asset-checkbox">
             <input type="checkbox" name="dynamicThemeFromBg" value="1" form="ui-main-form" ${ui.dynamicThemeFromBg ? 'checked' : ''} ${ui.hasBackground ? '' : 'disabled'}>
             ${escapeHtml(t('admin.ui.dynamicThemeFromBg'))}
           </label>
           <span class="admin-field-hint">${escapeHtml(t('admin.ui.dynamicThemeFromBgHint'))}</span>
-          ${ui.hasBackground ? `<div class="admin-card-reset admin-card-reset--inline"><button type="submit" form="ui-refresh-bg-palette-form" class="button button-secondary">${escapeHtml(t('admin.ui.refreshBgPalette'))}</button></div>` : ''}
+          <div class="admin-card-reset admin-card-reset--inline" data-ui-bg-palette-wrap${ui.hasBackground ? '' : ' hidden'}>
+            <button type="button" class="button button-secondary" data-ui-refresh-bg-palette>${escapeHtml(t('admin.ui.refreshBgPalette'))}</button>
+          </div>
         </div>
         <hr class="admin-divider">
         <div class="ui-glass-theme-grid">
           ${glassThemeCard('dark', ui.themePair.dark, t('admin.ui.glassThemeDark'), ui.surfaceOpacity, ui)}
           ${glassThemeCard('light', ui.themePair.light, t('admin.ui.glassThemeLight'), ui.surfaceOpacity, ui)}
         </div>
-        ${ui.hasCustomThemeColors ? `<div class="admin-card-reset"><button type="submit" form="ui-reset-colors-form" class="button-danger">${escapeHtml(t('admin.ui.resetColors'))}</button></div>` : ''}
+        ${`<div class="admin-card-reset" data-ui-reset-wrap="colors"${ui.hasCustomThemeColors ? '' : ' hidden'}><button type="button" class="button-danger" data-ui-reset="colors">${escapeHtml(t('admin.ui.resetColors'))}</button></div>`}
         <input type="hidden" name="glassTextAutoDark" id="ui-glass-text-auto-dark" value="${ui.glassTextAutoDark ? '1' : '0'}" form="ui-main-form">
         <input type="hidden" name="glassTextAutoLight" id="ui-glass-text-auto-light" value="${ui.glassTextAutoLight ? '1' : '0'}" form="ui-main-form">
         <input type="hidden" name="glassMutedAutoDark" id="ui-glass-muted-auto-dark" value="${ui.glassMutedAutoDark ? '1' : '0'}" form="ui-main-form">
@@ -1536,12 +1658,18 @@ export function renderAdminAppearance({ user, stats, indexStatus, ui = {}, siteN
         <div class="admin-form-grid admin-form-grid--gap-12">
           <div class="admin-field-group">
             <label for="ui-radius-preset">${escapeHtml(t('admin.ui.radiusPreset'))}</label>
-            ${selectPreset('radiusPreset', ui.radiusPreset, ['sharp', 'rounded', 'pill'], {
+            ${selectPreset('radiusPreset', ui.radiusPreset, ['sharp', 'rounded', 'pill', 'custom'], {
               sharp: t('admin.ui.radiusSharp'),
               rounded: t('admin.ui.radiusRounded'),
               pill: t('admin.ui.radiusPill'),
+              custom: t('admin.ui.radiusCustom'),
             })}
             <span class="admin-field-hint">${escapeHtml(t('admin.ui.radiusPresetHint'))}</span>
+          </div>
+          <div class="admin-field-group" data-ui-radius-scale-field${ui.radiusPreset === 'custom' ? '' : ' hidden'}>
+            <label for="ui-radius-scale">${escapeHtml(t('admin.ui.radiusScale'))}</label>
+            <input type="range" id="ui-radius-scale" name="radiusScale" form="ui-main-form" min="${MIN_RADIUS_SCALE}" max="${MAX_RADIUS_SCALE}" step="1" value="${ui.radiusScale}">
+            <span class="admin-field-hint">${escapeHtml(t('admin.ui.radiusScaleHint'))} <strong data-ui-range-value="radiusScale">${ui.radiusScale}</strong></span>
           </div>
           <div class="admin-field-group">
             <label for="ui-shadow-preset">${escapeHtml(t('admin.ui.shadowPreset'))}</label>
@@ -1554,7 +1682,12 @@ export function renderAdminAppearance({ user, stats, indexStatus, ui = {}, siteN
             <span class="admin-field-hint">${escapeHtml(t('admin.ui.shadowPresetHint'))}</span>
           </div>
         </div>
-        ${ui.hasCustomThemeShape ? `<div class="admin-card-reset"><button type="submit" form="ui-reset-shape-form" class="button-danger">${escapeHtml(t('admin.ui.resetShape'))}</button></div>` : ''}
+        <div class="ui-shape-preview" data-ui-shape-preview aria-hidden="true">
+          <span class="ui-shape-preview-label">${escapeHtml(t('admin.ui.shapePreviewTitle'))}</span>
+          <div class="ui-shape-preview-chip"></div>
+          <div class="ui-shape-preview-chip ui-shape-preview-chip--soft"></div>
+        </div>
+        ${`<div class="admin-card-reset" data-ui-reset-wrap="shape"${ui.hasCustomThemeShape ? '' : ' hidden'}><button type="button" class="button-danger" data-ui-reset="shape">${escapeHtml(t('admin.ui.resetShape'))}</button></div>`}
       </div>
 
       <!-- 7. Типографика и плотность -->
@@ -1565,11 +1698,14 @@ export function renderAdminAppearance({ user, stats, indexStatus, ui = {}, siteN
           <div class="admin-form-grid admin-form-grid--gap-12 admin-form-grid--align-start">
             <div class="admin-field-group">
               <label for="ui-fontFamily">${escapeHtml(t('admin.ui.fontFamily'))}</label>
-              ${selectPreset('fontFamily', ui.fontFamily, ['inter', 'system', 'serif', 'georgia', 'custom'], {
+              ${selectPreset('fontFamily', ui.fontFamily, ['inter', 'system', 'serif', 'georgia', 'merriweather', 'rounded', 'mono', 'custom'], {
                 inter: t('admin.ui.fontFamilyInter'),
                 system: t('admin.ui.fontFamilySystem'),
                 serif: t('admin.ui.fontFamilySerif'),
                 georgia: t('admin.ui.fontFamilyGeorgia'),
+                merriweather: t('admin.ui.fontFamilyMerriweather'),
+                rounded: t('admin.ui.fontFamilyRounded'),
+                mono: t('admin.ui.fontFamilyMono'),
                 custom: t('admin.ui.fontFamilyCustom'),
               })}
               <span class="admin-field-hint">${escapeHtml(t('admin.ui.fontFamilyHint'))}</span>
@@ -1583,6 +1719,11 @@ export function renderAdminAppearance({ user, stats, indexStatus, ui = {}, siteN
               <span class="admin-field-hint">${escapeHtml(t('admin.ui.fontScaleHint'))}</span>
             </div>
             <div class="admin-field-group">
+              <label for="ui-heading-scale">${escapeHtml(t('admin.ui.headingScale'))}</label>
+              <input type="range" id="ui-heading-scale" name="headingScale" form="ui-main-form" min="${MIN_HEADING_SCALE}" max="${MAX_HEADING_SCALE}" step="5" value="${ui.headingScale}">
+              <span class="admin-field-hint">${escapeHtml(t('admin.ui.headingScaleHint'))} <strong data-ui-range-value="headingScale">${ui.headingScale}</strong>%</span>
+            </div>
+            <div class="admin-field-group">
               <label for="ui-density">${escapeHtml(t('admin.ui.density'))}</label>
               ${selectPreset('density', ui.density, ['compact', 'normal', 'comfortable'], {
                 compact: t('admin.ui.densityCompact'),
@@ -1593,20 +1734,13 @@ export function renderAdminAppearance({ user, stats, indexStatus, ui = {}, siteN
             </div>
           </div>
         </div>
-        ${ui.hasCustomThemeTypography ? `<div class="admin-card-reset"><button type="submit" form="ui-reset-typography-form" class="button-danger">${escapeHtml(t('admin.ui.resetTypography'))}</button></div>` : ''}
+        ${`<div class="admin-card-reset" data-ui-reset-wrap="typography"${ui.hasCustomThemeTypography ? '' : ' hidden'}><button type="button" class="button-danger" data-ui-reset="typography">${escapeHtml(t('admin.ui.resetTypography'))}</button></div>`}
       </div>
 
       <!-- Основная форма сохранения -->
       <form id="ui-main-form" method="post" action="/admin/settings/ui" data-track-dirty>
         ${csrfHiddenField(csrfToken)}
       </form>
-
-      <!-- Скрытые формы сброса -->
-      <form id="ui-reset-sliders-form" method="post" action="/admin/settings/ui/reset/sliders" hidden>${csrfHiddenField(csrfToken)}</form>
-      <form id="ui-reset-colors-form" method="post" action="/admin/settings/ui/reset/colors" hidden>${csrfHiddenField(csrfToken)}</form>
-      <form id="ui-reset-shape-form" method="post" action="/admin/settings/ui/reset/shape" hidden>${csrfHiddenField(csrfToken)}</form>
-      <form id="ui-reset-typography-form" method="post" action="/admin/settings/ui/reset/typography" hidden>${csrfHiddenField(csrfToken)}</form>
-      <form id="ui-refresh-bg-palette-form" method="post" action="/admin/settings/ui/refresh-bg-palette" hidden>${csrfHiddenField(csrfToken)}</form>
 
       <!-- Кнопка сохранения -->
       <div class="admin-appearance-save">

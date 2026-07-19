@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { formatAuthorLabel, formatGenreLabel, formatLanguageLabel, parseGenreCodes } from '../genre-map.js';
 import { getAvailableDownloadFormats, FORMAT_LABELS, isDownloadFormatEnabled } from '../conversion.js';
 import { config } from '../config.js';
-import { bookPagePath, readPagePath, apiBookPath, downloadBookPath, liteBookPagePath, liteReadPagePath, encodeBookRef } from '../utils/book-ref.js';
+import { bookPagePath, readPagePath, apiBookPath, downloadBookPath, liteBookPagePath, liteReadPagePath, encodeBookRef, bookIdNeedsSafeUrl } from '../utils/book-ref.js';
 import { formatSingleAuthorName, splitAuthorValues } from '../inpx.js';
 import {
   t,
@@ -23,7 +23,8 @@ import {
   formatLocaleDateLong,
   serializeClientI18n
 } from '../i18n.js';
-import { getUiCustomization, getThemeCssVars, hasUiThemeColorsConfigured, hasUiPanelSlidersConfigured, hasUiThemeShapeConfigured, hasUiThemeTypographyConfigured } from '../services/ui-customization.js';
+import { resolveIndexStageLine } from '../index-stage-i18n.js';
+import { getUiCustomization, getThemeCssVars, hasUiThemeColorsConfigured, usesPanelGlass, hasUiThemeShapeConfigured, hasUiThemeTypographyConfigured, FONT_FAMILY_WEBFONT } from '../services/ui-customization.js';
 
 export { t, tp, getLocale, plural, countLabel, formatLocaleInt, formatLocaleDateShort, formatLocaleDateTimeShort, formatLocaleDateLong, serializeClientI18n };
 export { formatAuthorLabel, formatGenreLabel, formatLanguageLabel, parseGenreCodes };
@@ -33,6 +34,23 @@ export { bookPagePath, readPagePath, apiBookPath, downloadBookPath, liteBookPage
 /** data-* атрибут с ID книги (base64url), безопасен для NUL и спецсимволов в HTML. */
 export function bookIdDataAttr(id) {
   return `data-book-id-ref="${escapeHtml(encodeBookRef(String(id ?? '')))}"`;
+}
+
+/** Атрибуты карточки книги: ref всегда; legacy data-book-id только для «безопасных» id. */
+export function bookCardDataAttrs(id) {
+  const s = String(id ?? '');
+  const attrs = [bookIdDataAttr(s)];
+  if (!bookIdNeedsSafeUrl(s)) attrs.push(`data-book-id="${escapeHtml(s)}"`);
+  return attrs.join(' ');
+}
+
+/** batch-select checkbox: ref для id с управляющими символами. */
+export function batchBookIdDataAttr(id) {
+  const s = String(id ?? '');
+  if (bookIdNeedsSafeUrl(s)) {
+    return `data-batch-book-id-ref="${escapeHtml(encodeBookRef(s))}"`;
+  }
+  return `data-batch-book-id="${escapeHtml(s)}"`;
 }
 
 /** Единая кнопка «×» для строк личного кабинета (профиль, избранное, полки). */
@@ -49,6 +67,12 @@ const CSS_SRC_PATH = path.join(config.publicDir, 'styles.css');
 const LITE_CSS_PATH = path.join(config.publicDir, 'lite.css');
 const READER_JS_PATH = path.join(config.publicDir, 'reader.js');
 const READER_CSS_PATH = path.join(config.publicDir, 'reader.css');
+const POSITION_SYNC_PATH = path.join(config.publicDir, 'position-sync.js');
+const READER_SHARED_DIR = path.join(config.publicDir, 'reader-shared');
+const FOLIATE_DIR = path.join(config.publicDir, 'foliate');
+const FOLIATE_PROGRESS_PATH = path.join(FOLIATE_DIR, 'progress.js');
+const FOLIATE_VIEW_PATH = path.join(FOLIATE_DIR, 'view.js');
+const FOLIATE_FB2_PATH = path.join(FOLIATE_DIR, 'fb2.js');
 
 /**
  * Returns true only if the minified bundle is at least as new as its source.
@@ -89,10 +113,24 @@ if (_isProdEnv && _hasMinifiedFiles && !_minifiedFresh) {
 const APP_ASSET_FILE = USE_MINIFIED_ASSETS ? 'app.min.js' : 'app.js';
 const CSS_ASSET_FILE = USE_MINIFIED_ASSETS ? 'styles.min.css' : 'styles.css';
 
+function listReaderSharedAssetPaths() {
+  try {
+    return fs.readdirSync(READER_SHARED_DIR)
+      .filter((name) => name.endsWith('.js'))
+      .sort()
+      .map((name) => path.join(READER_SHARED_DIR, name));
+  } catch {
+    return [];
+  }
+}
+
 function computeStaticAssetVersion() {
+  const readerShared = listReaderSharedAssetPaths();
   const files = USE_MINIFIED_ASSETS
-    ? [APP_MIN_PATH, CSS_MIN_PATH, LITE_CSS_PATH, READER_JS_PATH, READER_CSS_PATH]
-    : [APP_SRC_PATH, CSS_SRC_PATH, LITE_CSS_PATH, READER_JS_PATH, READER_CSS_PATH];
+    ? [APP_MIN_PATH, CSS_MIN_PATH, LITE_CSS_PATH, READER_JS_PATH, READER_CSS_PATH, POSITION_SYNC_PATH,
+        ...readerShared, FOLIATE_PROGRESS_PATH, FOLIATE_VIEW_PATH, FOLIATE_FB2_PATH]
+    : [APP_SRC_PATH, CSS_SRC_PATH, LITE_CSS_PATH, READER_JS_PATH, READER_CSS_PATH, POSITION_SYNC_PATH,
+        ...readerShared, FOLIATE_PROGRESS_PATH, FOLIATE_VIEW_PATH, FOLIATE_FB2_PATH];
   const hash = crypto.createHash('md5');
   for (const p of files) {
     try {
@@ -324,7 +362,11 @@ function renderAdminIndexControls(indexStatus) {
   const line = active
     ? `${title} ${indeterminate ? '' : `<strong>${percent}%</strong>`}${detail}`
     : '';
-  const archive = active && indexStatus?.currentArchive ? escapeHtml(String(indexStatus.currentArchive)) : '';
+  const archiveRaw = active
+    ? (resolveIndexStageLine(indexStatus?.currentStage, t, tp) ||
+      (indexStatus?.currentArchive ? String(indexStatus.currentArchive) : ''))
+    : '';
+  const archive = archiveRaw ? escapeHtml(archiveRaw) : '';
   const barWidth = indeterminate ? 100 : percent;
   return `
     <div id="sources-index-progress" class="alert alert-info" data-admin-index-controls style="${active ? '' : 'display:none'}">
@@ -451,6 +493,26 @@ export function firstAuthorValue(value = '') {
     .split(':')
     .map((author) => author.trim())
     .filter(Boolean)[0] || '';
+}
+
+const WELCOME_QUOTE_NON_AUTHOR_RE = /пословица|proverb/i;
+
+export function isWelcomeQuoteAuthorLinkable(author = '') {
+  const name = String(author || '').trim();
+  if (!name) return false;
+  if (/^anonymous$/i.test(name)) return false;
+  if (WELCOME_QUOTE_NON_AUTHOR_RE.test(name)) return false;
+  return true;
+}
+
+export function renderWelcomeQuoteAuthor(author = '') {
+  const name = String(author || '').trim();
+  if (!name) return '';
+  if (!isWelcomeQuoteAuthorLinkable(name)) {
+    return escapeHtml(name);
+  }
+  const href = `/catalog?field=authors&q=${encodeURIComponent(name)}`;
+  return `<a href="${href}">${escapeHtml(name)}</a>`;
 }
 
 export function renderAuthorLinks(authorsList = [], { limit = 1, bookAuthors = '', popoverId = '', inlineExpand = false } = {}) {
@@ -696,6 +758,30 @@ function renderTopbarSearch(query = '', field = 'all') {
     </form>`;
 }
 
+/** Язык / тема / аккаунт — в topbar (desktop) и в сайдбаре (mobile). */
+function renderChromeAccountTools({
+  isAdmin = false,
+  canAccessAdmin = false,
+  isAuthenticated = false,
+  userLabel = '',
+  csrfToken = '',
+  className = ''
+} = {}) {
+  return `
+    <div class="${escapeHtml(className)}">
+      <span class="topbar-lang" aria-label="${escapeHtml(t('aria.langSwitch'))}">
+        <a href="/set-lang?lang=ru" class="topbar-lang-link${getLocale() === 'ru' ? ' is-active' : ''}" hreflang="ru">${escapeHtml(t('nav.langRu'))}</a>
+        <span class="muted">·</span>
+        <a href="/set-lang?lang=en" class="topbar-lang-link${getLocale() === 'en' ? ' is-active' : ''}" hreflang="en">${escapeHtml(t('nav.langEn'))}</a>
+      </span>
+      <button type="button" class="theme-toggle" data-theme-toggle aria-label="${escapeHtml(t('themeToggle'))}" title="${escapeHtml(t('themeToggle'))}"><span data-theme-toggle-label>☀</span></button>
+      ${!isAdmin ? `${canAccessAdmin ? `<a class="button" href="/admin">${escapeHtml(t('nav.admin'))}</a>` : ''}` : `<a class="button" href="/">${escapeHtml(t('nav.library'))}</a>`}
+      ${isAuthenticated
+    ? `<a class="button" href="/profile">${escapeHtml(userLabel)}</a><form method="post" action="/logout" class="topbar-logout-form">${csrfHiddenField(csrfToken)}<button type="submit" class="button">${escapeHtml(t('nav.logout'))}</button></form>`
+    : `<a class="button" href="/login">${escapeHtml(t('nav.login'))}</a>`}
+    </div>`;
+}
+
 /* ── Card HTML fragment cache (M7) ── */
 const _cardHtmlCache = new Map();
 const CARD_CACHE_MAX = 3000;
@@ -731,7 +817,7 @@ export function renderBookGrid(items = [], { isAuthenticated = false, lazyDetail
   const flags = `${effectiveBatch ? '1' : '0'}${hideDownloads ? '1' : '0'}${canDl ? '1' : '0'}${seriesContext ? 's' : ''}`;
   const batchCb = (book) =>
     effectiveBatch
-      ? `<label class="batch-select-hit" title="${escapeHtml(t('batch.selectTitle'))}"><input type="checkbox" class="batch-select-cb" ${batchSelectInputAttrs(book.id)} data-batch-book-id="${escapeHtml(book.id)}" aria-label="${escapeHtml(t('batch.selectAria'))}"></label>`
+      ? `<label class="batch-select-hit" title="${escapeHtml(t('batch.selectTitle'))}"><input type="checkbox" class="batch-select-cb" ${batchSelectInputAttrs(book.id)} ${batchBookIdDataAttr(book.id)} aria-label="${escapeHtml(t('batch.selectAria'))}"></label>`
       : '';
   return `
     <div class="grid">
@@ -751,7 +837,7 @@ export function renderBookGrid(items = [], { isAuthenticated = false, lazyDetail
         const titlePrefix = seriesInfo?.seriesNo ? `${escapeHtml(String(seriesInfo.seriesNo))}. ` : '';
         const showSeries = !seriesContext && book.seriesList?.length;
         const html = `
-        <article class="card" data-book-id="${escapeHtml(book.id)}">
+        <article class="card" ${bookCardDataAttrs(book.id)}>
           ${batchCb(book)}
           ${renderCover(book, { readBookIds })}
           <div class="meta">
@@ -772,7 +858,7 @@ export function renderFavoriteBookGrid(items = [], { batchSelect = false, user =
   const uniqueItems = uniqueBooksById(items);
   const batchCb = (book) =>
     batchSelect
-      ? `<label class="batch-select-hit" title="${escapeHtml(t('batch.selectTitle'))}"><input type="checkbox" class="batch-select-cb" ${batchSelectInputAttrs(book.id)} data-batch-book-id="${escapeHtml(book.id)}" aria-label="${escapeHtml(t('batch.selectAria'))}"></label>`
+      ? `<label class="batch-select-hit" title="${escapeHtml(t('batch.selectTitle'))}"><input type="checkbox" class="batch-select-cb" ${batchSelectInputAttrs(book.id)} ${batchBookIdDataAttr(book.id)} aria-label="${escapeHtml(t('batch.selectAria'))}"></label>`
       : '';
   return `
     <div class="grid">
@@ -783,7 +869,7 @@ export function renderFavoriteBookGrid(items = [], { batchSelect = false, user =
         const titlePrefix = seriesInfo?.seriesNo ? `${escapeHtml(String(seriesInfo.seriesNo))}. ` : '';
         const showSeries = !seriesContext && book.seriesList?.length;
         return `
-        <article class="card" data-book-id="${escapeHtml(book.id)}">
+        <article class="card" ${bookCardDataAttrs(book.id)}>
           ${batchCb(book)}
           ${renderCover(book, { readBookIds })}
           <div class="meta">
@@ -792,7 +878,7 @@ export function renderFavoriteBookGrid(items = [], { batchSelect = false, user =
             ${showSeries ? `<div class="card-series">${renderSeriesLinks(book.seriesList, { limit: 1, popoverId: `card-s-${book.id}`, firstAuthor: book.authorsList?.[0] || firstAuthorValue(book.authors) })}</div>` : ''}
             <div class="card-actions card-actions-favorites">
               ${batchSelect ? '' : renderDownloadMenu(book, { compact: true, user })}
-              <button class="button card-remove-favorite-action" type="button" data-bookmark-button="${escapeHtml(book.id)}">${escapeHtml(t('book.remove'))}</button>
+              <button class="button card-remove-favorite-action" type="button" ${bookIdDataAttr(book.id)} data-bookmark-button="1">${escapeHtml(t('book.remove'))}</button>
             </div>
           </div>
         </article>`;
@@ -871,10 +957,10 @@ export function renderAuthorFacetStandaloneBookRows(books = [], batchSelect = fa
           const title = escapeHtml(book.title || '');
           const meta = `${escapeHtml(formatLanguageLabel(book.lang || 'unknown'))} · ${escapeHtml(String(book.ext || 'fb2').toUpperCase())}`;
           const batchCb = batchSelect
-            ? `<label class="batch-select-hit" title="${escapeHtml(t('batch.selectTitle'))}"><input type="checkbox" class="batch-select-cb" ${batchSelectInputAttrs(book.id)} data-batch-book-id="${id}" aria-label="${escapeHtml(t('batch.selectAria'))}"></label>`
+            ? `<label class="batch-select-hit" title="${escapeHtml(t('batch.selectTitle'))}"><input type="checkbox" class="batch-select-cb" ${batchSelectInputAttrs(book.id)} ${batchBookIdDataAttr(book.id)} aria-label="${escapeHtml(t('batch.selectAria'))}"></label>`
             : '';
-          return `
-        <div class="author-facet-standalone-row" data-book-id="${id}">
+        return `
+        <div class="author-facet-standalone-row" ${bookCardDataAttrs(book.id)}>
           ${batchCb}
           <a class="table-row-stack table-row-link compact-row author-facet-standalone-link" href="${bookPagePath(book.id)}">
             <div>
@@ -1033,6 +1119,10 @@ function renderWebFontLinks() {
   if (ui.fontFamily === 'inter') {
     families.push('Inter:wght@400;500;600;700');
   }
+  const activeWebfont = FONT_FAMILY_WEBFONT[ui.fontFamily];
+  if (activeWebfont && activeWebfont !== 'Lora:ital,wght@0,400;0,600;1,400;1,600' && ui.fontFamily !== 'inter') {
+    families.push(activeWebfont);
+  }
   families.push('Lora:ital,wght@0,400;0,600;1,400;1,600');
   const familyQuery = families.map((f) => `family=${f}`).join('&');
   return `<link rel="preconnect" href="https://fonts.googleapis.com">
@@ -1057,7 +1147,7 @@ function uiHtmlRootAttrs() {
   const ui = getUiCustomization();
   let attrs = '';
   if (hasUiThemeColorsConfigured()) attrs += ' data-ui-theme="1"';
-  if (hasUiPanelSlidersConfigured()) {
+  if (usesPanelGlass()) {
     attrs += ' data-ui-sliders="1"';
   }
   if (ui.hasBackground) attrs += ' data-ui-bg="1"';
@@ -1089,7 +1179,15 @@ function renderLoginLogoBlock() {
   return `<div class="login-brand-logo"><img src="${escapeHtml(src)}" alt="" class="login-logo-img" onerror="if(this.dataset.fallback!=='1'){this.dataset.fallback='1';this.src='/logo.png'}else{this.parentElement.style.display='none'}"></div>`;
 }
 
-function renderUserSidebar({ query = '', field = 'all', stats, user = null, currentPath = '/' }) {
+function renderUserSidebar({
+  query = '',
+  field = 'all',
+  stats,
+  user = null,
+  currentPath = '/',
+  canAccessAdmin = false,
+  csrfToken = ''
+}) {
   return `
     <aside class="sidebar" aria-label="${escapeHtml(t('aria.sidebar'))}">
       <div class="brand">
@@ -1099,11 +1197,19 @@ function renderUserSidebar({ query = '', field = 'all', stats, user = null, curr
         </a>
       </div>
       ${renderSidebarNavigation(user, currentPath, stats)}
+      ${renderChromeAccountTools({
+    isAdmin: false,
+    canAccessAdmin,
+    isAuthenticated: Boolean(user),
+    userLabel: user?.username || '',
+    csrfToken,
+    className: 'sidebar-tools'
+  })}
     </aside>
     <div class="sidebar-overlay" data-sidebar-overlay></div>`;
 }
 
-function renderAdminSidebar(currentPath = '/admin') {
+function renderAdminSidebar(currentPath = '/admin', { user = null, csrfToken = '' } = {}) {
   const ver = getPackageVersion();
   const link = (href, label, exact = false) => {
     const active = exact ? currentPath === href : currentPath === href || currentPath.startsWith(`${href}/`);
@@ -1134,6 +1240,14 @@ function renderAdminSidebar(currentPath = '/admin') {
         </div>
       </div>
       <div class="admin-sidebar-footer">
+        ${renderChromeAccountTools({
+    isAdmin: true,
+    canAccessAdmin: true,
+    isAuthenticated: Boolean(user),
+    userLabel: user?.username || '',
+    csrfToken,
+    className: 'sidebar-tools'
+  })}
         <a href="https://github.com/Habsaec/inpx-library-server/releases" target="_blank" rel="noopener" class="admin-sidebar-version" data-operations-field="appVersion" style="text-decoration:none;color:inherit">v${escapeHtml(ver)}</a>
       </div>
     </aside>
@@ -1178,21 +1292,26 @@ export function pageShell({ title, content, user, query = '', field = 'all', sta
   ${readBookIds && readBookIds.size ? `<script type="application/json" id="ui-read-ids">${JSON.stringify([...readBookIds])}</script>` : ''}
   <a class="skip-to-content" href="#main-content">${escapeHtml(t('skipToContent'))}</a>
   <div class="shell">
-    ${isAdmin ? renderAdminSidebar(currentPath) : renderUserSidebar({ query, field, stats, user, currentPath })}
+    ${isAdmin
+    ? renderAdminSidebar(currentPath, { user, csrfToken })
+    : renderUserSidebar({ query, field, stats, user, currentPath, canAccessAdmin, csrfToken })}
     <div class="main-wrap">
-      <header class="topbar ${isAdmin ? 'topbar-admin' : ''}">
-        ${isAdmin
-          ? `<button class="sidebar-toggle" type="button" aria-label="${escapeHtml(t('sidebarOpen'))}" data-sidebar-toggle>☰</button>`
-          : `<button class="sidebar-toggle" type="button" aria-label="${escapeHtml(t('sidebarOpen'))}" data-sidebar-toggle>☰</button><div class="topbar-main">${renderTopbarSearch(query, field)}</div>`}
+      <header class="topbar ${isAdmin ? 'topbar-admin' : ''}" data-topbar>
+        <button class="sidebar-toggle" type="button" aria-label="${escapeHtml(t('sidebarOpen'))}" data-sidebar-toggle aria-expanded="false">☰</button>
+        <a href="${isAdmin ? '/admin' : '/'}" class="topbar-brand" title="${escapeHtml(isAdmin ? t('nav.library') : t('nav.home'))}">
+          ${renderBrandLogoImg('topbar-brand-logo')}
+        </a>
+        ${!isAdmin ? `<div class="topbar-main">${renderTopbarSearch(query, field)}</div>` : ''}
         <div class="topbar-right">
-          <span class="topbar-lang" aria-label="${escapeHtml(t('aria.langSwitch'))}">
-            <a href="/set-lang?lang=ru" class="topbar-lang-link${getLocale() === 'ru' ? ' is-active' : ''}" hreflang="ru">${escapeHtml(t('nav.langRu'))}</a>
-            <span class="muted">·</span>
-            <a href="/set-lang?lang=en" class="topbar-lang-link${getLocale() === 'en' ? ' is-active' : ''}" hreflang="en">${escapeHtml(t('nav.langEn'))}</a>
-          </span>
-          <button type="button" class="theme-toggle" data-theme-toggle aria-label="${escapeHtml(t('themeToggle'))}" title="${escapeHtml(t('themeToggle'))}"><span data-theme-toggle-label>☀</span></button>
-          ${!isAdmin ? `${canAccessAdmin ? `<a class="button" href="/admin">${escapeHtml(t('nav.admin'))}</a>` : ''}` : `<a class="button" href="/">${escapeHtml(t('nav.library'))}</a>`}
-          ${isAuthenticated ? `<a class="button" href="/profile">${escapeHtml(userLabel)}</a><form method="post" action="/logout" style="display:inline">${csrfHiddenField(csrfToken)}<button type="submit" class="button">${escapeHtml(t('nav.logout'))}</button></form>` : `<a class="button" href="/login">${escapeHtml(t('nav.login'))}</a>`}
+          ${!isAdmin ? `<button type="button" class="topbar-search-toggle" data-topbar-search-toggle aria-label="${escapeHtml(t('topbar.searchToggle'))}" aria-expanded="false" aria-controls="global-search-input" title="${escapeHtml(t('topbar.searchToggle'))}">⌕</button>` : ''}
+          ${renderChromeAccountTools({
+    isAdmin,
+    canAccessAdmin,
+    isAuthenticated,
+    userLabel,
+    csrfToken,
+    className: 'topbar-desktop-tools'
+  })}
         </div>
       </header>
     ${isAdmin ? renderAdminIndexControls(indexStatus) : renderIndexStatus(indexStatus, stats)}

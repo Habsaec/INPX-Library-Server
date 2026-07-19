@@ -301,6 +301,46 @@ export async function readSevenZipEntry(archivePath, entryPath, binOverride) {
   }).finally(() => release7zSlot());
 }
 
+/** Распаковать весь 7z-архив в каталог (для сборки Flibusta EPUB). */
+export async function extractSevenZipArchive(archivePath, outDir, binOverride) {
+  const bin = getSevenZipBinary(binOverride);
+  const timeoutMs = SEVEN_Z_EXTRACT_TIMEOUT_MS;
+  await acquire7zSlot();
+  return new Promise((resolve, reject) => {
+    const child = spawn(bin, ['x', '-y', `-o${outDir}`, archivePath], {
+      stdio: ['ignore', 'ignore', 'pipe'],
+      windowsHide: true,
+    });
+    let settled = false;
+    const timer =
+      timeoutMs > 0
+        ? setTimeout(() => {
+            if (settled) return;
+            settled = true;
+            try { child.kill('SIGKILL'); } catch { /* ignore */ }
+            reject(new Error(`7z: таймаут распаковки (${Math.round(timeoutMs / 1000)} с).`));
+          }, timeoutMs)
+        : null;
+    let stderr = '';
+    const done = (err) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      if (err) reject(err);
+      else resolve();
+    };
+    child.stderr.on('data', (c) => { stderr += c.toString(); });
+    child.on('error', (e) => done(e));
+    child.on('close', (code) => {
+      if (code !== 0) {
+        done(new Error(stderr.trim() || `7z extract exited with code ${code}`));
+        return;
+      }
+      done(null);
+    });
+  }).finally(() => release7zSlot());
+}
+
 /**
  * Test 7z archive integrity (`7z t`). Returns { ok, error? }.
  */

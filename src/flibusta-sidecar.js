@@ -1385,6 +1385,7 @@ export async function buildBookReviewPointersForSource(libraryRoot, sourceId, on
 
 /**
  * После индексации INPX/folder: пометить источник, при полной переиндексации — указатели отзывов и справочник авторов.
+ * При rebuildAuxiliary=true (полная переиндексация) sidecar всегда пересобирается целиком — без пропусков по fingerprint.
  * onProgress — строка для UI (indexState.currentArchive) и логов.
  */
 export async function refreshFlibustaSidecarForSource(
@@ -1411,18 +1412,6 @@ export async function refreshFlibustaSidecarForSource(
   }
   const fingerprint = buildSidecarFingerprint(root);
   const fpMetaKey = `flibusta_sidecar_fp_${sourceId}`;
-  if (rebuildAuxiliary) {
-    let prevFingerprint = '';
-    try {
-      prevFingerprint = String(getMeta(fpMetaKey) || '');
-    } catch {
-      prevFingerprint = '';
-    }
-    if (prevFingerprint && fingerprint && prevFingerprint === fingerprint) {
-      runSidecarReport(onProgress, 'Sidecar: структура не изменилась — пересборка указателей пропущена');
-      return;
-    }
-  }
   if (!rebuildAuxiliary) {
     runSidecarReport(
       onProgress,

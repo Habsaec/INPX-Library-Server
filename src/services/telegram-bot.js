@@ -3,9 +3,13 @@
  * Long polling по умолчанию; при TELEGRAM_WEBHOOK_URL — webhook.
  */
 import fs from 'node:fs/promises';
+import fsSync from 'node:fs';
+import path from 'node:path';
+import crypto from 'node:crypto';
 import cluster from 'node:cluster';
+import sharp from 'sharp';
 import { config } from '../config.js';
-import { getMeta, setMeta, resolveTelegramRuntimeConfig, getTelegramSettings, getUserByTelegramId, completeTelegramLink, unlinkTelegramByTelegramId, getUserShelves, getShelfBooks, getShelfById, isTelegramBotAllowedForUser } from '../db.js';
+import { getMeta, setMeta, resolveTelegramRuntimeConfig, getTelegramSettings, getUserByTelegramId, completeTelegramLink, unlinkTelegramByTelegramId, getUserShelves, getShelfBooks, getShelfById, isTelegramBotAllowedForUser, registerTelegramChat, removeTelegramChat, listTelegramAnnounceChats, getPublicBaseUrlSetting, syncTelegramChatsFromLinkedUsers } from '../db.js';
 import { searchCatalog, getBookById, getBooksByFacet, getAuthorBooksGrouped, getFavoriteAuthorsLight, getFavoriteSeriesLight } from '../inpx.js';
 import { getRecommendedLibraryView } from './recommendations.js';
 import { resolveDownload } from '../conversion.js';
@@ -24,6 +28,8 @@ import {
   TELEGRAM_DEFAULT_PROFILE_DESCRIPTION,
   TELEGRAM_DEFAULT_PROFILE_SHORT,
   TELEGRAM_DEFAULT_WELCOME,
+  TELEGRAM_DEFAULT_NEW_BOOKS_ANNOUNCE,
+  renderNewBooksAnnounceMessage,
 } from '../telegram-bot-defaults.js';
 
 const TG_API = 'https://api.telegram.org';
@@ -37,6 +43,9 @@ const TG_RECOMMENDED_MAX_ITEMS = 10;
 const MAX_FILE_BYTES = 50 * 1024 * 1024;
 /** Лимит подписи к фото в Telegram */
 const TG_CAPTION_MAX = 1024;
+/** Путь к логотипу сайта (Админка → Внешний вид) */
+const SITE_LOGO_PATH = path.join(config.dataDir, 'ui', 'logo.png');
+const TG_PROFILE_PHOTO_HASH_META = 'telegram_bot_profile_photo_hash';
 /** Макс. длина аннотации в карточке */
 const ANNOTATION_MAX = 600;
 /** Параллельное извлечение обложек/аннотаций (не грузить архивы) */
@@ -113,6 +122,16 @@ let _lastAppliedRestartAt = '';
 let _configWatchTimer = null;
 let _cachePruneTimer = null;
 let _lastTgCallAt = 0;
+let _lastTgConflictLogAt = 0;
+
+/** Прерывает текущий long poll, чтобы sendMessage не ждал до 30 с в очереди Telegram. */
+async function releaseTelegramPollingSlot() {
+  if (_transportMode !== 'polling' || !_running) return;
+  try {
+    _abortCtrl?.abort();
+  } catch { /* ignore */ }
+  await sleep(80);
+}
 
 /** Long polling + запас; если heartbeat старше — считаем бот остановленным. */
 const CLUSTER_HEARTBEAT_STALE_MS = (POLL_TIMEOUT_SEC + 15) * 1000;
@@ -351,17 +370,109 @@ async function registerBotProfile() {
   const shortDescription = String(tg.profileShortDescription || '').trim() || TELEGRAM_DEFAULT_PROFILE_SHORT;
   await tgCall('setMyDescription', { description: description.slice(0, 512) });
   await tgCall('setMyShortDescription', { short_description: shortDescription.slice(0, 120) });
+  await syncTelegramBotProfilePhoto().catch((err) => {
+    logSystemEvent('warn', 'telegram-bot', 'не удалось синхронизировать аватар бота', { error: err.message });
+  });
+}
+
+function siteLogoSha256() {
+  try {
+    if (!fsSync.existsSync(SITE_LOGO_PATH)) return '';
+    return crypto.createHash('sha256').update(fsSync.readFileSync(SITE_LOGO_PATH)).digest('hex');
+  } catch {
+    return '';
+  }
+}
+
+async function prepareSiteLogoProfilePhoto() {
+  if (!fsSync.existsSync(SITE_LOGO_PATH)) return null;
+  const raw = fsSync.readFileSync(SITE_LOGO_PATH);
+  if (!raw?.length) return null;
+  return sharp(raw, { failOn: 'error' })
+    .rotate()
+    .resize(640, 640, { fit: 'cover' })
+    .jpeg({ quality: 90 })
+    .toBuffer();
+}
+
+async function callTelegramMultipart(token, method, form) {
+  const res = await fetch(`${TG_API}/bot${token}/${method}`, { method: 'POST', body: form });
+  return res.json();
+}
+
+async function setBotProfilePhotoWithToken(token, buffer) {
+  const form = new FormData();
+  form.append('photo', JSON.stringify({ type: 'static', photo: 'attach://bot-logo' }));
+  form.append('bot-logo', new Blob([buffer], { type: 'image/jpeg' }), 'bot-logo.jpg');
+  return callTelegramMultipart(token, 'setMyProfilePhoto', form);
+}
+
+async function removeBotProfilePhotoWithToken(token) {
+  const res = await fetch(`${TG_API}/bot${token}/removeMyProfilePhoto`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: '{}',
+  });
+  return res.json();
+}
+
+/**
+ * Ставит аватар бота из логотипа сайта (data/ui/logo.png).
+ * @param {{ force?: boolean, token?: string }} options
+ */
+export async function syncTelegramBotProfilePhoto({ force = false, token: tokenOverride = '' } = {}) {
+  const token = String(tokenOverride || _token || resolveTelegramRuntimeConfig().token || '').trim();
+  if (!token) return { skipped: true, reason: 'no_token' };
+
+  const hash = siteLogoSha256();
+  if (!hash) {
+    if (getMeta(TG_PROFILE_PHOTO_HASH_META)) {
+      await removeBotProfilePhotoWithToken(token).catch(() => ({}));
+      setMeta(TG_PROFILE_PHOTO_HASH_META, '');
+    }
+    return { skipped: true, reason: 'no_logo' };
+  }
+  if (!force && getMeta(TG_PROFILE_PHOTO_HASH_META) === hash) {
+    return { skipped: true, reason: 'unchanged' };
+  }
+
+  const buffer = await prepareSiteLogoProfilePhoto();
+  if (!buffer) return { skipped: true, reason: 'no_logo' };
+
+  await releaseTelegramPollingSlot();
+  const result = await setBotProfilePhotoWithToken(token, buffer);
+  if (!result?.ok) {
+    const description = String(result?.description || 'unknown');
+    logSystemEvent('warn', 'telegram-bot', 'не удалось обновить аватар бота', { description });
+    return { ok: false, error: description };
+  }
+  setMeta(TG_PROFILE_PHOTO_HASH_META, hash);
+  logSystemEvent('info', 'telegram-bot', 'аватар бота обновлён из логотипа сайта');
+  return { ok: true };
 }
 
 async function fetchUpdates(signal) {
   const params = new URLSearchParams({
     offset: String(_offset),
     timeout: String(POLL_TIMEOUT_SEC),
-    allowed_updates: JSON.stringify(['message', 'callback_query']),
+    allowed_updates: JSON.stringify(['message', 'callback_query', 'my_chat_member']),
   });
   const res = await fetch(`${TG_API}/bot${_token}/getUpdates?${params}`, { signal });
   const data = await res.json();
   if (!data.ok) {
+    const isConflict = data.error_code === 409;
+    if (isConflict) {
+      const now = Date.now();
+      if (now - _lastTgConflictLogAt > 60_000) {
+        _lastTgConflictLogAt = now;
+        logSystemEvent('warn', 'telegram-bot', 'getUpdates конфликт: другой экземпляр бота уже опрашивает Telegram', {
+          description: data.description || 'conflict',
+          error_code: data.error_code,
+        });
+      }
+      await sleep(5_000);
+      return [];
+    }
     logSystemEvent('warn', 'telegram-bot', 'getUpdates ошибка', {
       description: data.description || 'unknown',
       error_code: data.error_code,
@@ -376,6 +487,144 @@ async function fetchUpdates(signal) {
 
 function esc(s) {
   return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function touchTelegramChat(chat) {
+  if (!chat?.id) return;
+  const title = chat.title
+    || [chat.first_name, chat.last_name].filter(Boolean).join(' ')
+    || chat.username
+    || '';
+  registerTelegramChat({
+    chatId: String(chat.id),
+    chatType: chat.type || 'private',
+    title,
+  });
+}
+
+function resolveAnnounceBaseUrl() {
+  const fromSetting = getPublicBaseUrlSetting() || String(config.publicBaseUrl || '').trim().replace(/\/+$/, '');
+  if (fromSetting) return fromSetting;
+  const tmpl = String(getTelegramSettings().newBooksAnnounceTemplate || '');
+  const embedded = tmpl.match(/\{\{(https?:\/\/[^}\s]+)\}\}/i);
+  if (embedded?.[1]) {
+    return embedded[1].replace(/\/library\/recent\/?$/i, '').replace(/\/+$/, '');
+  }
+  return '';
+}
+
+function resolveNewBooksAnnounceTemplate() {
+  const tg = getTelegramSettings();
+  return String(tg.newBooksAnnounceTemplate || '').trim() || TELEGRAM_DEFAULT_NEW_BOOKS_ANNOUNCE;
+}
+
+export function buildNewBooksAnnounceMessage(count) {
+  return renderNewBooksAnnounceMessage(resolveNewBooksAnnounceTemplate(), count, resolveAnnounceBaseUrl(), esc);
+}
+
+function isTelegramChatGoneError(description = '') {
+  const text = String(description).toLowerCase();
+  return text.includes('chat not found')
+    || text.includes('bot was blocked')
+    || text.includes('user is deactivated')
+    || text.includes('group chat was deactivated')
+    || text.includes('bot was kicked');
+}
+
+async function sendTelegramHtmlWithToken(token, chatId, text) {
+  const res = await fetch(`${TG_API}/bot${token}/sendMessage`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      chat_id: chatId,
+      text,
+      parse_mode: 'HTML',
+      disable_web_page_preview: false,
+    }),
+  });
+  return res.json();
+}
+
+async function dispatchNewBooksAnnounce({ count, template = '', test = false, token: tokenOverride = '' } = {}) {
+  const n = Math.max(0, Math.floor(Number(count) || 0));
+  if (n <= 0) return { sent: 0, skipped: true, reason: 'empty' };
+
+  const tg = getTelegramSettings();
+  if (!test && (!tg.enabled || !tg.newBooksAnnounceEnabled)) {
+    return { sent: 0, skipped: true, reason: 'disabled' };
+  }
+
+  const token = String(tokenOverride || resolveTelegramRuntimeConfig().token || '').trim();
+  if (!token) {
+    return { sent: 0, skipped: true, reason: 'no_token' };
+  }
+
+  syncTelegramChatsFromLinkedUsers();
+  const chats = listTelegramAnnounceChats();
+  if (!chats.length) {
+    return { sent: 0, skipped: true, reason: 'no_chats' };
+  }
+
+  const tmpl = String(template || '').trim() || resolveNewBooksAnnounceTemplate();
+  const text = renderNewBooksAnnounceMessage(tmpl, n, resolveAnnounceBaseUrl(), esc);
+  await releaseTelegramPollingSlot();
+  let sent = 0;
+  const errors = [];
+  for (let i = 0; i < chats.length; i++) {
+    const chat = chats[i];
+    try {
+      const result = await sendTelegramHtmlWithToken(token, chat.chatId, text);
+      if (result?.ok) {
+        sent += 1;
+      } else {
+        const description = String(result?.description || 'unknown Telegram API error');
+        errors.push({ chatId: chat.chatId, description });
+        logSystemEvent('warn', 'telegram-bot', 'анонс новинок не доставлен в чат', {
+          chatId: chat.chatId,
+          description,
+          test,
+        });
+        if (isTelegramChatGoneError(description)) {
+          removeTelegramChat(chat.chatId);
+        }
+      }
+    } catch (err) {
+      errors.push({ chatId: chat.chatId, description: err.message });
+      logSystemEvent('warn', 'telegram-bot', 'ошибка анонса новинок в чат', {
+        chatId: chat.chatId,
+        error: err.message,
+        test,
+      });
+    }
+    if (i + 1 < chats.length) {
+      await sleep(TG_MIN_INTERVAL_MS);
+    }
+  }
+
+  if (sent > 0) {
+    logSystemEvent('info', 'telegram-bot', test ? 'тестовый анонс новинок отправлен' : 'анонс новинок отправлен', {
+      count: n,
+      chats: sent,
+    });
+  }
+  return { sent, totalChats: chats.length, skipped: false, errors };
+}
+
+/**
+ * Рассылает анонс о новых книгах во все зарегистрированные чаты (если включено в настройках).
+ * @param {number} count
+ */
+export async function announceNewBooksInTelegram(count) {
+  return dispatchNewBooksAnnounce({ count, test: false });
+}
+
+/**
+ * Тестовая рассылка анонса (без проверки «включён анонс»; шаблон можно передать из формы).
+ * @param {{ count?: number, template?: string }} params
+ */
+export async function testAnnounceNewBooksInTelegram({ count = 3, template = '', token = '' } = {}) {
+  const n = Math.max(1, Math.min(99_999, Math.floor(Number(count) || 3)));
+  return dispatchNewBooksAnnounce({ count: n, template, test: true, token });
 }
 
 function isAllowed(userId) {
@@ -1245,10 +1494,26 @@ async function doDownload(chatId, dlKey, cbId) {
 async function handleUpdate(upd) {
   try {
     touchClusterHeartbeat();
+
+    if (upd.my_chat_member) {
+      const mcm = upd.my_chat_member;
+      const chat = mcm.chat;
+      const status = mcm.new_chat_member?.status;
+      if (chat?.id) {
+        if (status === 'member' || status === 'administrator') {
+          touchTelegramChat(chat);
+        } else if (status === 'left' || status === 'kicked') {
+          removeTelegramChat(String(chat.id));
+        }
+      }
+      return;
+    }
+
     if (upd.callback_query) {
       const cq = upd.callback_query;
       const chatId = cq.message?.chat?.id;
       if (!chatId) return;
+      touchTelegramChat(cq.message.chat);
       if (!isAllowed(cq.from?.id)) {
         await answerCb(cq.id, '⛔ Нет доступа.');
         await sendText(chatId, telegramAccessDeniedMessage(cq.from?.id));
@@ -1290,6 +1555,7 @@ async function handleUpdate(upd) {
     const msg = upd.message;
     if (!msg?.text) return;
     const chatId = msg.chat.id;
+    touchTelegramChat(msg.chat);
     const text = msg.text.trim();
 
     const linkToken = parseStartLinkToken(text);
@@ -1438,6 +1704,7 @@ async function applyTelegramConfig() {
 
   if (!enabled || !token) return;
 
+  syncTelegramChatsFromLinkedUsers();
   _token = token;
   _allowedUsers = allowedUsers?.length ? new Set(allowedUsers.map(String)) : null;
   _accessMode = accessMode || 'whitelist_or_linked';
@@ -1462,7 +1729,7 @@ async function applyTelegramConfig() {
   if (webhookUrl) {
     const whBody = {
       url: webhookUrl,
-      allowed_updates: ['message', 'callback_query'],
+      allowed_updates: ['message', 'callback_query', 'my_chat_member'],
       drop_pending_updates: false,
     };
     if (_webhookSecret) whBody.secret_token = _webhookSecret;

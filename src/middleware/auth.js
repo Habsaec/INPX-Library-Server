@@ -1,8 +1,9 @@
 /**
  * Authentication and authorization middleware.
  */
+import crypto from 'crypto';
 import basicAuth from 'basic-auth';
-import { getUserByUsername, getSetting } from '../db.js';
+import { getUserByUsername, getSetting, getMeta } from '../db.js';
 import { verifyPassword } from '../auth.js';
 import { parseSession, csrfTokenForSession, verifyCsrfToken } from '../services/session.js';
 import { trackUser } from '../services/online-tracker.js';
@@ -138,14 +139,21 @@ export function getSessionUser(req) {
   };
 }
 
-/** Attach user and CSRF token to every request. */
+/** Attach user (session cookie) and CSRF token to every request. */
 export function attachSessionUser(req, res, next) {
-  const user = getSessionUser(req);
-  req.user = user || null;
-  req.csrfToken = user ? csrfTokenForSession(user.username, user.sessionGen || 0) : '';
-  if (user?.username) {
-    trackUser(user.username);
+  const sessionUser = getSessionUser(req);
+  if (sessionUser) {
+    req.user = sessionUser;
+    req.authMethod = 'session';
+    req.csrfToken = csrfTokenForSession(sessionUser.username, sessionUser.sessionGen || 0);
+    trackUser(sessionUser.username);
+    return next();
   }
+
+  req.user = null;
+  req.authMethod = null;
+  req.csrfToken = '';
+  attachBasicAuthUser(req);
   next();
 }
 
@@ -166,6 +174,8 @@ export function csrfGuard(req, res, next) {
       : undefined;
   const token = headerToken || bodyToken;
 
+  if (req.authMethod === 'basic' || req.authMethod === 'device') return next();
+
   if (!verifyCsrfToken(req.user.username, req.user.sessionGen || 0, token)) {
     if (reqPath.startsWith('/api/')) {
       return res.status(403).json({ ok: false, code: ApiErrorCode.CSRF_INVALID, error: t('api.auth.csrfInvalid') });
@@ -182,11 +192,70 @@ export function requireWebAuth(req, res, next) {
   next();
 }
 
-export function requireApiAuth(req, res, next) {
-  if (!req.user) {
-    return res.status(401).json({ ok: false, code: ApiErrorCode.UNAUTHORIZED, error: t('api.auth.unauthorized') });
+/** Basic Auth для REST API (мобильные клиенты без cookie-сессии). */
+function hashDeviceToken(token) {
+  return crypto.createHash('sha256').update(String(token)).digest('hex');
+}
+
+function tryDeviceBearerAuth(req) {
+  const header = String(req.get('authorization') || '').trim();
+  const match = /^Bearer\s+(.+)$/i.exec(header);
+  if (!match) return { ok: false, reason: 'no-bearer' };
+  const token = match[1].trim();
+  if (!token) return { ok: false, reason: 'empty-bearer' };
+
+  const tokenHash = hashDeviceToken(token);
+  const ref = getMeta(`device_token_hash:${tokenHash}`);
+  if (!ref) return { ok: false, reason: 'unknown-token' };
+
+  const sep = ref.indexOf(':');
+  if (sep <= 0) return { ok: false, reason: 'invalid-ref' };
+  const username = ref.slice(0, sep);
+  const tokenId = ref.slice(sep + 1);
+
+  const raw = getMeta(`device_token:${username}:${tokenId}`);
+  if (!raw) return { ok: false, reason: 'revoked' };
+
+  let meta;
+  try {
+    meta = JSON.parse(raw);
+  } catch {
+    return { ok: false, reason: 'parse-error' };
   }
-  next();
+  if (meta.tokenHash !== tokenHash) return { ok: false, reason: 'hash-mismatch' };
+
+  const user = getUserByUsername(username);
+  if (!user?.passwordHash) return { ok: false, reason: 'unknown-user' };
+  if (user.blocked) return { ok: false, reason: 'blocked' };
+
+  return {
+    ok: true,
+    user: { username: user.username, role: user.role || 'user' },
+  };
+}
+
+function attachBasicAuthUser(req) {
+  if (req.user?.username) return true;
+  const result = tryOpdsBasicAuth(req);
+  if (result.ok) {
+    req.user = result.user;
+    req.authMethod = 'basic';
+    trackUser(req.user.username);
+    return true;
+  }
+  const deviceResult = tryDeviceBearerAuth(req);
+  if (deviceResult.ok) {
+    req.user = deviceResult.user;
+    req.authMethod = 'device';
+    trackUser(req.user.username);
+    return true;
+  }
+  return false;
+}
+
+export function requireApiAuth(req, res, next) {
+  if (attachBasicAuthUser(req)) return next();
+  return res.status(401).json({ ok: false, code: ApiErrorCode.UNAUTHORIZED, error: t('api.auth.unauthorized') });
 }
 
 export function requireAdminWeb(req, res, next) {
@@ -213,6 +282,7 @@ export function requireBrowseAuth(req, res, next) {
     trackUser(req.user.username);
     return next();
   }
+  if (attachBasicAuthUser(req)) return next();
   if (isAnonymousAllowed('allow_anonymous_browse')) return next();
   if (req.path.startsWith('/api/')) {
     return res.status(401).json({ ok: false, code: ApiErrorCode.UNAUTHORIZED, error: t('api.auth.unauthorized') });
@@ -275,13 +345,13 @@ export function requireDownloadAuth(req, res, next) {
 export function requireOpdsAuth(req, res, next) {
   /* Сначала пробуем Basic Auth — это «родной» путь для OPDS.
      Если Basic-credentials пришли, но не подошли — НЕ падаем сразу:
-     админ мог быть залогинен через web-сессию, тогда cookie тоже валиден. */
+     пользователь мог быть аутентифицирован через web-сессию
+     (req.user уже выставлен в attachSessionUser) — тогда это тоже валидно. */
   const basicResult = tryOpdsBasicAuth(req);
   let user = basicResult.ok ? basicResult.user : null;
 
-  if (!user) {
-    const sessionUser = getSessionUser(req);
-    if (sessionUser) user = { username: sessionUser.username, role: sessionUser.role || 'user' };
+  if (!user && req.user) {
+    user = { username: req.user.username, role: req.user.role || 'user' };
   }
 
   if (user) {

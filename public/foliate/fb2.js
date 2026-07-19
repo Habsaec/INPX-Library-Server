@@ -4,6 +4,9 @@ const normalizeWhitespace = str => str ? str
     .replace(/[\t\n\f\r ]+$/, '') : ''
 const getElementText = el => normalizeWhitespace(el?.textContent)
 
+/** Длина читаемого текста секции (без разметки/картинок) — вес для прогресса Foliate. */
+const countSectionText = el => normalizeWhitespace(el?.textContent).length
+
 const NS = {
     XLINK: 'http://www.w3.org/1999/xlink',
     EPUB: 'http://www.idpf.org/2007/ops',
@@ -179,14 +182,17 @@ body > img, section > img {
 .title h1 {
     text-align: center;
 }
-body > section > .title, body.notesBodyType > .title {
-    margin: 3em 0;
+body > section > .title,
+body:not(.notesBodyType) > .title,
+body:not(.notesBodyType) > .epigraph {
+    margin: 1.5em 0 1em;
+}
+body.notesBodyType > .title,
+body.notesBodyType > section .title {
+    margin: 1em 0;
 }
 body.notesBodyType > section .title h1 {
     text-align: start;
-}
-body.notesBodyType > section .title {
-    margin: 1em 0;
 }
 p {
     text-indent: 1em;
@@ -214,9 +220,6 @@ td, th {
 a[epub|type~="noteref"] {
     font-size: .75em;
     vertical-align: super;
-}
-body:not(.notesBodyType) > .title, body:not(.notesBodyType) > .epigraph {
-    margin: 3em 0;
 }
 `], { type: 'text/css' }))
 
@@ -299,19 +302,65 @@ export const makeFB2 = async blob => {
         }), converted]
     })
 
+    /**
+     * Split chapters into separate Foliate documents so each starts on a new page.
+     * CSS column-break is unreliable in Android WebView.
+     * Handles both nested <section><title>… and sibling <title> blocks in one section.
+     */
+    const isTitledSection = el => el?.localName === 'section'
+        && Boolean(el.querySelector(':scope > .title'))
+    const isTitleEl = el => el?.classList?.contains('title')
+    const explodeChapterSections = el => {
+        const kids = [...el.children]
+        const hasNestedChapters = kids.some(isTitledSection)
+        const siblingTitles = kids.filter(isTitleEl).length
+        if (!hasNestedChapters && siblingTitles <= 1) return [el]
+
+        const out = []
+        let buf = []
+        let titlesInBuf = 0
+        const flushBuf = () => {
+            if (!buf.length) return
+            const wrap = el.cloneNode(false)
+            for (const node of buf) wrap.appendChild(node)
+            buf = []
+            titlesInBuf = 0
+            if (countSectionText(wrap) > 0 || wrap.querySelector('.title, img, svg')) {
+                out.push(wrap)
+            }
+        }
+        for (const child of kids) {
+            if (isTitledSection(child)) {
+                flushBuf()
+                out.push(...explodeChapterSections(child))
+                continue
+            }
+            if (isTitleEl(child) && titlesInBuf >= 1) {
+                flushBuf()
+                buf.push(child)
+                titlesInBuf = 1
+                continue
+            }
+            if (isTitleEl(child)) titlesInBuf += 1
+            buf.push(child)
+        }
+        flushBuf()
+        return out.length ? out : [el]
+    }
+
     const urls = []
     const sectionData = bodyData[0][0]
-        // make a separate section for each section in the first body
-        .map(({ el, ids }) => {
-            // set up titles for TOC
+        // One Foliate section per chapter (flatten nested FB2 sections with titles)
+        .flatMap(({ el }) => explodeChapterSections(el).map(part => {
+            const ids = [part, ...part.querySelectorAll('[id]')].map(node => node.id)
             const titles = Array.from(
-                el.querySelectorAll(':scope > section > .title'),
-                (el, index) => {
-                    el.setAttribute(dataID, index)
-                    return { title: getElementText(el), index }
+                part.querySelectorAll(':scope > section > .title'),
+                (titleEl, index) => {
+                    titleEl.setAttribute(dataID, index)
+                    return { title: getElementText(titleEl), index }
                 })
-            return { ids, titles, el }
-        })
+            return { ids, titles: titles.length ? titles : null, el: part }
+        }))
         // for additional bodies, only make one section for each body
         .concat(bodyData.slice(1).map(([sections, body]) => {
             const ids = sections.map(s => s.ids).flat()
@@ -326,14 +375,18 @@ export const makeFB2 = async blob => {
             const title = normalizeWhitespace(
                 el.querySelector('.title, .subtitle, p')?.textContent
                 ?? (el.classList.contains('title') ? el.textContent : ''))
+            // Прогресс по объёму текста, не по байтам XHTML (иначе титул/оглавление FB2
+            // съедают ползунок — см. foliate-js SectionProgress.size).
+            const textLen = countSectionText(el)
+            const imageOnly = el.classList.contains('image')
+                && !el.querySelector('section, p, blockquote, table, header')
+            const linearNo = linear === 'no' || imageOnly || textLen === 0
+            const size = linearNo ? 0 : Math.max(1, textLen)
             return {
                 ids, title, titles, load: () => url,
                 createDocument: () => new DOMParser().parseFromString(str, MIME.XHTML),
-                // doo't count image data as it'd skew the size too much
-                size: blob.size - Array.from(el.querySelectorAll('[src]'),
-                    el => el.getAttribute('src')?.length ?? 0)
-                    .reduce((a, b) => a + b, 0),
-                linear,
+                size,
+                linear: linearNo ? 'no' : linear,
             }
         })
 
@@ -382,5 +435,6 @@ export const makeFB2 = async blob => {
     book.destroy = () => {
         for (const url of urls) URL.revokeObjectURL(url)
     }
+    book.isFB2 = true
     return book
 }

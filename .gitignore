@@ -9,6 +9,13 @@ cookies.txt
 filelist.txt
 release/
 converter/*.exe
+runtime/
+.runtime-backup/
+.runtime-stage/
+.node-runtime.zip
+test-data-debug/
+.cursor/
+.devin/
 
 # IDE / editor metadata
 .idea/

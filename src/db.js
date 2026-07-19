@@ -39,6 +39,19 @@ export function decryptValue(stored) {
 
 fs.mkdirSync(config.dataDir, { recursive: true });
 
+const productionDbPath = path.resolve(config.rootDir, 'data', 'library.db');
+const resolvedDbPath = path.resolve(config.dbPath);
+const isTestProcess = Boolean(process.env.NODE_TEST_CONTEXT) || process.argv.includes('--test');
+if (
+  process.env.ALLOW_PRODUCTION_TEST_DB !== '1'
+  && resolvedDbPath === productionDbPath
+  && isTestProcess
+) {
+  throw new Error(
+    '[test] Refusing to open production data/library.db. Run "npm test" (loads test/test-env.js) or set DATA_DIR to an isolated directory.'
+  );
+}
+
 export const db = new Database(config.dbPath, { timeout: 30000 });
 db.function('lower_unicode', { deterministic: true }, (text) => String(text || '').toLowerCase());
 db.pragma('journal_mode = WAL');
@@ -72,7 +85,7 @@ db.pragma('temp_store = MEMORY');       // temp tables in RAM
 }
 
 // Force WAL checkpoint on startup to clear stale locks from crashed processes
-try { db.pragma('wal_checkpoint(TRUNCATE)'); } catch { /* ignore if locked briefly */ }
+try { db.pragma('wal_checkpoint(PASSIVE)'); } catch { /* ignore if locked briefly */ }
 
 // Lightweight integrity check at startup (quick_check is faster than full integrity_check)
 try {
@@ -139,6 +152,20 @@ function ensureUsersSchema() {
   }
 }
 
+function ensureTelegramChatsSchema() {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS telegram_chats (
+      chat_id TEXT PRIMARY KEY,
+      chat_type TEXT NOT NULL DEFAULT 'private',
+      title TEXT NOT NULL DEFAULT '',
+      registered_at TEXT NOT NULL DEFAULT (datetime('now')),
+      last_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+      announce_enabled INTEGER NOT NULL DEFAULT 1
+    );
+    CREATE INDEX IF NOT EXISTS idx_telegram_chats_announce ON telegram_chats(announce_enabled);
+  `);
+}
+
 function ensureTelegramLinkSchema() {
   db.exec(`
     CREATE TABLE IF NOT EXISTS telegram_link_tokens (
@@ -166,6 +193,7 @@ function ensurePasswordResetSchema() {
     CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_username ON password_reset_tokens(username);
   `);
 }
+
 
 function dedupeTelegramIds() {
   const duplicateIds = db.prepare(`
@@ -978,6 +1006,58 @@ export function ensureBulkImportIndexes() {
   _savedBulkImportIndexes = [];
 }
 
+/**
+ * То же, что ensureBulkImportIndexes, но с уступкой event loop и опциональным прогрессом.
+ * После FTS UI иначе «замирает» на минуты, пока синхронно создаются индексы на сотнях тысяч строк.
+ */
+export async function ensureBulkImportIndexesAsync(options = {}) {
+  const { onProgress } = options;
+  const pending = _savedBulkImportIndexes.slice();
+  _savedBulkImportIndexes = [];
+  const total = pending.length;
+  if (!total) return;
+
+  console.log(`[index] DB: восстановление ${total} индексов после импорта…`);
+  appendIndexDiaryLine(`БД: восстановление ${total} индексов после импорта…`);
+  const t0 = Date.now();
+  let done = 0;
+
+  for (const idx of pending) {
+    if (!idx.sql) {
+      done += 1;
+      continue;
+    }
+    if (typeof onProgress === 'function') {
+      try {
+        onProgress({ done, total, name: idx.name, phase: 'building' });
+      } catch {
+        /* ignore */
+      }
+    }
+    await new Promise((resolve) => setImmediate(resolve));
+    const tIdx = Date.now();
+    db.exec(idx.sql);
+    done += 1;
+    const idxMs = Date.now() - tIdx;
+    if (idxMs > 3000) {
+      console.log(`[index] DB: индекс ${idx.name} — ${(idxMs / 1000).toFixed(1)} с (${done}/${total})`);
+      appendIndexDiaryLine(`БД: индекс ${idx.name} — ${(idxMs / 1000).toFixed(1)} с (${done}/${total})`);
+    }
+    if (typeof onProgress === 'function') {
+      try {
+        onProgress({ done, total, name: idx.name, phase: 'done' });
+      } catch {
+        /* ignore */
+      }
+    }
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+
+  const sec = ((Date.now() - t0) / 1000).toFixed(1);
+  console.log(`[index] DB: индексы восстановлены за ${sec} с`);
+  appendIndexDiaryLine(`БД: индексы восстановлены за ${sec} с`);
+}
+
 let _savedBooksIndexes = [];
 
 /** Удалить пользовательские индексы только на таблице books.
@@ -1390,6 +1470,7 @@ WHERE rp.progress >= 99
 
   ensureUsersSchema();
   ensureTelegramLinkSchema();
+  ensureTelegramChatsSchema();
   ensurePasswordResetSchema();
   ensureBooksSchema();
   db.exec(`
@@ -1447,22 +1528,42 @@ WHERE rp.progress >= 99
 
   ensureBooksFtsTriggers();
 
-  // Recovery: if a previous indexing crashed after dropping FTS triggers,
-  // the books_fts index is stale. Detect and schedule a synchronous rebuild.
-  const ftsDirty = db.prepare(`SELECT value FROM meta WHERE key = 'books_fts_dirty'`).get();
-  if (ftsDirty?.value === '1') {
-    console.warn('[boot] FTS index marked dirty from previous crash — rebuilding synchronously…');
-    try {
-      rebuildBooksFtsFromContentSync();
-      db.prepare(`INSERT INTO meta(key, value) VALUES('books_fts_dirty', '0') ON CONFLICT(key) DO UPDATE SET value = '0'`).run();
-      console.log('[boot] FTS index rebuilt successfully after crash recovery.');
-    } catch (err) {
-      console.error('[boot] FTS crash recovery rebuild failed:', err.message);
-    }
-  }
+  // FTS rebuild after crash can take minutes on large libraries — defer until HTTP is up.
+  scheduleBootFtsRecoveryIfNeeded();
 
   seedDefaultAdmin();
   migrateInpxToSources();
+}
+
+/** @returns {boolean} */
+export function isBootFtsRecoveryPending() {
+  return db.prepare(`SELECT value FROM meta WHERE key = 'books_fts_dirty'`).get()?.value === '1';
+}
+
+/** Восстановление FTS после сбоя индексации — в фоне, не блокирует открытие порта. */
+export function scheduleBootFtsRecoveryIfNeeded() {
+  if (!isBootFtsRecoveryPending()) return;
+  setImmediate(() => {
+    console.warn('[boot] FTS index marked dirty — rebuilding in background…');
+    import('./services/system-events.js').then((m) => {
+      m.logSystemEvent('info', 'database', 'FTS boot recovery started');
+    }).catch(() => {});
+    const t0 = Date.now();
+    try {
+      rebuildBooksFtsFromContentSync();
+      db.prepare(`INSERT INTO meta(key, value) VALUES('books_fts_dirty', '0') ON CONFLICT(key) DO UPDATE SET value = '0'`).run();
+      const seconds = Math.round((Date.now() - t0) / 1000);
+      console.log(`[boot] FTS index rebuilt in background (${seconds} s)`);
+      import('./services/system-events.js').then((m) => {
+        m.logSystemEvent('info', 'database', 'FTS boot recovery completed', { seconds });
+      }).catch(() => {});
+    } catch (err) {
+      console.error('[boot] FTS background rebuild failed:', err.message);
+      import('./services/system-events.js').then((m) => {
+        m.logSystemEvent('error', 'database', 'FTS boot recovery failed', { error: err.message });
+      }).catch(() => {});
+    }
+  });
 }
 
 /**
@@ -2178,7 +2279,10 @@ export function resetDbPreparedStatements() {
   _stmtGetUser = null;
   _stmtCountAdmins = null;
   _stmtGetReadPos = null;
-  _stmtSetReadPos = null;
+  _stmtSetReadPosCas = null;
+  _stmtMigrateReadPos = null;
+  _stmtResetAndMigrateReadPos = null;
+  _stmtDeleteReadPos = null;
   _stmtDeleteReadHistory = null;
   _stmtUpsertReadHistory = null;
   _stmtGetReaderBookmarks = null;
@@ -2192,6 +2296,8 @@ export function resetDbPreparedStatements() {
   _stmtReadIds = null;
   _stmtReadSeries = null;
   _stmtUserStats = null;
+  _stmtGetUserShelves = null;
+  _stmtGetShelfBooks = null;
 }
 
 /**
@@ -2239,52 +2345,55 @@ export async function rebuildActiveBooksView() {
  * excluded_languages.
  */
 export async function refreshCatalogBookCounts() {
-  // Каждая пара (обнуление + пересчёт) в транзакции для атомарности:
-  // если пересчёт упадёт — обнуление откатится и counts останутся на прежних значениях.
-  db.transaction(() => {
-    db.exec('UPDATE authors SET book_count = 0');
-    db.exec(`
-      UPDATE authors SET book_count = t.cnt
-      FROM (
-        SELECT ba.author_id AS id, COUNT(*) AS cnt
-        FROM book_authors ba
-        JOIN active_books b ON b.id = ba.book_id
-        GROUP BY ba.author_id
-      ) t
-      WHERE authors.id = t.id
-    `);
-  })();
-  await new Promise(r => setImmediate(r));
+  console.log('[index] catalog: пересчёт book_count (authors, series, genres)…');
+  const t0 = Date.now();
 
   db.transaction(() => {
-    db.exec('UPDATE series_catalog SET book_count = 0');
     db.exec(`
-      UPDATE series_catalog SET book_count = t.cnt
-      FROM (
-        SELECT bs.series_id AS id, COUNT(*) AS cnt
-        FROM book_series bs
-        JOIN active_books b ON b.id = bs.book_id
-        GROUP BY bs.series_id
-      ) t
-      WHERE series_catalog.id = t.id
+      UPDATE authors SET book_count = COALESCE((
+        SELECT t.cnt FROM (
+          SELECT ba.author_id AS id, COUNT(*) AS cnt
+          FROM book_authors ba
+          JOIN active_books b ON b.id = ba.book_id
+          GROUP BY ba.author_id
+        ) t WHERE t.id = authors.id
+      ), 0)
     `);
   })();
   await new Promise(r => setImmediate(r));
+  console.log(`[index] catalog: authors done in ${((Date.now() - t0) / 1000).toFixed(1)} s`);
 
+  const t1 = Date.now();
   db.transaction(() => {
-    db.exec('UPDATE genres_catalog SET book_count = 0');
     db.exec(`
-      UPDATE genres_catalog SET book_count = t.cnt
-      FROM (
-        SELECT bg.genre_id AS id, COUNT(*) AS cnt
-        FROM book_genres bg
-        JOIN active_books b ON b.id = bg.book_id
-        GROUP BY bg.genre_id
-      ) t
-      WHERE genres_catalog.id = t.id
+      UPDATE series_catalog SET book_count = COALESCE((
+        SELECT t.cnt FROM (
+          SELECT bs.series_id AS id, COUNT(*) AS cnt
+          FROM book_series bs
+          JOIN active_books b ON b.id = bs.book_id
+          GROUP BY bs.series_id
+        ) t WHERE t.id = series_catalog.id
+      ), 0)
     `);
   })();
   await new Promise(r => setImmediate(r));
+  console.log(`[index] catalog: series done in ${((Date.now() - t1) / 1000).toFixed(1)} s`);
+
+  const t2 = Date.now();
+  db.transaction(() => {
+    db.exec(`
+      UPDATE genres_catalog SET book_count = COALESCE((
+        SELECT t.cnt FROM (
+          SELECT bg.genre_id AS id, COUNT(*) AS cnt
+          FROM book_genres bg
+          JOIN active_books b ON b.id = bg.book_id
+          GROUP BY bg.genre_id
+        ) t WHERE t.id = genres_catalog.id
+      ), 0)
+    `);
+  })();
+  await new Promise(r => setImmediate(r));
+  console.log(`[index] catalog: genres done in ${((Date.now() - t2) / 1000).toFixed(1)} s, total ${((Date.now() - t0) / 1000).toFixed(1)} s`);
 }
 
 export function getSmtpSettings() {
@@ -2323,6 +2432,56 @@ function isTelegramAdminConfigured() {
 
 const TELEGRAM_ACCESS_MODES = new Set(['open', 'linked_only', 'whitelist_or_linked']);
 
+export function registerTelegramChat({ chatId, chatType = 'private', title = '' }) {
+  const id = String(chatId ?? '').trim();
+  if (!id) return;
+  const type = String(chatType || 'private').trim() || 'private';
+  const label = String(title || '').trim().slice(0, 255);
+  db.prepare(`
+    INSERT INTO telegram_chats(chat_id, chat_type, title, registered_at, last_seen_at, announce_enabled)
+    VALUES(?, ?, ?, datetime('now'), datetime('now'), 1)
+    ON CONFLICT(chat_id) DO UPDATE SET
+      chat_type = excluded.chat_type,
+      title = CASE WHEN excluded.title != '' THEN excluded.title ELSE telegram_chats.title END,
+      last_seen_at = datetime('now')
+  `).run(id, type, label);
+}
+
+export function removeTelegramChat(chatId) {
+  const id = String(chatId ?? '').trim();
+  if (!id) return;
+  db.prepare('DELETE FROM telegram_chats WHERE chat_id = ?').run(id);
+}
+
+export function listTelegramAnnounceChats() {
+  return db.prepare(`
+    SELECT chat_id AS chatId, chat_type AS chatType, title, announce_enabled AS announceEnabled
+    FROM telegram_chats
+    WHERE announce_enabled = 1
+    ORDER BY last_seen_at DESC
+  `).all();
+}
+
+export function countTelegramAnnounceChats() {
+  return Number(db.prepare('SELECT COUNT(*) AS n FROM telegram_chats WHERE announce_enabled = 1').get()?.n || 0);
+}
+
+/** Регистрирует личные чаты пользователей, уже привязавших Telegram (до появления анонсов). */
+export function syncTelegramChatsFromLinkedUsers() {
+  const rows = db.prepare(`
+    SELECT telegram_id AS telegramId, username
+    FROM users
+    WHERE telegram_id IS NOT NULL AND TRIM(telegram_id) != ''
+  `).all();
+  for (const row of rows) {
+    registerTelegramChat({
+      chatId: String(row.telegramId),
+      chatType: 'private',
+      title: String(row.username || ''),
+    });
+  }
+}
+
 export function getTelegramSettings() {
   const accessModeRaw = getSetting('telegram_access_mode') || 'whitelist_or_linked';
   return {
@@ -2333,12 +2492,25 @@ export function getTelegramSettings() {
     welcomeMessage: getSetting('telegram_welcome_message') || '',
     profileDescription: getSetting('telegram_profile_description') || '',
     profileShortDescription: getSetting('telegram_profile_short_description') || '',
+    newBooksAnnounceEnabled: getSetting('telegram_new_books_announce_enabled') === '1',
+    newBooksAnnounceTemplate: getSetting('telegram_new_books_announce_template') || '',
+    announceChatCount: countTelegramAnnounceChats(),
     /** '0' = явно отключён; иначе считается включённым */
     enabled: getSetting('telegram_enabled') !== '0',
   };
 }
 
-export function setTelegramSettings({ token, allowedUsers, accessMode, enabled, welcomeMessage, profileDescription, profileShortDescription }) {
+export function setTelegramSettings({
+  token,
+  allowedUsers,
+  accessMode,
+  enabled,
+  welcomeMessage,
+  profileDescription,
+  profileShortDescription,
+  newBooksAnnounceEnabled,
+  newBooksAnnounceTemplate,
+}) {
   if (token !== undefined && String(token).trim()) {
     setSetting('telegram_bot_token', encryptValue(String(token).trim()));
   }
@@ -2357,6 +2529,12 @@ export function setTelegramSettings({ token, allowedUsers, accessMode, enabled, 
   }
   if (profileShortDescription !== undefined) {
     setSetting('telegram_profile_short_description', String(profileShortDescription ?? ''));
+  }
+  if (newBooksAnnounceEnabled !== undefined) {
+    setSetting('telegram_new_books_announce_enabled', newBooksAnnounceEnabled ? '1' : '0');
+  }
+  if (newBooksAnnounceTemplate !== undefined) {
+    setSetting('telegram_new_books_announce_template', String(newBooksAnnounceTemplate ?? '').slice(0, 4096));
   }
   if (enabled !== undefined) {
     setSetting('telegram_enabled', enabled ? '1' : '0');
@@ -2401,9 +2579,56 @@ db.exec(`CREATE TABLE IF NOT EXISTS reading_positions (
   book_id TEXT NOT NULL,
   position TEXT NOT NULL DEFAULT '',
   progress REAL NOT NULL DEFAULT 0,
+  text_offset INTEGER,
+  text_quote TEXT,
+  text_section_length INTEGER,
+  position_version INTEGER NOT NULL DEFAULT 1,
+  revision INTEGER NOT NULL DEFAULT 1,
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
   PRIMARY KEY (username, book_id)
 )`);
+
+function ensureReadingPositionsSchema() {
+  const columns = db.prepare(`PRAGMA table_info(reading_positions)`).all();
+  const names = new Set(columns.map((column) => column.name));
+  if (!names.has('fraction')) {
+    db.exec(`ALTER TABLE reading_positions ADD COLUMN fraction REAL`);
+  }
+  if (!names.has('fb2_href')) {
+    db.exec(`ALTER TABLE reading_positions ADD COLUMN fb2_href TEXT`);
+  }
+  if (!names.has('section_index')) {
+    db.exec(`ALTER TABLE reading_positions ADD COLUMN section_index INTEGER`);
+  }
+  if (!names.has('section_page_fraction')) {
+    db.exec(`ALTER TABLE reading_positions ADD COLUMN section_page_fraction REAL`);
+  }
+  if (!names.has('paginator_page')) {
+    db.exec(`ALTER TABLE reading_positions ADD COLUMN paginator_page INTEGER`);
+  }
+  if (!names.has('paginator_pages')) {
+    db.exec(`ALTER TABLE reading_positions ADD COLUMN paginator_pages INTEGER`);
+  }
+  if (!names.has('layout_mode')) {
+    db.exec(`ALTER TABLE reading_positions ADD COLUMN layout_mode TEXT`);
+  }
+  if (!names.has('text_offset')) {
+    db.exec(`ALTER TABLE reading_positions ADD COLUMN text_offset INTEGER`);
+  }
+  if (!names.has('text_quote')) {
+    db.exec(`ALTER TABLE reading_positions ADD COLUMN text_quote TEXT`);
+  }
+  if (!names.has('text_section_length')) {
+    db.exec(`ALTER TABLE reading_positions ADD COLUMN text_section_length INTEGER`);
+  }
+  if (!names.has('position_version')) {
+    db.exec(`ALTER TABLE reading_positions ADD COLUMN position_version INTEGER NOT NULL DEFAULT 1`);
+  }
+  if (!names.has('revision')) {
+    db.exec(`ALTER TABLE reading_positions ADD COLUMN revision INTEGER NOT NULL DEFAULT 1`);
+  }
+}
+ensureReadingPositionsSchema();
 
 db.exec(`CREATE TABLE IF NOT EXISTS reader_bookmarks (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2415,18 +2640,238 @@ db.exec(`CREATE TABLE IF NOT EXISTS reader_bookmarks (
 )`);
 db.exec(`CREATE INDEX IF NOT EXISTS idx_reader_bookmarks_user_book ON reader_bookmarks(username, book_id)`);
 
-let _stmtGetReadPos = null;
-export function getReadingPosition(username, bookId) {
-  _stmtGetReadPos ??= db.prepare('SELECT position, progress FROM reading_positions WHERE username = ? AND book_id = ?');
-  return _stmtGetReadPos.get(username, bookId) || null;
+db.exec(`CREATE TABLE IF NOT EXISTS reader_book_revisions (
+  username TEXT NOT NULL,
+  book_id TEXT NOT NULL,
+  bookmarks_rev TEXT NOT NULL DEFAULT '1970-01-01T00:00:00.000Z',
+  annotations_rev TEXT NOT NULL DEFAULT '1970-01-01T00:00:00.000Z',
+  PRIMARY KEY (username, book_id)
+)`);
+
+db.exec(`CREATE TABLE IF NOT EXISTS user_reader_revisions (
+  username TEXT PRIMARY KEY,
+  read_books_rev TEXT NOT NULL DEFAULT '1970-01-01T00:00:00.000Z',
+  reading_history_rev TEXT NOT NULL DEFAULT '1970-01-01T00:00:00.000Z'
+)`);
+
+const READER_SYNC_EPOCH = '1970-01-01T00:00:00.000Z';
+
+function touchReaderBookRevision(username, bookId, field) {
+  const u = String(username || '').trim();
+  const id = String(bookId ?? '');
+  if (!u || !id) return;
+  const now = new Date().toISOString();
+  db.prepare(`INSERT INTO reader_book_revisions (username, book_id, ${field}) VALUES (?, ?, ?)
+    ON CONFLICT(username, book_id) DO UPDATE SET ${field} = excluded.${field}`).run(u, id, now);
 }
 
-let _stmtSetReadPos = null;
-export function setReadingPosition(username, bookId, position, progress) {
-  _stmtSetReadPos ??= db.prepare(`INSERT INTO reading_positions (username, book_id, position, progress, updated_at)
-    VALUES (?, ?, ?, ?, datetime('now'))
-    ON CONFLICT(username, book_id) DO UPDATE SET position = excluded.position, progress = excluded.progress, updated_at = excluded.updated_at`);
-  _stmtSetReadPos.run(username, bookId, String(position), Number(progress) || 0);
+export function touchUserReaderRevision(username, field) {
+  const u = String(username || '').trim();
+  if (!u) return;
+  const now = new Date().toISOString();
+  db.prepare(`INSERT INTO user_reader_revisions (username, ${field}) VALUES (?, ?)
+    ON CONFLICT(username) DO UPDATE SET ${field} = excluded.${field}`).run(u, now);
+}
+
+export function getReaderBookSyncMeta(username, bookId) {
+  const u = String(username || '').trim();
+  const id = String(bookId ?? '');
+  const row = db.prepare('SELECT bookmarks_rev AS bookmarksRev, annotations_rev AS annotationsRev FROM reader_book_revisions WHERE username = ? AND book_id = ?').get(u, id);
+  const pos = db.prepare('SELECT updated_at AS updatedAt, progress FROM reading_positions WHERE username = ? AND book_id = ?').get(u, id);
+  const bmCount = db.prepare('SELECT COUNT(*) AS cnt FROM reader_bookmarks WHERE username = ? AND book_id = ?').get(u, id)?.cnt || 0;
+  const annCount = db.prepare('SELECT COUNT(*) AS cnt FROM reader_annotations WHERE username = ? AND book_id = ?').get(u, id)?.cnt || 0;
+  return {
+    bookmarksRev: row?.bookmarksRev || READER_SYNC_EPOCH,
+    annotationsRev: row?.annotationsRev || READER_SYNC_EPOCH,
+    positionUpdatedAt: pos?.updatedAt || null,
+    positionProgress: Number(pos?.progress) || 0,
+    bookmarkCount: bmCount,
+    annotationCount: annCount,
+  };
+}
+
+export function getUserReaderActivitySyncMeta(username) {
+  const u = String(username || '').trim();
+  const row = db.prepare('SELECT read_books_rev AS readBooksRev, reading_history_rev AS readingHistoryRev FROM user_reader_revisions WHERE username = ?').get(u);
+  const readCount = db.prepare(`
+    SELECT COUNT(*) AS cnt FROM read_books rb
+    JOIN active_books b ON b.id = rb.book_id
+    WHERE rb.username = ?
+  `).get(u)?.cnt || 0;
+  const histCount = db.prepare(`
+    SELECT COUNT(*) AS cnt FROM reading_history rh
+    JOIN active_books b ON b.id = rh.book_id
+    WHERE rh.username = ?
+  `).get(u)?.cnt || 0;
+  return {
+    readBooksRev: row?.readBooksRev || READER_SYNC_EPOCH,
+    readingHistoryRev: row?.readingHistoryRev || READER_SYNC_EPOCH,
+    readBookCount: readCount,
+    readingHistoryCount: histCount,
+  };
+}
+
+let _stmtGetReadPos = null;
+function nullableFiniteNumber(value) {
+  if (value == null || value === '') return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+export function getReadingPosition(username, bookId) {
+  _stmtGetReadPos ??= db.prepare(
+    `SELECT position, progress, fraction, fb2_href AS fb2Href, updated_at AS updatedAt,
+            section_index AS sectionIndex, section_page_fraction AS sectionPageFraction,
+            paginator_page AS paginatorPage, paginator_pages AS paginatorPages,
+            layout_mode AS layoutMode, text_offset AS textOffset, text_quote AS textQuote,
+            text_section_length AS textSectionLength,
+            position_version AS positionVersion, revision
+     FROM reading_positions WHERE username = ? AND book_id = ?`,
+  );
+  const row = _stmtGetReadPos.get(username, bookId);
+  if (!row) return null;
+  return {
+    position: row.position || '',
+    progress: Number(row.progress) || 0,
+    fraction: row.fraction != null && Number.isFinite(Number(row.fraction)) ? Number(row.fraction) : null,
+    fb2Href: row.fb2Href || null,
+    sectionIndex: nullableFiniteNumber(row.sectionIndex),
+    sectionPageFraction: nullableFiniteNumber(row.sectionPageFraction),
+    paginatorPage: nullableFiniteNumber(row.paginatorPage),
+    paginatorPages: nullableFiniteNumber(row.paginatorPages),
+    layoutMode: typeof row.layoutMode === 'string' ? row.layoutMode : null,
+    textOffset: nullableFiniteNumber(row.textOffset),
+    textQuote: typeof row.textQuote === 'string' ? row.textQuote : null,
+    textSectionLength: nullableFiniteNumber(row.textSectionLength),
+    updatedAt: row.updatedAt || null,
+    positionVersion: Number(row.positionVersion) || 1,
+    revision: Math.max(1, Number(row.revision) || 1),
+  };
+}
+
+let _stmtMigrateReadPos = null;
+let _stmtResetAndMigrateReadPos = null;
+export function migrateReadingPositionToV4(username, bookId, { reset = false } = {}) {
+  const sql = reset
+    ? `UPDATE reading_positions SET
+         position = '',
+         progress = 0,
+         fraction = NULL,
+         fb2_href = NULL,
+         section_index = NULL,
+         section_page_fraction = NULL,
+         paginator_page = NULL,
+         paginator_pages = NULL,
+         layout_mode = NULL,
+         text_offset = NULL,
+         text_quote = NULL,
+         text_section_length = NULL,
+         position_version = 4,
+         revision = revision + 1,
+         updated_at = datetime('now')
+       WHERE username = ? AND book_id = ? AND position_version < 4`
+    : `UPDATE reading_positions SET
+         progress = 0,
+         fraction = NULL,
+         fb2_href = NULL,
+         section_index = NULL,
+         section_page_fraction = NULL,
+         paginator_page = NULL,
+         paginator_pages = NULL,
+         layout_mode = NULL,
+         text_offset = NULL,
+         text_quote = NULL,
+         text_section_length = NULL,
+         position_version = 4,
+         revision = revision + 1,
+         updated_at = datetime('now')
+       WHERE username = ? AND book_id = ? AND position_version < 4`;
+  if (reset) {
+    _stmtResetAndMigrateReadPos ??= db.prepare(sql);
+    _stmtResetAndMigrateReadPos.run(username, bookId);
+  } else {
+    _stmtMigrateReadPos ??= db.prepare(sql);
+    _stmtMigrateReadPos.run(username, bookId);
+  }
+  return getReadingPosition(username, bookId);
+}
+
+let _stmtSetReadPosCas = null;
+export function setReadingPositionCas(
+  username,
+  bookId,
+  baseRevision,
+  position,
+  progress,
+  fraction = null,
+  fb2Href = null,
+  anchors = {},
+) {
+  _stmtSetReadPosCas ??= db.prepare(`INSERT INTO reading_positions (
+      username, book_id, position, progress, fraction, fb2_href,
+      section_index, section_page_fraction, paginator_page, paginator_pages, layout_mode,
+      text_offset, text_quote, text_section_length,
+      position_version, revision, updated_at
+    )
+    SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 4, 1, datetime('now')
+    WHERE ? = 0 OR EXISTS (
+      SELECT 1 FROM reading_positions
+      WHERE username = ? AND book_id = ? AND revision = ?
+    )
+    ON CONFLICT(username, book_id) DO UPDATE SET
+      position = excluded.position,
+      progress = excluded.progress,
+      fraction = excluded.fraction,
+      fb2_href = excluded.fb2_href,
+      section_index = excluded.section_index,
+      section_page_fraction = excluded.section_page_fraction,
+      paginator_page = excluded.paginator_page,
+      paginator_pages = excluded.paginator_pages,
+      layout_mode = excluded.layout_mode,
+      text_offset = excluded.text_offset,
+      text_quote = excluded.text_quote,
+      text_section_length = excluded.text_section_length,
+      position_version = 4,
+      revision = reading_positions.revision + 1,
+      updated_at = excluded.updated_at
+    WHERE reading_positions.revision = ?
+    RETURNING revision`);
+  const fractionVal = Number.isFinite(Number(fraction)) ? Math.max(0, Math.min(1, Number(fraction))) : null;
+  const fb2HrefVal = fb2Href != null && String(fb2Href).trim() ? String(fb2Href).trim() : null;
+  const sectionIndex = nullableFiniteNumber(anchors?.sectionIndex);
+  const sectionPageFraction = nullableFiniteNumber(anchors?.sectionPageFraction);
+  const paginatorPage = nullableFiniteNumber(anchors?.paginatorPage);
+  const paginatorPages = nullableFiniteNumber(anchors?.paginatorPages);
+  const layoutMode =
+    anchors?.layoutMode != null && String(anchors.layoutMode).trim()
+      ? String(anchors.layoutMode).trim()
+      : null;
+  const textOffset = nullableFiniteNumber(anchors?.textOffset);
+  const textQuote = anchors?.textQuote != null ? String(anchors.textQuote) : null;
+  const textSectionLength = nullableFiniteNumber(anchors?.textSectionLength);
+  const normalizedBaseRevision = Number(baseRevision);
+  const saved = _stmtSetReadPosCas.get(
+    username,
+    bookId,
+    String(position),
+    Number(progress) || 0,
+    fractionVal,
+    fb2HrefVal,
+    sectionIndex,
+    sectionPageFraction,
+    paginatorPage,
+    paginatorPages,
+    layoutMode,
+    textOffset,
+    textQuote,
+    textSectionLength,
+    normalizedBaseRevision,
+    username,
+    bookId,
+    normalizedBaseRevision,
+    normalizedBaseRevision,
+  );
+  return saved ? getReadingPosition(username, bookId) : null;
 }
 
 let _stmtDeleteReadHistory = null;
@@ -2439,6 +2884,7 @@ export function deleteReadingHistoryEntry(username, bookId) {
   if (result.changes > 0) {
     _stmtDeleteReadPos ??= db.prepare('DELETE FROM reading_positions WHERE username = ? AND book_id = ?');
     _stmtDeleteReadPos.run(u, id);
+    touchUserReaderRevision(u, 'reading_history_rev');
   }
   return result.changes > 0;
 }
@@ -2456,6 +2902,7 @@ export function upsertReadingHistoryEntry(username, bookId, lastOpenedAt, openCo
       open_count = excluded.open_count
   `);
   _stmtUpsertReadHistory.run(username, bookId, opened, count);
+  touchUserReaderRevision(username, 'reading_history_rev');
 }
 
 let _stmtGetReaderBookmarks = null;
@@ -2482,13 +2929,16 @@ let _stmtAddReaderBm = null;
 export function addReaderBookmark(username, bookId, position, title) {
   _stmtAddReaderBm ??= db.prepare('INSERT INTO reader_bookmarks (username, book_id, position, title) VALUES (?, ?, ?, ?)');
   const info = _stmtAddReaderBm.run(username, bookId, String(position), String(title || ''));
+  touchReaderBookRevision(username, bookId, 'bookmarks_rev');
   return info.lastInsertRowid;
 }
 
 let _stmtDelReaderBm = null;
 export function deleteReaderBookmark(id, username) {
   _stmtDelReaderBm ??= db.prepare('DELETE FROM reader_bookmarks WHERE id = ? AND username = ?');
+  const row = db.prepare('SELECT book_id FROM reader_bookmarks WHERE id = ? AND username = ?').get(id, username);
   _stmtDelReaderBm.run(id, username);
+  if (row?.book_id) touchReaderBookRevision(username, row.book_id, 'bookmarks_rev');
 }
 
 /* ── Аннотации читалки (выделения и заметки) ──────────────────────── */
@@ -2529,6 +2979,7 @@ let _stmtAddReaderAnnotation = null;
 export function addReaderAnnotation(username, bookId, cfi, text, note, color) {
   _stmtAddReaderAnnotation ??= db.prepare('INSERT INTO reader_annotations (username, book_id, cfi, text, note, color) VALUES (?, ?, ?, ?, ?, ?)');
   const info = _stmtAddReaderAnnotation.run(username, bookId, String(cfi), String(text || ''), String(note || ''), String(color || 'yellow'));
+  touchReaderBookRevision(username, bookId, 'annotations_rev');
   return info.lastInsertRowid;
 }
 
@@ -2553,7 +3004,9 @@ export function updateReaderAnnotation(id, username, { note, color } = {}) {
 let _stmtDelReaderAnnotation = null;
 export function deleteReaderAnnotation(id, username) {
   _stmtDelReaderAnnotation ??= db.prepare('DELETE FROM reader_annotations WHERE id = ? AND username = ?');
+  const row = db.prepare('SELECT book_id FROM reader_annotations WHERE id = ? AND username = ?').get(id, username);
   _stmtDelReaderAnnotation.run(id, username);
+  if (row?.book_id) touchReaderBookRevision(username, row.book_id, 'annotations_rev');
 }
 
 let _stmtGetEreaderEmail = null;

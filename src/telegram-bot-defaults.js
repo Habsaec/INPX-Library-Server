@@ -61,3 +61,47 @@ export const TELEGRAM_DEFAULT_WELCOME =
   '<b>Поиск:</b> <code>/search</code> · <code>/author</code> · <code>/series</code>\n' +
   '<b>Личное:</b> <code>/shelves</code> · <code>/favorites</code> · <code>/recommended</code> <i>(после привязки)</i>\n\n' +
   '<code>/help</code> — полная справка';
+
+/** Анонс в чаты после индексации, если появились новые книги. Плейсхолдеры: {{count}}, {{url}}, {{link}} */
+export const TELEGRAM_DEFAULT_NEW_BOOKS_ANNOUNCE =
+  '📚 В нашей библиотеке появилось <b>{{count}}</b> новых книг.\n\n' +
+  'Ознакомиться с ними вы сможете в разделе «Новинки» нашей библиотеки.\n\n' +
+  '{{link}}';
+
+/**
+ * @param {string} template
+ * @param {number} count
+ * @param {string} baseUrl — публичный URL сайта без завершающего /
+ * @param {(s: string) => string} [escapeHtml]
+ */
+export function renderNewBooksAnnounceMessage(template, count, baseUrl = '', escapeHtml = (s) => String(s ?? '')) {
+  const n = Math.max(0, Math.floor(Number(count) || 0));
+  const root = String(baseUrl || '').trim().replace(/\/+$/, '');
+  const url = root ? `${root}/library/recent` : '';
+  const link = url
+    ? `<a href="${escapeHtml(url)}">Открыть раздел «Новинки»</a>`
+    : '';
+  let text = String(template || TELEGRAM_DEFAULT_NEW_BOOKS_ANNOUNCE);
+  // Частая ошибка в админке: вместо {{url}} вставляют {{https://site/...}}
+  text = text.replace(/\{\{(https?:\/\/[^}]+)\}\}/gi, (_, rawUrl) => escapeHtml(rawUrl.trim()));
+  text = text.replace(/\{\{count\}\}/g, String(n));
+  text = text.replace(/\{\{url\}\}/g, escapeHtml(url));
+  text = text.replace(/\{\{link\}\}/g, link);
+  return text;
+}
+
+/** Предупреждает о неизвестных плейсхолдерах в шаблоне анонса. */
+export function validateNewBooksAnnounceTemplate(template = '') {
+  const text = String(template || '').trim();
+  if (!text) return { ok: true, warnings: [] };
+  const warnings = [];
+  const unknown = text.match(/\{\{(?!count\}\}|url\}\}|link\}\})[^}]+\}\}/gi) || [];
+  for (const token of unknown) {
+    if (/^\{\{https?:\/\//i.test(token)) {
+      warnings.push(`Используйте {{url}} или {{link}} вместо ${token}`);
+    } else {
+      warnings.push(`Неизвестный плейсхолдер: ${token}`);
+    }
+  }
+  return { ok: warnings.length === 0, warnings };
+}

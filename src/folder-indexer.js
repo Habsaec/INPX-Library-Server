@@ -5,6 +5,7 @@ import crypto from 'node:crypto';
 import unzipper from 'unzipper';
 import { listArchiveFiles, readArchiveEntryBuffer } from './archives.js';
 import { parseEnvTimeoutMs, promiseWithTimeout } from './utils/async-timeout.js';
+import { resolveIndexImportMode } from './index-import-mode.js';
 import iconv from 'iconv-lite';
 import {
   db,
@@ -19,6 +20,7 @@ import {
   endFastSqliteImport,
   dropBulkImportIndexes,
   ensureBulkImportIndexes,
+  ensureBulkImportIndexesAsync,
   beginExclusiveOperation,
   endExclusiveOperation,
   getSourceById,
@@ -29,7 +31,9 @@ import {
   formatSingleAuthorName, authorDisplayName, authorSortKey, authorSearchName,
   seriesDisplayName, seriesSortName, seriesSearchName,
   genreDisplayName, genreSortName, genreSearchName,
-  createSortKey, normalizeText
+  createSortKey, normalizeText,
+  bumpIndexNewBooks,
+  repairBookJunctionLinks
 } from './inpx.js';
 import { getOrExtractBookDetails } from './fb2.js';
 import { logSystemEvent } from './services/system-events.js';
@@ -684,21 +688,32 @@ export async function indexFolder(source, { incremental = true, onProgress = nul
     filesToProcess.push(file);
   }
 
-  const ftsBulkMode = !incremental;
+  const deletedKeys = incremental
+    ? Object.keys(previousFiles).filter((k) => !(k in currentFiles))
+    : [];
+  const willReconcileDeletes = incremental && canReconcileDeletedFiles && deletedKeys.length > 0;
+  const workUnits = filesToProcess.length + (willReconcileDeletes ? deletedKeys.length : 0);
+
+  const { ftsBulkMode, useFastSqlite, incrementalBulk } = resolveIndexImportMode({
+    incremental,
+    toProcess: workUnits,
+    total: allFiles.length
+  });
+  console.log(
+    `[folder-index] import plan source_id=${source.id}: process=${filesToProcess.length}/${allFiles.length} ftsBulk=${ftsBulkMode}`
+  );
   let completedSuccessfully = false;
   try {
   beginExclusiveOperation('indexing');
-  // Fast-import mode (synchronous=OFF + longer busy_timeout) is now used for
-  // incremental indexing too: per-chunk fsync was the dominant cost on slow
-  // disks. Safety: indexAllSources/indexSingleSource take a DB backup before
-  // calling us, so a power loss can be recovered.
-  beginFastSqliteImport();
+  if (useFastSqlite) {
+    beginFastSqliteImport();
+  }
   if (ftsBulkMode) {
     setMeta(BOOKS_FTS_DIRTY_META_KEY, '1');
-  }
-  if (!incremental) {
     dropBooksFtsTriggers();
     dropBulkImportIndexes();
+  }
+  if (!incremental) {
     db.transaction(() => {
       db.prepare('DELETE FROM book_details_cache WHERE book_id IN (SELECT id FROM books WHERE source_id = ?)').run(source.id);
       db.prepare('DELETE FROM book_authors WHERE book_id IN (SELECT id FROM books WHERE source_id = ?)').run(source.id);
@@ -708,7 +723,6 @@ export async function indexFolder(source, { incremental = true, onProgress = nul
     })();
     await yieldEventLoop();
   } else {
-    const deletedKeys = Object.keys(previousFiles).filter((k) => !(k in currentFiles));
     if (!canReconcileDeletedFiles && deletedKeys.length > 0) {
       console.warn(
         `[folder-indexer] Skipping deletion reconciliation (${deletedKeys.length} candidates): scan/list had transient errors`
@@ -736,7 +750,7 @@ export async function indexFolder(source, { incremental = true, onProgress = nul
         await yieldEventLoop();
       }
     }
-    // Incremental: FTS triggers stay ON — per-row updates are cheap vs full rebuild
+    // Incremental with few changes: FTS triggers stay on (cheap per-row updates).
   }
 
   const insertAuthor = db.prepare(`
@@ -795,6 +809,12 @@ export async function indexFolder(source, { incremental = true, onProgress = nul
   `);
 
   let imported = 0;
+  const existingBookIds = new Set();
+  if (incremental) {
+    for (const row of db.prepare('SELECT id FROM books WHERE source_id = ?').iterate(source.id)) {
+      existingBookIds.add(row.id);
+    }
+  }
 
   function resolveAuthorId(name) {
     if (authorIdCache.has(name)) return authorIdCache.get(name);
@@ -898,11 +918,12 @@ export async function indexFolder(source, { incremental = true, onProgress = nul
         if (!row || suppressedIds.has(row.id)) continue;
         row.sourceId = source.id;
         insertBook.run(row);
+        if (incremental && !existingBookIds.has(row.id)) bumpIndexNewBooks();
+        if (incremental) existingBookIds.add(row.id);
 
         if (incremental && !batchSeenIds.has(row.id)) {
           batchSeenIds.add(row.id);
           unlinkAuthors.run(row.id);
-          unlinkSeries.run(row.id);
           unlinkGenres.run(row.id);
         }
 
@@ -1031,6 +1052,7 @@ export async function indexFolder(source, { incremental = true, onProgress = nul
     deduplicated: 0
   };
   completedSuccessfully = true;
+  repairBookJunctionLinks();
   
   // Фоновое предизвлечение обложек/аннотаций для новых книг (не блокирует завершение индексации)
   setImmediate(() => warmupBookDetailsCache(source.id));
@@ -1058,13 +1080,32 @@ export async function indexFolder(source, { incremental = true, onProgress = nul
       ensureBooksFtsTriggers();
       setMeta(BOOKS_FTS_DIRTY_META_KEY, '0');
     } else if (ftsBulkMode) {
-      // Cancellation/failure: keep DB responsive, do not run expensive FTS rebuild now.
-      ensureBooksFtsTriggers();
-      setMeta(BOOKS_FTS_DIRTY_META_KEY, '1');
+      console.log('[folder-index] FTS: rebuilding after interrupted indexing…');
+      logSystemEvent('info', 'index', 'folder FTS rebuild after interruption', { sourceId: source.id, name: sourceLabel });
+      try {
+        await rebuildBooksFtsFromContent();
+        ensureBooksFtsTriggers();
+        setMeta(BOOKS_FTS_DIRTY_META_KEY, '0');
+      } catch (ftsErr) {
+        console.error('[folder-index] FTS rebuild after interruption failed:', ftsErr.message);
+        setMeta(BOOKS_FTS_DIRTY_META_KEY, '1');
+      }
     }
-    // Always pair with the unconditional beginFastSqliteImport() above.
-    ensureBulkImportIndexes();
-    endFastSqliteImport();
+    if (ftsBulkMode) {
+      await ensureBulkImportIndexesAsync({
+        onProgress: ({ done, total }) => {
+          onProgress?.({
+            processed: workUnits,
+            total: workUnits,
+            imported,
+            currentArchive: `БД: индексы ${done}/${total}…`
+          });
+        }
+      });
+    }
+    if (useFastSqlite) {
+      endFastSqliteImport();
+    }
     endExclusiveOperation('indexing');
   }
 }
