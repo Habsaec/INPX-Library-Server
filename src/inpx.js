@@ -1310,6 +1310,50 @@ function findAuthorNamesForBookSearch(query = '') {
   return [];
 }
 
+/** Authors whose sort_name first token equals the given surname token. */
+function findAuthorsBySurnameToken(token = '') {
+  const key = String(token || '').trim();
+  if (!key) return [];
+  return db.prepare(`
+    SELECT name, COALESCE(display_name, name) AS displayName, sort_name, book_count
+    FROM authors
+    WHERE book_count > 0
+      AND SUBSTR(COALESCE(sort_name, ''), 1, INSTR(COALESCE(sort_name, '') || ' ', ' ') - 1) = ?
+    ORDER BY book_count DESC
+    LIMIT 24
+  `).all(key);
+}
+
+/**
+ * Split multi-token series query into author prefix + series-name remainder.
+ * Prefers the longest author prefix that matches known authors
+ * ("Кир Булычев Алиса" → author "Кир Булычев", series "Алиса").
+ * @returns {{ authorNames: string[], seriesQuery: string } | null}
+ */
+function resolveAuthorSeriesQuerySplit(tokens = []) {
+  if (!Array.isArray(tokens) || tokens.length < 2) return null;
+
+  for (let authorLen = tokens.length - 1; authorLen >= 1; authorLen -= 1) {
+    const authorTokens = tokens.slice(0, authorLen);
+    const seriesTokens = tokens.slice(authorLen);
+    if (!seriesTokens.length) continue;
+
+    let matched = [];
+    if (authorLen >= 2) {
+      matched = findAuthorsMatchingTokenSubset(authorTokens.join(' '), { requireBooks: true });
+    } else {
+      matched = findAuthorsBySurnameToken(authorTokens[0]);
+    }
+    if (!matched.length) continue;
+
+    return {
+      authorNames: matched.slice(0, 12).map((row) => row.name).filter(Boolean),
+      seriesQuery: seriesTokens.join(' ')
+    };
+  }
+  return null;
+}
+
 export function resolveAuthorName(value) {
   const normalized = normalizeText(value);
   const candidates = new Set([
@@ -4051,8 +4095,35 @@ export function listSeries({ page = 1, pageSize = 50, query = '', sort = 'name',
     }
   }
 
+  /* Автор + название серии: «Кир Булычев Алиса» → author IN (...) AND series name matches remainder. */
+  let mixedWhere = null;
+  let mixedWhereParams = [];
+  let mixedSeriesKey = '';
+  if (!nameOnly && needleTokens.length >= 2) {
+    const split = resolveAuthorSeriesQuerySplit(needleTokens);
+    if (split?.authorNames?.length && split.seriesQuery) {
+      const seriesNameSearch = buildCatalogSearchSql('s.search_name', split.seriesQuery);
+      if (seriesNameSearch) {
+        const placeholders = split.authorNames.map(() => '?').join(', ');
+        mixedWhere = `(${seriesNameSearch.where}) AND EXISTS (
+          SELECT 1 FROM book_series bs2
+          JOIN active_books b2 ON b2.id = bs2.book_id
+          JOIN book_authors ba2 ON ba2.book_id = b2.id
+          JOIN authors a2 ON a2.id = ba2.author_id
+          WHERE bs2.series_id = s.id AND a2.name IN (${placeholders})
+        )`;
+        mixedWhereParams = [...seriesNameSearch.params, ...split.authorNames];
+        mixedSeriesKey = createSortKey(split.seriesQuery);
+      }
+    }
+  }
+
   const mainWhereParts = [];
   const mainWhereParams = [];
+  if (mixedWhere) {
+    mainWhereParts.push(mixedWhere);
+    mainWhereParams.push(...mixedWhereParams);
+  }
   if (nameSearch) {
     mainWhereParts.push(nameSearch.where);
     mainWhereParams.push(...nameSearch.params);
@@ -4073,7 +4144,19 @@ export function listSeries({ page = 1, pageSize = 50, query = '', sort = 'name',
 
   const nameRankParts = [];
   const nameRankParams = [];
-  if (nameSearch) {
+  if (mixedSeriesKey) {
+    /* Mixed author+series hits rank above bare series-name matches. */
+    nameRankParts.push(`WHEN COALESCE(s.sort_name, '') = ? THEN 0`);
+    nameRankParams.push(mixedSeriesKey);
+    nameRankParts.push(`WHEN COALESCE(s.sort_name, '') LIKE ? THEN 1`);
+    nameRankParams.push(`${mixedSeriesKey}%`);
+    if (nameSearch) {
+      nameRankParts.push(`WHEN COALESCE(s.sort_name, '') = ? THEN 2`);
+      nameRankParams.push(needleKey);
+      nameRankParts.push(`WHEN COALESCE(s.sort_name, '') LIKE ? THEN 3`);
+      nameRankParams.push(`${needleKey}%`);
+    }
+  } else if (nameSearch) {
     nameRankParts.push(`WHEN COALESCE(s.sort_name, '') = ? THEN 0`);
     nameRankParams.push(needleKey);
     nameRankParts.push(`WHEN COALESCE(s.sort_name, '') LIKE ? THEN 3`);

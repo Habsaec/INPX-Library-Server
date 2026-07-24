@@ -2594,12 +2594,29 @@ function attachSmartSearch() {
     series: '/series'
   };
 
+  const syncSearchPlaceholder = (form) => {
+    const scope = form.querySelector('[data-search-scope]');
+    const queryInput = form.querySelector('[name="q"]');
+    if (!scope || !queryInput) return;
+    const seriesPh = queryInput.getAttribute('data-placeholder-series') || '';
+    const defaultPh = queryInput.getAttribute('data-placeholder-default') || '';
+    const next = scope.value === 'series' && seriesPh ? seriesPh : (defaultPh || queryInput.placeholder);
+    queryInput.placeholder = next;
+    queryInput.setAttribute('aria-label', next);
+  };
+
   for (const form of forms) {
+    const scope = form.querySelector('[data-search-scope]');
+    if (scope) {
+      syncSearchPlaceholder(form);
+      scope.addEventListener('change', () => syncSearchPlaceholder(form));
+    }
+
     form.addEventListener('submit', (e) => {
-      const scope = form.querySelector('[data-search-scope]');
+      const scopeEl = form.querySelector('[data-search-scope]');
       const queryInput = form.querySelector('[name="q"]');
       const q = (queryInput?.value || '').trim();
-      const field = scope?.value || 'all';
+      const field = scopeEl?.value || 'all';
       const route = scopeRoutes[field];
 
       if (!route) {
