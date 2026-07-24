@@ -3,7 +3,12 @@
  */
 import { renderLoginScreen, escapeHtml, t } from './shared.js';
 
-export function renderLogin(error = '', { registrationEnabled = false, passwordResetEnabled = false, successMessage = '' } = {}) {
+export function renderLogin(error = '', {
+  registrationEnabled = false,
+  passwordResetEnabled = false,
+  successMessage = '',
+  oidcEnabled = false
+} = {}) {
   const footerLinks = [];
   if (passwordResetEnabled) {
     footerLinks.push(`<a href="/forgot-password" class="login-footer-link">${escapeHtml(t('login.forgotPassword'))}</a>`);
@@ -11,12 +16,19 @@ export function renderLogin(error = '', { registrationEnabled = false, passwordR
   if (registrationEnabled) {
     footerLinks.push(`<a href="/register" class="login-footer-link">${escapeHtml(t('login.register'))}</a>`);
   }
+  const ssoBlock = oidcEnabled
+    ? `<div class="login-sso-block">
+        <a class="button login-sso-button" href="/auth/oidc/start">${escapeHtml(t('login.sso'))}</a>
+        <div class="login-sso-divider muted">${escapeHtml(t('login.ssoOr'))}</div>
+      </div>`
+    : '';
   return renderLoginScreen({
     title: t('login.title'),
     subtitle: t('login.subtitle'),
     action: '/login',
     error,
     successMessage,
+    beforeFormHtml: ssoBlock,
     extraHtml: footerLinks.join('')
   });
 }

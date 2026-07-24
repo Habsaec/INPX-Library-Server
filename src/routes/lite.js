@@ -150,7 +150,8 @@ export function registerLiteRoutes(app, { getCachedStats }) {
   app.get('/lite/library/recent', requireLiteBrowseAuth, (req, res) => {
     const page = safePage(req.query.page);
     const pageSize = 24;
-    const sort = ['recent', 'title', 'author', 'series', 'rating'].includes(String(req.query.sort || '')) ? String(req.query.sort) : 'title';
+    const requestedSort = String(req.query.sort || '');
+    const sort = ['recent', 'title', 'author', 'series', 'rating'].includes(requestedSort) ? requestedSort : 'recent';
     const user = req.user || null;
     const result = getStaleOrSchedule(`library:recent:sort:${sort}:page:${page}:size:${pageSize}`, () => getLibraryView('recent', { page, pageSize, sort, order: '' }), PAGE_CACHE_TTL_MS, { total: 0, items: [] });
     const readBookIds = user ? getReadBookIdSet(user.username) : null;

@@ -10,6 +10,24 @@ function escapeHtml(value = '') {
 let _homeRecTimer = 0;
 window.addEventListener('pagehide', () => { if (_homeRecTimer) { clearTimeout(_homeRecTimer); _homeRecTimer = 0; } });
 
+/** Chrome rejects ViewTransition promises with AbortError when a cross-document
+ *  transition is skipped (back/forward, rapid nav, timeout). Harmless — silence it. */
+function silenceSkippedViewTransitions() {
+  const swallow = (vt) => {
+    if (!vt) return;
+    Promise.resolve(vt.ready).catch(() => {});
+    Promise.resolve(vt.finished).catch(() => {});
+  };
+  window.addEventListener('pageswap', (e) => swallow(e.viewTransition));
+  window.addEventListener('pagereveal', (e) => swallow(e.viewTransition));
+  window.addEventListener('unhandledrejection', (e) => {
+    const err = e.reason;
+    if (err && err.name === 'AbortError' && String(err.message || '').includes('Transition was skipped')) {
+      e.preventDefault();
+    }
+  });
+}
+
 async function loadHomeRecommendationsProgressively(attempt = 0) {
   const section = document.querySelector('[data-home-recommendations]');
   if (!section || section.dataset.loaded === '1') return;
@@ -47,6 +65,7 @@ async function loadHomeRecommendationsProgressively(attempt = 0) {
     gridMount.replaceWith(grid);
     attachCoverErrorFallback(grid);
     attachDownloadMenus(grid);
+    loadCardDetails(grid.querySelectorAll('.card'));
     revealHomeBlock(grid);
     revealHomeBlock(section);
     section.dataset.loaded = '1';
@@ -99,6 +118,7 @@ async function loadHomeContinueProgressively() {
     gridMount.replaceWith(grid);
     attachCoverErrorFallback(grid);
     attachDownloadMenus(grid);
+    loadCardDetails(grid.querySelectorAll('.card'));
     revealHomeBlock(grid);
     revealHomeBlock(section);
     section.dataset.loaded = '1';
@@ -496,6 +516,18 @@ let _cardDetailsFlushTimer = 0;
 let _cardDetailsFlushPending = false;
 let _cardDetailsObserver = null;
 
+function stripAnnotationPreviewText(raw, isHtml) {
+  let text = String(raw || '');
+  if (isHtml) {
+    const tmp = document.createElement('div');
+    tmp.innerHTML = text;
+    text = tmp.textContent || tmp.innerText || '';
+  }
+  text = text.replace(/\s+/g, ' ').trim();
+  if (text.length > 220) text = `${text.slice(0, 217).trim()}…`;
+  return text;
+}
+
 function applyCardDetailsForId(id, details) {
   if (!id || !details) return;
   const cards = typeof findCardsByBookId === 'function' ? findCardsByBookId(id) : document.querySelectorAll(`[data-book-id="${CSS.escape(id)}"]`);
@@ -510,6 +542,29 @@ function applyCardDetailsForId(id, details) {
     }
     const hasRenderedImage = Boolean(img && img.complete && img.naturalWidth > 0);
     setCoverFallbackState(card, !details.coverAvailable && !hasRenderedImage);
+    let preview = card.querySelector('[data-card-annotation]');
+    const cover = card.querySelector('.cover');
+    if (preview && cover && !cover.contains(preview)) {
+      cover.appendChild(preview);
+    }
+    if (!preview) {
+      preview = document.createElement('div');
+      preview.className = 'card-annotation-preview';
+      preview.hidden = true;
+      preview.dataset.cardAnnotation = '';
+      (cover || card).appendChild(preview);
+    }
+    const excerpt = stripAnnotationPreviewText(details.annotation, details.annotationIsHtml);
+    if (excerpt) {
+      preview.textContent = excerpt;
+      preview.hidden = false;
+      preview.removeAttribute('hidden');
+      card.classList.add('has-annotation-preview');
+    } else {
+      preview.textContent = '';
+      preview.hidden = true;
+      card.classList.remove('has-annotation-preview');
+    }
   }
 }
 
@@ -630,6 +685,31 @@ function loadCardDetails(cardList) {
 
 function getCurrentFavoritesView() {
   return document.querySelector('[data-favorites-view]')?.dataset.favoritesView || '';
+}
+
+function pulseUi(el, className = 'ui-feedback-pulse') {
+  if (!el) return;
+  el.classList.remove(className);
+  // force reflow so repeated toggles restart the animation
+  void el.offsetWidth;
+  el.classList.add(className);
+  window.setTimeout(() => el.classList.remove(className), 360);
+}
+
+function attachCatalogFilters() {
+  const panel = document.querySelector('[data-catalog-filters]');
+  if (!panel) return;
+  const search = panel.querySelector('[data-catalog-genre-search]');
+  const options = [...panel.querySelectorAll('.catalog-genre-option')];
+  if (search && options.length) {
+    search.addEventListener('input', () => {
+      const q = search.value.trim().toLowerCase();
+      for (const opt of options) {
+        const hay = String(opt.dataset.genreSearch || '');
+        opt.hidden = Boolean(q) && !hay.includes(q);
+      }
+    });
+  }
 }
 
 function attachThemeToggle() {
@@ -925,6 +1005,47 @@ function syncAuthorSeriesFavoriteButtonUi(button, favorite) {
   }
 }
 
+async function postReadToggle(bookId) {
+  const csrfMeta = document.querySelector('meta[name="csrf-token"]');
+  const headers = {};
+  if (csrfMeta) headers['x-csrf-token'] = csrfMeta.content;
+  const response = await fetch(apiReadPath(bookId), {
+    method: 'POST', credentials: 'same-origin', headers
+  });
+  if (await handleAuthRequired(response)) return null;
+  if (!response.ok) return null;
+  return response.json();
+}
+
+function showReadToggleToast(bookId, read, syncButtons = []) {
+  const message = read ? uiT('book.markReadUndo') : uiT('book.unmarkReadUndo');
+  showToast(message, 'success', {
+    actionLabel: uiT('app.undo'),
+    duration: 5000,
+    onAction: () => {
+      void (async () => {
+        const payload = await postReadToggle(bookId);
+        if (!payload) return;
+        toggleReadBadgesForBook(bookId, Boolean(payload.read));
+        for (const btn of syncButtons) {
+          if (!btn?.isConnected) continue;
+          btn.classList.toggle('is-active', Boolean(payload.read));
+          btn.textContent = payload.read ? uiT('book.markedRead') : uiT('book.markRead');
+        }
+        pulseReadProgressForBook(bookId);
+      })();
+    }
+  });
+}
+
+function pulseReadProgressForBook(bookId) {
+  const cards = typeof findCardsByBookId === 'function' ? findCardsByBookId(bookId) : [];
+  for (const card of cards) {
+    const bar = card.querySelector('.card-read-progress');
+    if (bar) pulseUi(bar, 'progress-pulse');
+  }
+}
+
 function attachReadBookActions() {
   document.querySelectorAll('[data-read-button]').forEach((btn) => {
     btn.addEventListener('click', async (e) => {
@@ -932,19 +1053,15 @@ function attachReadBookActions() {
       e.stopPropagation();
       const bookId = typeof resolveBookIdFromElement === 'function' ? resolveBookIdFromElement(btn) : (btn.dataset.readButton ? decodeURIComponent(btn.dataset.readButton).replace(/\uFFFD/g, '\0') : null);
       try {
-        const csrfMeta = document.querySelector('meta[name="csrf-token"]');
-        const headers = {};
-        if (csrfMeta) headers['x-csrf-token'] = csrfMeta.content;
-        const response = await fetch(apiReadPath(bookId), {
-          method: 'POST', credentials: 'same-origin', headers
-        });
-        if (await handleAuthRequired(response)) return;
-        if (!response.ok) return;
-        const { read } = await response.json();
+        const payload = await postReadToggle(bookId);
+        if (!payload) return;
+        const read = Boolean(payload.read);
         btn.classList.toggle('is-active', read);
         btn.textContent = read ? uiT('book.markedRead') : uiT('book.markRead');
-        // sync grid badges on same page
+        pulseUi(btn);
         toggleReadBadgesForBook(bookId, read);
+        pulseReadProgressForBook(bookId);
+        showReadToggleToast(bookId, read, [btn]);
       } catch (err) { console.error('Read toggle error', err); }
     });
   });
@@ -1001,17 +1118,20 @@ function attachCoverLongPress() {
   async function toggleRead(bookId, cover) {
     fired = true;
     try {
-      const csrfMeta = document.querySelector('meta[name="csrf-token"]');
-      const headers = {};
-      if (csrfMeta) headers['x-csrf-token'] = csrfMeta.content;
-      const response = await fetch(apiReadPath(bookId), {
-        method: 'POST', credentials: 'same-origin', headers
-      });
-      if (await handleAuthRequired(response)) return;
-      if (!response.ok) return;
-      const { read } = await response.json();
+      const payload = await postReadToggle(bookId);
+      if (!payload) return;
+      const read = Boolean(payload.read);
       toggleReadBadgesForBook(bookId, read);
-      showToast(read ? uiT('book.markedRead') : uiT('book.markRead'), 'success');
+      pulseReadProgressForBook(bookId);
+      const buttons = [...document.querySelectorAll('[data-read-button]')].filter((btn) => {
+        const id = typeof resolveBookIdFromElement === 'function' ? resolveBookIdFromElement(btn) : null;
+        return id === bookId;
+      });
+      for (const btn of buttons) {
+        btn.classList.toggle('is-active', read);
+        btn.textContent = read ? uiT('book.markedRead') : uiT('book.markRead');
+      }
+      showReadToggleToast(bookId, read, buttons);
     } catch (err) { console.error('Long-press read toggle error', err); }
   }
 
@@ -1263,6 +1383,7 @@ async function attachBookmarkActions() {
         const payload = await response.json();
         const favoritesView = getCurrentFavoritesView();
         syncBookBookmarkButtonUi(button, Boolean(payload.bookmarked));
+        pulseUi(button);
         if (!payload.bookmarked && favoritesView === 'books') {
           const card = button.closest('.card');
           const row = button.closest('.table-row');
@@ -2902,7 +3023,7 @@ function renderCardHtml(book, { batchSelect = false, seriesContext = null } = {}
         ? [['fb2', 'FB2'], ['epub2', 'EPUB']]
         : [[sourceFormat, sourceFormat.toUpperCase()]];
   const downloadMenu =
-    !batchSelect && isPageDownloadAllowed() && formats.length
+    isPageDownloadAllowed() && formats.length
       ? formats.length === 1
         ? `<a class="button download-menu-trigger download-menu-trigger-compact download-direct-link" href="${downloadBookPath(book.id, `format=${encodeURIComponent(formats[0][0])}`)}">${escapeHtml(uiT('download.label'))}</a>`
         : `<details class="download-menu download-menu-compact">
@@ -2930,6 +3051,7 @@ function renderCardHtml(book, { batchSelect = false, seriesContext = null } = {}
       </span>
       ${getReadBookIdSet().has(book.id) ? `<span class="read-badge">${READ_BADGE_SVG}</span>` : ''}
       ${coverRating}
+      <div class="card-annotation-preview" hidden data-card-annotation></div>
     </a>
     <div class="meta">
       <h3><a href="${bookPagePath(book.id)}">${title}</a></h3>
@@ -3024,6 +3146,7 @@ function attachLoadMore() {
 
         for (const card of newCards) attachCoverErrorFallback(card);
         for (const card of newCards) attachDownloadMenus(card);
+        loadCardDetails(newCards);
         if (batchSelect) {
           const scope = container.closest('.batch-select-scope');
           updateBatchCountForScope(scope);
@@ -5777,13 +5900,16 @@ function attachAddSourceForm() {
 }
 
 attachBfCacheFacetReload();
+silenceSkippedViewTransitions();
 attachScrollToTop();
 attachSidebarToggle();
 attachTopbarSearchToggle();
 attachTopbarAutoHide();
 attachThemeToggle();
+attachCatalogFilters();
 attachDownloadMenus();
 attachCoverErrorFallback(document);
+loadCardDetails();
 loadBookPageReview();
 attachBookmarkActions();
 attachReadBookActions();

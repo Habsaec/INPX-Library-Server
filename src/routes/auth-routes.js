@@ -22,7 +22,9 @@ import {
   createPasswordResetToken,
   validatePasswordResetToken,
   completePasswordReset,
+  getOidcSettings, isOidcRegistrationBlocked
 } from '../db.js';
+import { isOidcConfigured } from '../services/oidc.js';
 import { logSystemEvent } from '../services/system-events.js';
 import { resolvePublicBaseUrl, sendPasswordResetEmail } from '../services/password-reset.js';
 import {
@@ -103,6 +105,7 @@ export function registerAuthRoutes(app, deps) {
       telegramBotAvailable: Boolean(tgRuntime.enabled && tgRuntime.token),
       telegramBotAllowed: fullUser ? isTelegramBotAllowedForUser(fullUser) : true,
       ereaderEmailAllowed: fullUser ? isEreaderEmailAllowedForUser(fullUser) : true,
+      hasLocalPassword: Number(fullUser?.hasLocalPassword ?? 1) !== 0,
       flash,
       csrfToken,
       ...extra
@@ -112,17 +115,32 @@ export function registerAuthRoutes(app, deps) {
   // --- Login ---
 
   function loginPageOptions() {
+    const oidc = getOidcSettings();
     return {
-      registrationEnabled: getSetting('allow_registration') === '1',
-      passwordResetEnabled: isPasswordResetConfigured()
+      registrationEnabled: getSetting('allow_registration') === '1' && !isOidcRegistrationBlocked(),
+      passwordResetEnabled: isPasswordResetConfigured(),
+      oidcEnabled: isOidcConfigured(oidc)
     };
+  }
+
+  function oidcLoginErrorMessage(code) {
+    const map = {
+      OIDC_NOT_CONFIGURED: 'login.oidc.notConfigured',
+      OIDC_EMAIL_EXISTS: 'login.oidc.emailExists',
+      OIDC_EMAIL_UNVERIFIED: 'login.oidc.emailUnverified',
+      OIDC_USER_BLOCKED: 'login.oidc.blocked',
+      OIDC_FAILED: 'login.oidc.failed'
+    };
+    return t(map[String(code || '')] || 'login.oidc.failed');
   }
 
   app.get('/login', (req, res) => {
     const flash = String(req.query.flash || '');
     const resetOk = String(req.query.reset || '') === 'ok';
+    const oidcError = String(req.query.oidc_error || '');
     const successMessage = resetOk ? t('passwordReset.passwordChanged') : flash;
-    res.send(renderLogin('', { ...loginPageOptions(), successMessage }));
+    const error = oidcError ? oidcLoginErrorMessage(oidcError) : '';
+    res.send(renderLogin(error, { ...loginPageOptions(), successMessage }));
   });
 
   app.get('/admin/login', (req, res) => {
@@ -279,13 +297,13 @@ export function registerAuthRoutes(app, deps) {
   // --- Registration ---
 
   app.get('/register', (req, res) => {
-    const registrationEnabled = getSetting('allow_registration') === '1';
+    const registrationEnabled = getSetting('allow_registration') === '1' && !isOidcRegistrationBlocked();
     const { siteKey } = getRecaptchaKeys();
     res.send(renderRegister({ registrationEnabled, recaptchaSiteKey: siteKey }));
   });
 
   app.post('/register', async (req, res) => {
-    const registrationEnabled = getSetting('allow_registration') === '1';
+    const registrationEnabled = getSetting('allow_registration') === '1' && !isOidcRegistrationBlocked();
     const { siteKey, secretKey } = getRecaptchaKeys();
     const regOpts = { registrationEnabled, recaptchaSiteKey: siteKey };
     if (!registrationEnabled) {
@@ -348,8 +366,11 @@ export function registerAuthRoutes(app, deps) {
     const renderErr = (msg) => res.status(400).send(renderProfileSettings(buildProfileSettingsData(req.user, msg, req.csrfToken || '')));
 
     const fullUser = getUserByUsername(req.user.username);
-    if (!fullUser || !verifyPassword(currentPassword, fullUser.passwordHash)) {
-      return renderErr(t('profile.wrongCurrentPassword'));
+    const hasLocal = Number(fullUser?.hasLocalPassword ?? 1) !== 0;
+    if (hasLocal) {
+      if (!fullUser || !verifyPassword(currentPassword, fullUser.passwordHash)) {
+        return renderErr(t('profile.wrongCurrentPassword'));
+      }
     }
     if (newPassword !== confirmPassword) {
       return renderErr(t('profile.passwordMismatch'));
@@ -365,7 +386,8 @@ export function registerAuthRoutes(app, deps) {
         maxAge: config.sessionMaxAgeMs
       });
       logSystemEvent('info', 'auth', 'password changed', { username: req.user.username });
-      res.send(renderProfileSettings(buildProfileSettingsData(req.user, t('profile.passwordChanged'), req.csrfToken || '')));
+      const okMsg = hasLocal ? t('profile.passwordChanged') : t('profile.passwordSet');
+      res.send(renderProfileSettings(buildProfileSettingsData(freshUser, okMsg, req.csrfToken || '')));
     } catch (error) {
       return renderErr(translateKnownErrorMessage(error.message));
     }

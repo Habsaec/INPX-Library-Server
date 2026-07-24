@@ -7,9 +7,9 @@
   --border: rgba(145, 109, 43, 0.14);
   --text: #e8e0d4;
   --muted: #9a8e7e;
-  --accent: #9a8e7e; /* Muted warm tan — палитра 1.6.7, мягче чем «золото» */
+  --accent: #9a8e7e; /* Muted warm tan ? ??????? 1.6.7, ????? ??? �??????� */
   --accent-hover: #a1671b;
-  /* Текстовые ссылки (намеренно отличаются от --accent: ссылки — золотые, акценты — тёплый нейтрал) */
+  /* ????????? ?????? (????????? ?????????? ?? --accent: ?????? ? ???????, ??????? ? ?????? ???????) */
   --link: #d4ac5c;
   --link-hover: #efc06f;
   --danger: #c61700;
@@ -74,11 +74,11 @@ html[data-theme="light"] {
   --border: rgba(97,78,55,0.14);
   --text: #2e2418;
   --muted: #7a6a58;
-  --accent: #7a6a58;       /* нейтральный приглушённый — палитра 1.6.7 */
+  --accent: #7a6a58;       /* ??????????? ???????????? ? ??????? 1.6.7 */
   --accent-hover: #a1671b;
   --link: #8b5a12;
   --link-hover: #a86a0a;
-  --danger: #c84d68;        /* мягкая роза, не Tailwind rose */
+  --danger: #c84d68;        /* ?????? ????, ?? Tailwind rose */
   --shell-bg: #efe7da;
   --sidebar-bg: #eadfce;
   --sidebar-brand-border: rgba(97,78,55,0.1);
@@ -145,7 +145,7 @@ body {
   line-height: 1.5;
 }
 
-/* ── Текстовые ссылки (весь сайт, обе темы) ── */
+/* ?? ????????? ?????? (???? ????, ??? ????) ?? */
 a {
   color: var(--link);
   text-decoration: none;
@@ -176,7 +176,7 @@ label.button {
   color: var(--text);
 }
 
-/* Обложка карточки — без подчёркивания */
+/* ??????? ???????? ? ??? ????????????? */
 a.cover {
   text-decoration: none;
   color: inherit;
@@ -190,7 +190,7 @@ a.cover:active {
   transform: scale(0.98);
 }
 
-/* Строка целиком — ссылкой выглядит заголовок */
+/* ?????? ??????? ? ??????? ???????? ????????? */
 a.table-row-link {
   text-decoration: none;
   color: inherit;
@@ -204,10 +204,10 @@ a.table-row-link:active {
   transform: scale(0.99);
 }
 
-/* ── Shell: sidenav + main area ── */
+/* ?? Shell: sidenav + main area ?? */
 .shell { display: flex; min-height: 100vh; background: var(--shell-bg); }
 
-/* ── Side navigation ── */
+/* ?? Side navigation ?? */
 .sidebar {
   width: var(--sidenav-w);
   background: var(--sidebar-bg);
@@ -264,7 +264,7 @@ a.table-row-link:active {
 .sidenav-section { padding: 16px 16px 6px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
 .sidenav-section { opacity: 0.75; }
 
-/* ── Admin panel design system ── */
+/* ?? Admin panel design system ?? */
 .topbar-admin {
   background: rgba(14,12,10,0.88);
 }
@@ -310,13 +310,13 @@ html[data-theme="light"] .topbar-admin {
   width: 1px; height: 16px; background: var(--border); flex-shrink: 0;
 }
 
-/* ── Форма «Расписание сканирования» (admin/sources) ── */
+/* ?? ????? �?????????? ????????????� (admin/sources) ?? */
 .scan-schedule-fields {
   display: flex; flex-direction: column; gap: 14px;
   max-width: 480px; margin-top: 12px;
 }
 .scan-schedule-fields .admin-field-group {
-  margin-bottom: 0; /* gap у родителя уже даёт расстояние */
+  margin-bottom: 0; /* gap ? ???????? ??? ???? ?????????? */
 }
 .scan-schedule-fields .admin-inline-row {
   align-items: center; flex-wrap: wrap; gap: 8px;
@@ -341,7 +341,7 @@ html[data-theme="light"] .topbar-admin {
   font-size: 13px;
 }
 
-/* Дни недели в форме расписания сканирования — компактные «pill»-чекбоксы. */
+/* ??? ?????? ? ????? ?????????? ???????????? ? ?????????? �pill�-????????. */
 .admin-dow-row {
   display: inline-flex; flex-wrap: wrap; gap: 4px; align-items: center;
 }
@@ -370,9 +370,9 @@ html[data-theme="light"] .topbar-admin {
 .admin-field-group {
   display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px;
 }
-/* HTML-атрибут [hidden] имеет user-agent-стиль display:none, но любой класс
-   с display:flex/grid его перебивает по специфичности. Возвращаем ожидаемое
-   поведение для админских полей формы. */
+/* HTML-??????? [hidden] ????? user-agent-????? display:none, ?? ????? ?????
+   ? display:flex/grid ??? ?????????? ?? ?????????????. ?????????? ?????????
+   ????????? ??? ????????? ????? ?????. */
 .admin-field-group[hidden] { display: none; }
 .admin-field-group label {
   font-size: 11px; font-weight: 600; color: var(--muted);
@@ -405,7 +405,7 @@ html[data-theme="light"] .topbar-admin {
   display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px;
 }
 
-/* Админка: сетки форм (адаптив через медиазапросы, без inline grid) */
+/* ???????: ????? ???? (??????? ????? ????????????, ??? inline grid) */
 .admin-form-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -491,13 +491,13 @@ html[data-theme="light"] .topbar-admin {
   border-radius: 4px;
   background: color-mix(in srgb, var(--muted) 10%, transparent);
 }
-/* Большой спарклайн для CPU / Память — высота отдаёт лучше тренд при отсутствии
-   текстовой подсказки под графиком. */
+/* ??????? ????????? ??? CPU / ?????? ? ?????? ?????? ????? ????? ??? ??????????
+   ????????? ????????? ??? ????????. */
 .monitor-spark--lg {
   height: 72px;
   flex: 1;
 }
-/* Обёртка графика + шкала слева. */
+/* ??????? ??????? + ????? ?????. */
 .monitor-graph-wrap {
   display: flex;
   gap: 6px;
@@ -520,8 +520,8 @@ html[data-theme="light"] .topbar-admin {
 .monitor-scale span {
   display: block;
 }
-/* Короткая подсказка под каждым тайлом — объясняет, что метрика значит и где порог
-   тревоги. Видна без hover, чтобы новый админ не гадал, что такое «event-loop lag». */
+/* ???????? ????????? ??? ?????? ?????? ? ?????????, ??? ??????? ?????? ? ??? ?????
+   ???????. ????? ??? hover, ????? ????? ????? ?? ?????, ??? ????? �event-loop lag�. */
 .monitor-hint {
   display: block;
   margin-top: 8px;
@@ -531,8 +531,8 @@ html[data-theme="light"] .topbar-admin {
   opacity: 0.85;
 }
 
-/* Тайл «База данных»: цветной стэковый бар по категориям + текстовая легенда.
-   Полная ширина = размер БД (100%), сегменты — относительные доли категорий. */
+/* ???? �???? ??????�: ??????? ???????? ??? ?? ?????????? + ????????? ???????.
+   ?????? ?????? = ?????? ?? (100%), ???????? ? ????????????? ???? ?????????. */
 .db-stacked-bar {
   display: flex;
   margin-top: 8px;
@@ -572,16 +572,16 @@ html[data-theme="light"] .topbar-admin {
 .db-legend-label { color: var(--text); }
 .db-legend-size { color: var(--muted); font-variant-numeric: tabular-nums; }
 
-/* Цвета категорий — спокойная палитра, отличимая для admins без идеального зрения. */
-.db-seg-books { background: #5b9bd5; }   /* спокойный синий */
-.db-seg-catalogs { background: #70c08a; } /* зелёный */
-.db-seg-covers { background: #e8a648; }   /* тёплый оранжевый */
-.db-seg-sidecar { background: #b487d5; }  /* лиловый */
-.db-seg-activity { background: #e07a7a; } /* розово-красный */
-.db-seg-other { background: #909090; }    /* нейтральный серый */
+/* ????? ????????? ? ????????? ???????, ????????? ??? admins ??? ?????????? ??????. */
+.db-seg-books { background: #5b9bd5; }   /* ????????? ????? */
+.db-seg-catalogs { background: #70c08a; } /* ??????? */
+.db-seg-covers { background: #e8a648; }   /* ?????? ????????? */
+.db-seg-sidecar { background: #b487d5; }  /* ??????? */
+.db-seg-activity { background: #e07a7a; } /* ??????-??????? */
+.db-seg-other { background: #909090; }    /* ??????????? ????? */
 
-/* ── Тайл «Диск»: толстая полоса использования с пороговыми рисками
-   на 75% / 90% и тройной статистикой (использовано / свободно / всего) ── */
+/* ?? ???? �????�: ??????? ?????? ????????????? ? ?????????? ???????
+   ?? 75% / 90% ? ??????? ??????????? (???????????? / ???????? / ?????) ?? */
 .monitor-item--disk .disk-bar-track {
   position: relative;
   margin-top: 10px;
@@ -640,14 +640,14 @@ html[data-theme="light"] .topbar-admin {
 }
 .monitor-spark path.spark-line {
   fill: none;
-  stroke: #3fb95e; /* зелёный severity-good, не зависит от темы (одинаково читаемо на тёмной и светлой) */
+  stroke: #3fb95e; /* ??????? severity-good, ?? ??????? ?? ???? (????????? ??????? ?? ?????? ? ???????) */
   stroke-width: 1;
   vector-effect: non-scaling-stroke;
 }
 .monitor-spark path.spark-fill {
   fill: color-mix(in srgb, #3fb95e 12%, transparent);
 }
-/* Тонкая сетка на 25 / 50 / 75 % для визуальной шкалы. */
+/* ?????? ????? ?? 25 / 50 / 75 % ??? ?????????? ?????. */
 .monitor-spark line.spark-grid {
   stroke: color-mix(in srgb, var(--muted) 30%, transparent);
   stroke-width: 0.6;
@@ -657,13 +657,13 @@ html[data-theme="light"] .topbar-admin {
 .monitor-spark line.spark-grid-mid {
   stroke: color-mix(in srgb, var(--muted) 50%, transparent);
 }
-/* Разделительная линия между шкалой и графиком. */
+/* ?????????????? ????? ????? ?????? ? ????????. */
 .monitor-spark line.spark-axis {
   stroke: color-mix(in srgb, var(--muted) 40%, transparent);
   stroke-width: 0.8;
   vector-effect: non-scaling-stroke;
 }
-/* Ряд статистики под графиком: «сейчас X% · min Y% · max Z%». */
+/* ??? ?????????? ??? ????????: �?????? X% � min Y% � max Z%�. */
 .spark-stats {
   display: flex;
   flex-wrap: wrap;
@@ -685,7 +685,7 @@ html[data-theme="light"] .topbar-admin {
   gap: 8px 14px;
 }
 
-/* ── Admin utility classes ── */
+/* ?? Admin utility classes ?? */
 .admin-divider {
   border: none; border-top: 1px solid var(--border); margin: 14px 0;
 }
@@ -783,7 +783,7 @@ form.is-dirty button[type="submit"]::after {
   background: var(--surface-hover);
 }
 
-/* ── Main content area ── */
+/* ?? Main content area ?? */
 .main-wrap {
   margin-left: var(--sidenav-w);
   flex: 1;
@@ -795,7 +795,7 @@ form.is-dirty button[type="submit"]::after {
   overflow-x: clip;
 }
 
-/* ── Top bar ── */
+/* ?? Top bar ?? */
 .topbar {
   height: var(--topbar-h);
   display: flex; align-items: center; gap: 14px;
@@ -1020,13 +1020,13 @@ form.is-dirty button[type="submit"]::after {
 /* Hidden old nav (replaced by sidenav) */
 .nav { display: none; }
 
-/* ── Content panel ── */
+/* ?? Content panel ?? */
 .panel { padding: 24px 28px 36px; flex: 1; width: 100%; min-width: 0; overflow-x: clip; }
 
 /* Layout compatibility: hide old two-column layout structure */
 .layout { display: contents; }
 
-/* ── Buttons ── */
+/* ?? Buttons ?? */
 .button, button {
   display: inline-flex; align-items: center; justify-content: center;
   padding: 8px 18px;
@@ -1078,7 +1078,7 @@ button[data-active-favorite="true"]:hover {
   border-color: color-mix(in srgb, var(--accent) 60%, transparent);
 }
 
-/* ── Forms ── */
+/* ?? Forms ?? */
 .search-form { display: flex; align-items: center; gap: 8px; }
 .search-form select {
   background: var(--field-bg);
@@ -1140,7 +1140,7 @@ html[data-ui-sliders="1"] select optgroup {
   background-color: transparent;
 }
 
-/* Chrome/Edge 135+: web-rendered picker — полный контроль hover/focus */
+/* Chrome/Edge 135+: web-rendered picker ? ?????? ???????? hover/focus */
 @supports (appearance: base-select) {
   select,
   select::picker(select) {
@@ -1181,7 +1181,7 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
   outline-offset: 2px;
 }
 
-/* ── Section titles ── */
+/* ?? Section titles ?? */
 .section-title {
   display: flex; align-items: center; justify-content: space-between;
   gap: 12px; margin-bottom: 14px;
@@ -1233,7 +1233,7 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
   flex-wrap: wrap;
 }
 
-/* ── Home page title + subtitle (persists above quote / hero card) ── */
+/* ?? Home page title + subtitle (persists above quote / hero card) ?? */
 .home-page-intro {
   margin-bottom: 16px;
   padding-bottom: 12px;
@@ -1247,7 +1247,7 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
   line-height: 1.55;
 }
 
-/* ── Home reveal animation ── */
+/* ?? Home reveal animation ?? */
 .home-reveal {
   opacity: 0;
   transform: translateY(14px);
@@ -1265,7 +1265,7 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
   }
 }
 
-/* ── Welcome hero banner + premium hero card (shared surface) ── */
+/* ?? Welcome hero banner + premium hero card (shared surface) ?? */
 .welcome-hero-banner,
 .premium-hero-card {
   position: relative;
@@ -1345,7 +1345,7 @@ html[data-theme="light"] .premium-hero-card::after {
   text-decoration: underline;
 }
 
-/* ── Premium hero card (continue reading) ── */
+/* ?? Premium hero card (continue reading) ?? */
 .premium-hero-card {
   display: grid;
   grid-template-columns: 200px 1fr;
@@ -1567,7 +1567,7 @@ html[data-theme="light"] .premium-hero-card .button-primary:hover {
   color: var(--text);
 }
 
-/* ── Breadcrumbs ── */
+/* ?? Breadcrumbs ?? */
 .breadcrumbs {
   display: flex; gap: 6px; align-items: center;
   margin-bottom: 16px; font-size: 13px; color: var(--muted);
@@ -1582,7 +1582,7 @@ html[data-theme="light"] .premium-hero-card .button-primary:hover {
   text-decoration-color: color-mix(in srgb, var(--link-hover) 45%, transparent);
 }
 
-/* ── Book cover grid ── */
+/* ?? Book cover grid ?? */
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(182px, 1fr));
@@ -1647,7 +1647,7 @@ html[data-theme="light"] .premium-hero-card .button-primary:hover {
   container-type: inline-size;
   box-shadow: var(--card-cover-shadow);
   transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.25s cubic-bezier(0.16, 1, 0.3, 1);
-  /* Long-press on the cover toggles "read" — suppress native callout/selection/drag
+  /* Long-press on the cover toggles "read" ? suppress native callout/selection/drag
      so iOS/Android Chrome don't hijack the gesture with image preview menus. */
   -webkit-touch-callout: none;
   -webkit-user-select: none;
@@ -1679,7 +1679,7 @@ html[data-theme="light"] .premium-hero-card .button-primary:hover {
   animation: indexBarIndeterminate 1.4s linear infinite;
 }
 
-/* Long-press visual feedback — replaces unreliable Android haptics with a guaranteed
+/* Long-press visual feedback ? replaces unreliable Android haptics with a guaranteed
    visual cue at the moment the "mark as read" toggle fires. */
 @keyframes coverLongPressFlash {
   0%   { transform: scale(1);    filter: brightness(1); }
@@ -1741,7 +1741,7 @@ html[data-theme="light"] .cover {
       rgba(255,255,255,0.04) 100%);
 }
 
-/* Картинка заполняет блок: без absolute flex иногда даёт нулевую высоту у img до отрисовки. */
+/* ???????? ????????? ????: ??? absolute flex ?????? ???? ??????? ?????? ? img ?? ?????????. */
 @keyframes cover-fade-in {
   from { opacity: 0; }
   to { opacity: 1; }
@@ -1772,7 +1772,7 @@ html[data-theme="light"] .cover {
  *   - .cover-fallback is ALWAYS rendered visible (z-index:1, beneath the img).
  *   - .cover-image starts with opacity:0; once it loads, JS adds .is-loaded
  *     and the picture fades in on top (z-index:2), occluding the fallback.
- *   - On error, .is-loaded never gets added — fallback simply stays visible.
+ *   - On error, .is-loaded never gets added ? fallback simply stays visible.
  */
 
 .cover-fallback {
@@ -1807,7 +1807,7 @@ html[data-theme="light"] .cover-fallback-overlay {
 
 .cover-fallback-copy {
   position: absolute;
-  /* Безопасная зона внутри орнамента book-fallback.png */
+  /* ?????????? ???? ?????? ????????? book-fallback.png */
   inset: 11% 15% 30%;
   width: auto;
   height: auto;
@@ -1861,7 +1861,7 @@ html[data-theme="light"] .cover-fallback-overlay {
   line-clamp: 2;
 }
 
-/* Карточки каталога — чуть компактнее, но читаемо */
+/* ???????? ???????? ? ???? ??????????, ?? ??????? */
 .card .cover-fallback-copy {
   inset: 12% 15% 32%;
 }
@@ -1878,7 +1878,7 @@ html[data-theme="light"] .cover-fallback-overlay {
   line-clamp: 3;
 }
 
-/* Страница книги — крупная «настоящая» обложка */
+/* ???????? ????? ? ??????? �?????????� ??????? */
 .book-detail-cover .cover-fallback-copy {
   inset: 10% 13% 32%;
   gap: 0.55em;
@@ -1964,7 +1964,7 @@ html[data-theme="light"] .cover-fallback-overlay {
   padding: 0 2px;
 }
 
-/* Текстовая колонка тянется вниз — «Скачать» на одной линии в ряду карточек */
+/* ????????? ??????? ??????? ???? ? �???????� ?? ????? ????? ? ???? ???????? */
 .card .meta {
   display: flex;
   flex-direction: column;
@@ -2184,11 +2184,11 @@ html[data-theme="light"] .cover-fallback-overlay {
   flex-shrink: 0;
 }
 
-/* ── Cover rating badge (bookmark ribbon, fixed height, bottom-up stars) ── */
+/* ?? Cover rating badge (bookmark ribbon, fixed height, bottom-up stars) ?? */
 .cover-rating-wrapper {
   position: absolute;
   top: 0;
-  left: 5px;  /* было 6px, уменьшил */
+  left: 5px;  /* ???? 6px, ???????? */
   z-index: 4;
   pointer-events: none;
   filter:
@@ -2198,10 +2198,10 @@ html[data-theme="light"] .cover-fallback-overlay {
 }
 
 .cover-rating-badge {
-  width: 17px;      /* было 20px (20 × 0.85 = 17) */
-  height: 75px;     /* было 88px (88 × 0.85 = 74.8 → 75) */
-  padding: 3px 2px 14px;  /* было 4px 2px 16px */
-  font-size: 10px;  /* было 12px (12 × 0.85 = 10.2 → 10) */
+  width: 17px;      /* ???? 20px (20 � 0.85 = 17) */
+  height: 75px;     /* ???? 88px (88 � 0.85 = 74.8 ? 75) */
+  padding: 3px 2px 14px;  /* ???? 4px 2px 16px */
+  font-size: 10px;  /* ???? 12px (12 � 0.85 = 10.2 ? 10) */
   font-weight: 800;
   line-height: 1;
   color: #fff;
@@ -2212,7 +2212,7 @@ html[data-theme="light"] .cover-fallback-overlay {
   flex-direction: column-reverse;
   align-items: center;
   justify-content: flex-start;
-  gap: 1px;        /* было 2px */
+  gap: 1px;        /* ???? 2px */
   position: relative;
   box-shadow:
     inset 0 2px 3px rgba(255, 255, 255, 0.25),
@@ -2220,7 +2220,7 @@ html[data-theme="light"] .cover-fallback-overlay {
     0 2px 3px rgba(0, 0, 0, 0.18);
 }
 
-/* Слой освещения поверх содержимого */
+/* ???? ????????? ?????? ??????????? */
 .cover-rating-badge::before {
   content: '';
   position: absolute;
@@ -2230,7 +2230,7 @@ html[data-theme="light"] .cover-fallback-overlay {
   z-index: 2;
 }
 
-/* Декоративная окантовка */
+/* ???????????? ????????? */
 .cover-rating-badge::after {
   content: '';
   position: absolute;
@@ -2242,8 +2242,8 @@ html[data-theme="light"] .cover-fallback-overlay {
 }
 
 .cover-rating-badge > span {
-  height: 10px;      /* было 12px (12 × 0.85 = 10.2 → 10) */
-  line-height: 10px; /* было 12px */
+  height: 10px;      /* ???? 12px (12 � 0.85 = 10.2 ? 10) */
+  line-height: 10px; /* ???? 12px */
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2258,13 +2258,13 @@ html[data-theme="light"] .cover-fallback-overlay {
   visibility: hidden;
 }
 
-/* Общие стили текстуры фона — без изменений */
+/* ????? ????? ???????? ???? ? ??? ????????? */
 .cover-rating-1, .cover-rating-2, .cover-rating-3, .cover-rating-4, .cover-rating-5 {
   background-size: cover;
   background-repeat: no-repeat;
 }
 
-/* 5 ЗВЁЗД */
+/* 5 ????? */
 .cover-rating-5 {
   background:
     repeating-linear-gradient(-30deg, rgba(255, 255, 255, 0.04) 0px, rgba(255, 255, 255, 0.04) 1px, transparent 1px, transparent 0.3px),
@@ -2272,15 +2272,15 @@ html[data-theme="light"] .cover-fallback-overlay {
     linear-gradient(180deg, #1bc459 0%, #0a6327 100%);
 }
 .cover-rating-5::before {
-  /* Верхний блик и тёмная кромка раньше съедали ~четверть высоты бейджа —
-     визуально воспринималось как «серое затемнение с изгибом». Сокращено
-     примерно втрое: блик 25% → 8%, тёмная полоса 6px → 2px. */
+  /* ??????? ???? ? ?????? ?????? ?????? ??????? ~???????? ?????? ?????? ?
+     ????????? ?????????????? ??? �????? ?????????? ? ???????�. ?????????
+     ???????? ?????: ???? 25% ? 8%, ?????? ?????? 6px ? 2px. */
   background:
     linear-gradient(to bottom, rgba(0,0,0,0.45) 0%, rgba(0,0,0,0) 2px),
     linear-gradient(180deg, rgba(255, 255, 255, 0.45) 0%, rgba(255, 255, 255, 0) 8%, rgba(0, 0, 0, 0) 65%, rgba(0, 0, 0, 0.45) 100%);
 }
 
-/* 4 ЗВЕЗДЫ */
+/* 4 ?????? */
 .cover-rating-4 {
   background:
     repeating-linear-gradient(-30deg, rgba(255, 255, 255, 0.04) 0px, rgba(255, 255, 255, 0.04) 1px, transparent 1px, transparent 0.3px),
@@ -2293,7 +2293,7 @@ html[data-theme="light"] .cover-fallback-overlay {
     linear-gradient(180deg, rgba(255, 255, 255, 0.45) 0%, rgba(255, 255, 255, 0) 8%, rgba(0, 0, 0, 0) 65%, rgba(0, 0, 0, 0.45) 100%);
 }
 
-/* 3 ЗВЕЗДЫ */
+/* 3 ?????? */
 .cover-rating-3 {
   background:
     repeating-linear-gradient(-30deg, rgba(255, 255, 255, 0.04) 0px, rgba(255, 255, 255, 0.04) 1px, transparent 1px, transparent 0.3px),
@@ -2306,7 +2306,7 @@ html[data-theme="light"] .cover-fallback-overlay {
     linear-gradient(180deg, rgba(255, 255, 255, 0.25) 0%, rgba(255, 255, 255, 0) 7%, rgba(0, 0, 0, 0) 65%, rgba(0, 0, 0, 0.45) 100%);
 }
 
-/* 2 ЗВЕЗДЫ */
+/* 2 ?????? */
 .cover-rating-2 {
   background:
     repeating-linear-gradient(-30deg, rgba(255, 255, 255, 0.04) 0px, rgba(255, 255, 255, 0.04) 1px, transparent 1px, transparent 0.3px),
@@ -2319,7 +2319,7 @@ html[data-theme="light"] .cover-fallback-overlay {
     linear-gradient(180deg, rgba(255, 255, 255, 0.18) 0%, rgba(255, 255, 255, 0) 7%, rgba(0, 0, 0, 0) 65%, rgba(0, 0, 0, 0.45) 100%);
 }
 
-/* 1 ЗВЕЗДА */
+/* 1 ?????? */
 .cover-rating-1 {
   background:
     repeating-linear-gradient(-30deg, rgba(255, 255, 255, 0.04) 0px, rgba(255, 255, 255, 0.04) 1px, transparent 1px, transparent 0.3px),
@@ -2333,7 +2333,7 @@ html[data-theme="light"] .cover-fallback-overlay {
 }
 
 
-/* ── Read badge (large checkmark stamp on covers) ── */
+/* ?? Read badge (large checkmark stamp on covers) ?? */
 .read-badge {
   position: absolute;
   inset: 0;
@@ -2493,7 +2493,7 @@ button.download-format-link {
   width: 100%;
 }
 
-/* Панель выбора: в потоке страницы; кнопки как у остального UI, блок справа */
+/* ?????? ??????: ? ?????? ????????; ?????? ??? ? ?????????? UI, ???? ?????? */
 .batch-download-bar {
   width: 100%;
   box-sizing: border-box;
@@ -2526,13 +2526,13 @@ button.download-format-link {
   white-space: nowrap;
 }
 
-/* Все выпадающие меню в панели пакета (Скачать / На email) — прижать к правому краю кнопки */
+/* ??? ?????????? ???? ? ?????? ?????? (??????? / ?? email) ? ??????? ? ??????? ???? ?????? */
 .batch-download-bar .download-menu-popover {
   left: auto;
   right: 0;
 }
 
-/* Меню «Скачать»: опция ZIP + список форматов */
+/* ???? �???????�: ????? ZIP + ?????? ???????? */
 .batch-download-bar .download-menu-popover--batch {
   min-width: 148px;
   display: flex;
@@ -2759,11 +2759,11 @@ button.download-format-link {
   user-select: none;
 }
 
-/* ── Card detail page (book page uses wider card) ── */
+/* ?? Card detail page (book page uses wider card) ?? */
 .card-detail { grid-template-columns: 200px 1fr; display: grid; gap: 20px; padding: 16px; }
 .card-detail .cover { aspect-ratio: auto; height: auto; min-height: 280px; border-radius: 2px var(--radius-card, 6px) var(--radius-card, 6px) 2px; }
 
-/* ── Table lists (authors, series, genres, bookmarks) ── */
+/* ?? Table lists (authors, series, genres, bookmarks) ?? */
 .table-list { display: grid; gap: 4px; }
 .stats-ribbon-item,
 .facet-hero-stat {
@@ -2806,7 +2806,7 @@ button.download-format-link {
   font-size: 0.9em;
 }
 
-/* Профиль: вкладки «Активность» / «Настройки» */
+/* ???????: ??????? �??????????� / �?????????� */
 .profile-shell {
   min-width: 0;
   max-width: 100%;
@@ -2822,14 +2822,14 @@ button.download-format-link {
 .profile-tab-panel {
   min-width: 0;
 }
-/* Без min-width:0 grid-элементы (.table-row и его ячейки) раздуваются по
-   min-content содержимого (например длинного текста заметки) и вызывают
-   горизонтальное переполнение страницы профиля. */
+/* ??? min-width:0 grid-???????? (.table-row ? ??? ??????) ??????????? ??
+   min-content ??????????? (???????? ???????? ?????? ???????) ? ????????
+   ?????????????? ???????????? ???????? ???????. */
 .profile-tab-panel .table-list { grid-template-columns: minmax(0, 1fr); }
 .profile-tab-panel .table-row { min-width: 0; }
 .profile-tab-panel .table-row > * { min-width: 0; }
 
-/* ── Profile: identity hero ── */
+/* ?? Profile: identity hero ?? */
 .profile-identity {
   display: flex;
   align-items: center;
@@ -2875,7 +2875,7 @@ button.download-format-link {
   border-color: color-mix(in srgb, var(--link) 35%, transparent);
 }
 
-/* ── Profile: activity layout (activity lists) ── */
+/* ?? Profile: activity layout (activity lists) ?? */
 .profile-activity { display: grid; gap: 18px; min-width: 0; }
 .profile-activity-grid {
   display: grid;
@@ -2905,7 +2905,7 @@ button.download-format-link {
 .profile-list { display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; }
 .profile-empty { color: var(--muted); padding: 6px 0; font-size: 13px; }
 
-/* ── Profile: rich list item with cover ── */
+/* ?? Profile: rich list item with cover ?? */
 .profile-litem,
 .profile-list-item.profile-litem {
   display: flex;
@@ -2995,7 +2995,7 @@ button.download-format-link {
   }
 }
 
-/* Профиль: двухколоночная сетка (если где-то останется в шаблонах) */
+/* ???????: ?????????????? ????? (???? ???-?? ????????? ? ????????) */
 .profile-page-layout {
   display: grid;
   grid-template-columns: minmax(0, 340px) minmax(0, 1fr);
@@ -3019,10 +3019,10 @@ button.download-format-link {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* Текст заметки может быть длинным — держим его в одну строку с многоточием на
-   всех экранах (надёжно на flex/grid), иначе на мобильном он расползается в
-   «стену текста». Повышенная специфичность перекрывает базовые и мобильные
-   правила .profile-list-link. */
+/* ????? ??????? ????? ???? ??????? ? ?????? ??? ? ???? ?????? ? ??????????? ??
+   ???? ??????? (??????? ?? flex/grid), ????? ?? ????????? ?? ???????????? ?
+   �????? ??????�. ?????????? ????????????? ??????????? ??????? ? ?????????
+   ??????? .profile-list-link. */
 .profile-list-item .profile-note-link {
   white-space: nowrap;
   overflow: hidden;
@@ -3041,7 +3041,7 @@ button.download-format-link {
 .profile-list-meta:empty {
   display: none;
 }
-/* Крупная зона нажатия (профиль), в тон интерфейсу: призрачная кнопка как у .button */
+/* ??????? ???? ??????? (???????), ? ??? ??????????: ?????????? ?????? ??? ? .button */
 .profile-remove-btn {
   display: inline-flex;
   align-items: center;
@@ -3120,7 +3120,57 @@ button.download-format-link {
   min-height: 68px;
 }
 
-/* Строки личного кабинета: название слева, «×» справа (все ширины экрана). */
+.favorites-entity-link {
+  min-width: 0;
+}
+.favorites-entity-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.favorites-entity-text .muted {
+  font-size: 12px;
+}
+.favorites-author-avatar {
+  position: relative;
+  flex: 0 0 48px;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  overflow: hidden;
+  background: var(--surface-hover);
+  border: 1px solid var(--border);
+}
+.favorites-author-portrait {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  z-index: 1;
+  background: var(--surface-hover);
+}
+.favorites-author-initial {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--muted);
+  letter-spacing: 0.02em;
+}
+.favorites-author-avatar:not(.is-fallback) .favorites-author-initial {
+  opacity: 0;
+}
+.favorites-list .shelf-covers-preview {
+  margin-top: 8px;
+}
+
+/* ?????? ??????? ????????: ???????? ?????, �׻ ?????? (??? ?????? ??????). */
 .account-list-row {
   align-items: center;
   min-width: 0;
@@ -3130,6 +3180,11 @@ button.download-format-link {
   color: inherit;
   text-decoration: none;
   display: block;
+}
+.account-list-row-main.favorites-entity-link {
+  display: flex;
+  align-items: center;
+  gap: 12px;
 }
 .account-list-row-main:hover strong {
   color: var(--link);
@@ -3201,7 +3256,7 @@ button.download-format-link {
 }
 
 
-/* ── reCAPTCHA keys (collapsible) ── */
+/* ?? reCAPTCHA keys (collapsible) ?? */
 .admin-recaptcha-disclosure {
   border: 1px solid var(--border); border-radius: var(--radius);
   background: var(--panel-soft-bg); margin-top: 6px;
@@ -3225,7 +3280,7 @@ button.download-format-link {
 }
 .admin-recaptcha-disclosure-body { padding: 14px; }
 
-/* ── Admin user management ── */
+/* ?? Admin user management ?? */
 .role-badge {
   display: inline-flex; align-items: center; margin-left: 8px;
   padding: 2px 7px; border-radius: 999px;
@@ -3320,7 +3375,7 @@ button.download-format-link {
   transform: scale(0.97);
 }
 
-/* ── Admin events ── */
+/* ?? Admin events ?? */
 .admin-events-bar {
   display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
   margin-bottom: 14px;
@@ -3365,7 +3420,7 @@ button.download-format-link {
   margin-left: 8px; color: var(--muted); font-size: 11px;
 }
 
-/* Журнал событий: одна прокручиваемая область, строки с бейджами */
+/* ?????? ???????: ???? ?????????????? ???????, ?????? ? ???????? */
 .admin-events-scroll {
   display: flex;
   flex-direction: column;
@@ -3468,7 +3523,7 @@ button.download-format-link {
   margin-right: 4px;
 }
 
-/* ── Index banner ── */
+/* ?? Index banner ?? */
 #sources-index-progress.alert {
   flex-direction: column;
   align-items: stretch;
@@ -3484,7 +3539,7 @@ button.download-format-link {
 .index-banner-stats { display: flex; gap: 14px; white-space: nowrap; }
 .index-banner-stats strong { font-weight: 600; color: var(--text); margin-right: 3px; }
 
-/* ── Hero ── */
+/* ?? Hero ?? */
 .hero { margin-bottom: 16px; }
 .hero p { color: var(--muted); max-width: 600px; }
 
@@ -3558,7 +3613,7 @@ button.download-format-link {
 
 
 
-/* ── Genre groups ── */
+/* ?? Genre groups ?? */
 .genre-grouped-list {
   display: flex;
   flex-direction: column;
@@ -3591,7 +3646,7 @@ button.download-format-link {
   border-top: 1px solid var(--border);
 }
 
-/* Admin content – genre groups */
+/* Admin content ? genre groups */
 .acg[data-open="1"] > .acg-body { display: block; }
 .acg .acg-body { display: none; }
 .acg[data-open="1"] .acg-arrow { transform: rotate(90deg); }
@@ -3737,7 +3792,7 @@ button.download-format-link {
   margin-bottom: 16px;
 }
 
-/* Личный кабинет: десктоп — вкладки-кнопки; ≤900px — выпадающий список (как sidebar) */
+/* ?????? ???????: ??????? ? ???????-??????; ?900px ? ?????????? ?????? (??? sidebar) */
 .account-nav-shell {
   margin-bottom: 16px;
   min-width: 0;
@@ -3836,8 +3891,8 @@ button.download-format-link {
   box-shadow: var(--shadow-md);
 }
 
-/* Угловые действия: Прочитано / Избранное / На полку — в правой колонке над заголовком,
-   чтобы длинное название не налезало на кнопки. На мобильном — в общем потоке над обложкой. */
+/* ??????? ????????: ????????? / ????????? / ?? ????? ? ? ?????? ??????? ??? ??????????,
+   ????? ??????? ???????? ?? ???????? ?? ??????. ?? ????????? ? ? ????? ?????? ??? ????????. */
 .book-detail-corner-actions {
   grid-column: 2;
   grid-row: 1;
@@ -3991,7 +4046,7 @@ button.download-format-link {
 }
 
 .book-detail-disclosure > summary::after {
-  content: '▾';
+  content: '?';
   color: var(--muted);
   transform: rotate(-90deg);
   transition: transform 0.16s ease;
@@ -4201,7 +4256,7 @@ button.download-format-link {
   text-decoration-color: color-mix(in srgb, var(--link-hover) 42%, transparent);
 }
 
-/* ── Star rating ── */
+/* ?? Star rating ?? */
 .book-detail-rating {
   display: flex;
   align-items: center;
@@ -4332,7 +4387,7 @@ button.download-format-link {
   margin-bottom: 12px;
 }
 
-/* ── Empty state ── */
+/* ?? Empty state ?? */
 .empty-state {
   padding: 40px 32px; text-align: center; color: var(--muted);
   border: 1px solid var(--border); border-radius: var(--radius-lg);
@@ -4349,7 +4404,7 @@ button.download-format-link {
 }
 .empty-state-icon svg { width: 100%; height: 100%; }
 
-/* ── Flash / alerts ── */
+/* ?? Flash / alerts ?? */
 @keyframes alert-enter {
   from { opacity: 0; transform: translateY(-6px); }
   to { opacity: 1; transform: translateY(0); }
@@ -4388,7 +4443,7 @@ html[data-theme="light"] .alert-info {
   border-color: rgba(59,130,246,0.2);
 }
 
-/* ── Skeleton cards ── */
+/* ?? Skeleton cards ?? */
 @keyframes skeleton-shimmer {
   0% { background-position: -400px 0; }
   100% { background-position: 400px 0; }
@@ -4409,7 +4464,7 @@ html[data-theme="light"] .alert-info {
 }
 .skeleton-line-short { width: 60%; }
 
-/* ── Load more ── */
+/* ?? Load more ?? */
 .load-more-wrap {
   display: flex;
   justify-content: center;
@@ -4429,7 +4484,7 @@ html[data-theme="light"] .alert-info {
   cursor: wait; 
 }
 
-/* ── Toasts ── */
+/* ?? Toasts ?? */
 @keyframes toast-enter {
   from { opacity: 0; transform: translateY(16px) scale(0.96); }
   to { opacity: 1; transform: translateY(0) scale(1); }
@@ -4469,7 +4524,7 @@ html[data-theme="light"] .alert-info {
 }
 @keyframes toast-spin { to { transform: rotate(360deg); } }
 
-/* ── Login ── */
+/* ?? Login ?? */
 .login-shell {
   min-height: 100vh; display: grid; place-items: center;
   padding: 24px; background: var(--bg);
@@ -4501,6 +4556,35 @@ html[data-theme="light"] .alert-info {
   text-decoration-color: color-mix(in srgb, var(--link-hover) 48%, transparent);
 }
 
+.login-sso-block {
+  margin: 0 0 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.login-sso-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  text-decoration: none;
+  text-align: center;
+}
+.login-sso-divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  text-align: center;
+}
+.login-sso-divider::before,
+.login-sso-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
 .login-lang {
   display: flex;
   align-items: center;
@@ -4510,13 +4594,13 @@ html[data-theme="light"] .alert-info {
   font-size: 13px;
 }
 
-/* ── Browse page filter form ── */
+/* ?? Browse page filter form ?? */
 .browse-filter {
   display: flex; gap: 8px; margin-bottom: 16px; max-width: 400px;
 }
 .browse-filter input { flex: 1; }
 
-/* ── Sidebar-specific elements (alphabet, old search) — hidden in new layout ── */
+/* ?? Sidebar-specific elements (alphabet, old search) ? hidden in new layout ?? */
 .sidebar-block { padding: 12px 8px 0; }
 .sidebar-title { margin-bottom: 0; }
 .sidebar-title h2 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); padding: 0 8px; }
@@ -4575,11 +4659,11 @@ html[data-theme="light"] .alert-info {
 .book-edit-summary::-webkit-details-marker { display: none; }
 .book-edit-disclosure[open] > .book-edit-summary { border-bottom: 1px solid var(--border); border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
 
-/* ── «Редактирование метаданных»: блок занимает обе колонки в гриде
-   карточки книги (cover + content), за счёт чего раскрытая форма получает
-   полную ширину карточки, а не остаётся в узкой правой колонке.
-   Закрытое состояние — тонкая полоска с компактной кнопкой справа;
-   открытое — полноразмерная панель с фоном и рамкой. */
+/* ?? �?????????????? ??????????�: ???? ???????? ??? ??????? ? ?????
+   ???????? ????? (cover + content), ?? ???? ???? ????????? ????? ????????
+   ?????? ?????? ????????, ? ?? ???????? ? ????? ?????? ???????.
+   ???????? ????????? ? ?????? ??????? ? ?????????? ??????? ??????;
+   ???????? ? ?????????????? ?????? ? ????? ? ??????. */
 .book-edit-disclosure--inline {
   grid-column: 1 / -1;
   border: none;
@@ -4601,9 +4685,9 @@ html[data-theme="light"] .alert-info {
   cursor: pointer;
   transition: background 0.15s, color 0.15s, border-color 0.15s;
   user-select: none;
-  /* Прижимаем кнопку к правому краю когда details закрыт: <details>
-     блочный, summary внутри по умолчанию инлайн — выводим его как
-     inline-flex с margin-left:auto в flex-родителе. */
+  /* ????????? ?????? ? ??????? ???? ????? details ??????: <details>
+     ???????, summary ?????? ?? ????????? ?????? ? ??????? ??? ???
+     inline-flex ? margin-left:auto ? flex-????????. */
 }
 .book-edit-summary--inline:hover {
   background: var(--button-bg-hover);
@@ -4612,13 +4696,13 @@ html[data-theme="light"] .alert-info {
 }
 .book-edit-summary--inline svg { flex-shrink: 0; opacity: 0.75; }
 .book-edit-summary--inline:hover svg { opacity: 1; }
-/* Закрытое состояние: <details> является flex-контейнером, чтобы summary
-   корректно прижимался к правому краю через margin-left:auto. */
+/* ???????? ?????????: <details> ???????? flex-???????????, ????? summary
+   ????????? ?????????? ? ??????? ???? ????? margin-left:auto. */
 .book-edit-disclosure--inline:not([open]) {
   display: flex;
   justify-content: flex-end;
 }
-/* Открытое состояние: окрашенная панель на всю ширину карточки. */
+/* ???????? ?????????: ?????????? ?????? ?? ??? ?????? ????????. */
 .book-edit-disclosure--inline[open] {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -4658,7 +4742,7 @@ html[data-theme="light"] .alert-info {
 .table-row .muted { opacity: 0.9; }
 [data-operations-field="serviceValidationOk"] { letter-spacing: 0.04em; }
 
-/* ── Light theme: remaining overrides for hardcoded dark-only values ── */
+/* ?? Light theme: remaining overrides for hardcoded dark-only values ?? */
 
 html[data-theme="light"] .topbar-admin {
   border-bottom-color: rgba(97,78,55,0.18);
@@ -4681,7 +4765,7 @@ html[data-theme="light"] .table-row.event-error {
   background: rgba(200,77,104,0.05);
 }
 
-/* ── Scroll to top ── */
+/* ?? Scroll to top ?? */
 .scroll-to-top {
   position: fixed;
   right: 20px;
@@ -4714,7 +4798,7 @@ html[data-theme="light"] .table-row.event-error {
   color: var(--text);
 }
 
-/* ── Skip to content ── */
+/* ?? Skip to content ?? */
 .skip-to-content {
   position: absolute;
   left: -9999px;
@@ -4742,7 +4826,7 @@ html[data-theme="light"] .table-row.event-error {
   }
 }
 
-/* ── Sidebar toggle (hamburger) ── */
+/* ?? Sidebar toggle (hamburger) ?? */
 .sidebar-toggle {
   display: none;
   align-items: center;
@@ -4762,7 +4846,7 @@ html[data-theme="light"] .table-row.event-error {
   background: var(--button-bg-hover);
 }
 
-/* ── Sidebar overlay ── */
+/* ?? Sidebar overlay ?? */
 .sidebar-overlay {
   display: none;
   position: fixed;
@@ -4776,7 +4860,7 @@ html[data-theme="light"] .sidebar-overlay {
   background: rgba(0,0,0,0.25);
 }
 
-/* ── Light theme fallback cover text ── */
+/* ?? Light theme fallback cover text ?? */
 html[data-theme="light"] .cover-fallback-title {
   color: #2a2014;
   text-shadow: 0 1px 0 rgba(255, 255, 255, 0.35);
@@ -4789,7 +4873,7 @@ html[data-theme="light"] .cover-fallback-overlay {
   background: linear-gradient(180deg, rgba(255,250,242,0.12) 0%, rgba(239,229,213,0.55) 100%);
 }
 
-/* ── Responsive ── */
+/* ?? Responsive ?? */
 @media (max-width: 900px) {
   .sidebar {
     transform: translateX(-100%);
@@ -4808,7 +4892,7 @@ html[data-theme="light"] .cover-fallback-overlay {
     margin-left: 0;
     padding-top: 48px;
   }
-  /* Компактный липкий бар ~48px: ☰ + лого + поиск; остальное в сайдбаре */
+  /* ?????????? ?????? ??? ~48px: ? + ???? + ?????; ????????? ? ???????? */
   .topbar {
     position: fixed;
     top: 0;
@@ -5033,18 +5117,18 @@ html[data-theme="light"] .cover-fallback-overlay {
     justify-content: flex-start;
   }
 
-  /* ── Book grid: 3 columns on phones ── */
+  /* ?? Book grid: 3 columns on phones ?? */
   .grid {
     grid-template-columns: repeat(auto-fill, minmax(105px, 1fr));
     gap: 12px 8px;
   }
 
-  /* ── Card covers: compact ── */
+  /* ?? Card covers: compact ?? */
   .cover {
     border-radius: 2px 4px 4px 2px;
   }
 
-  /* ── Card metadata: compact ── */
+  /* ?? Card metadata: compact ?? */
   .meta h3 {
     font-size: 12px;
     min-height: 0;
@@ -5067,7 +5151,7 @@ html[data-theme="light"] .cover-fallback-overlay {
     padding-top: 4px;
   }
 
-  /* ── Download button: compact on cards ── */
+  /* ?? Download button: compact on cards ?? */
   .download-menu-trigger-compact {
     min-height: 30px;
     padding: 0 8px;
@@ -5083,13 +5167,13 @@ html[data-theme="light"] .cover-fallback-overlay {
     font-size: 12px;
   }
 
-  /* ── Book detail page ── */
+  /* ?? Book detail page ?? */
   .card-detail-panel {
     grid-template-columns: 1fr;
     padding: 14px;
     gap: 14px;
   }
-  /* На мобильном корнер-действия — обычный flex-ряд над обложкой. */
+  /* ?? ????????? ??????-???????? ? ??????? flex-??? ??? ????????. */
   .book-detail-corner-actions {
     grid-column: auto;
     grid-row: auto;
@@ -5125,13 +5209,13 @@ html[data-theme="light"] .cover-fallback-overlay {
   .book-detail-main { border-radius: var(--radius); }
   .book-detail-disclosure { font-size: 13px; }
 
-  /* ── Related books: smaller cards ── */
+  /* ?? Related books: smaller cards ?? */
   .book-detail-related-shelf .grid {
     grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
     gap: 10px 6px;
   }
 
-  /* ── View switcher (каталог; не лента вкладок профиля) ── */
+  /* ?? View switcher (???????; ?? ????? ??????? ???????) ?? */
   .view-switcher:not(.account-nav) .view-switcher-link {
     min-height: 36px;
     padding: 0 10px;
@@ -5139,24 +5223,24 @@ html[data-theme="light"] .cover-fallback-overlay {
   }
   .view-switcher:not(.account-nav) { gap: 6px; }
 
-  /* ── Section titles ── */
+  /* ?? Section titles ?? */
   .section-title { flex-direction: column; align-items: stretch; gap: 8px; }
   .section-title h2 { font-size: 18px; }
 
-  /* ── Browse/filter ── */
+  /* ?? Browse/filter ?? */
   .browse-filter { flex-direction: column; max-width: none; }
 
-  /* ── Panel ── */
+  /* ?? Panel ?? */
   .panel { padding: 12px 10px 18px; }
 
-  /* ── Breadcrumbs ── */
+  /* ?? Breadcrumbs ?? */
   .breadcrumbs { font-size: 12px; margin-bottom: 10px; flex-wrap: wrap; }
 
-  /* ── Toast ── */
+  /* ?? Toast ?? */
   .toast-host { left: 10px; right: 10px; bottom: 10px; }
   .toast { min-width: 0; max-width: none; }
 
-  /* ── Profile list (legacy rows without cover) ── */
+  /* ?? Profile list (legacy rows without cover) ?? */
   .profile-list-item:not(.profile-litem) {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
@@ -5188,7 +5272,7 @@ html[data-theme="light"] .cover-fallback-overlay {
     align-self: center;
   }
 
-  /* ── Profile list (cover rows) ── */
+  /* ?? Profile list (cover rows) ?? */
   .profile-list-item.profile-litem {
     display: flex;
     align-items: center;
@@ -5205,7 +5289,7 @@ html[data-theme="light"] .cover-fallback-overlay {
     flex-shrink: 0;
   }
 
-  /* ── Admin items in library context ── */
+  /* ?? Admin items in library context ?? */
   .admin-action-item {
     flex-direction: column;
     align-items: stretch;
@@ -5222,7 +5306,7 @@ html[data-theme="light"] .cover-fallback-overlay {
     flex-basis: 100%;
   }
 
-  /* ── Shelves ── */
+  /* ?? Shelves ?? */
   .shelf-create-form {
     flex-direction: column;
     align-items: stretch;
@@ -5233,7 +5317,7 @@ html[data-theme="light"] .cover-fallback-overlay {
   }
   .shelf-covers-preview { flex-wrap: wrap; }
 
-  /* ── Batch download ── */
+  /* ?? Batch download ?? */
   .batch-download-bar .batch-download-cluster {
     justify-content: stretch;
     flex-direction: column;
@@ -5243,7 +5327,7 @@ html[data-theme="light"] .cover-fallback-overlay {
     justify-content: flex-start;
   }
 
-  /* ── Touch-friendly targets ── */
+  /* ?? Touch-friendly targets ?? */
   .button, button { min-height: 40px; padding: 8px 14px; }
   .page-link { padding: 8px 14px; min-height: 40px; }
   .page-link-prev,
@@ -5253,27 +5337,27 @@ html[data-theme="light"] .cover-fallback-overlay {
   .download-menu-trigger { min-height: 40px; }
   .modal-list-item { min-height: 44px; padding: 12px 18px; }
 
-  /* ── Prevent iOS auto-zoom ── */
+  /* ?? Prevent iOS auto-zoom ?? */
   input, select, textarea { font-size: 16px; }
   .topbar-search input,
   .topbar-search select { font-size: 16px; }
 
-  /* ── Dropdown overflow guard ── */
+  /* ?? Dropdown overflow guard ?? */
   .download-menu-popover { max-width: calc(100vw - 24px); }
   .author-popover { max-width: calc(100vw - 24px); }
   .series-popover { max-width: calc(100vw - 24px); }
   .search-suggest-dropdown { max-height: 60vh; }
 
-  /* ── Suggest items: compact ── */
+  /* ?? Suggest items: compact ?? */
   .suggest-item { padding: 6px 12px; font-size: 12px; min-height: 40px; }
   .suggest-group-title { padding: 5px 12px 3px; font-size: 10px; }
 
-  /* ── Empty states ── */
+  /* ?? Empty states ?? */
   .empty-state { padding: 28px 14px; }
   .empty-state strong { font-size: 15px; }
 }
 
-/* ── Ultra-small devices ── */
+/* ?? Ultra-small devices ?? */
 @media (max-width: 360px) {
   .grid { grid-template-columns: repeat(auto-fill, minmax(95px, 1fr)); gap: 10px 6px; }
   .panel { padding: 10px 8px 14px; }
@@ -5468,7 +5552,7 @@ html[data-theme="light"] .cover-fallback-overlay {
 }
 .shelf-row-info { min-width: 0; }
 
-/* ── Admin responsive (tablet) ── */
+/* ?? Admin responsive (tablet) ?? */
 @media (max-width: 768px) {
   .admin-grid-2col { grid-template-columns: 1fr; }
   .admin-status-bar { flex-direction: column; align-items: stretch; gap: 6px; }
@@ -5476,7 +5560,7 @@ html[data-theme="light"] .cover-fallback-overlay {
   .monitor-grid { grid-template-columns: 1fr; }
   .admin-card { padding: 14px; }
 
-  /* Index banner — stack vertically */
+  /* Index banner ? stack vertically */
   .index-banner-row {
     flex-direction: column;
     align-items: stretch;
@@ -5485,7 +5569,7 @@ html[data-theme="light"] .cover-fallback-overlay {
   .index-banner-stats { flex-wrap: wrap; gap: 8px; }
   #sources-progress-archive { font-size: 12px; }
 
-  /* Admin user rows — stack date below name */
+  /* Admin user rows ? stack date below name */
   .admin-user-row-summary {
     position: relative;
     flex-direction: column;
@@ -5505,7 +5589,7 @@ html[data-theme="light"] .cover-fallback-overlay {
   }
   .admin-user-row-body { padding: 12px; }
 
-  /* Events bar — stack vertically */
+  /* Events bar ? stack vertically */
   .admin-events-bar {
     flex-direction: column;
     align-items: stretch;
@@ -5570,7 +5654,7 @@ html[data-theme="light"] .cover-fallback-overlay {
     color: var(--muted);
   }
 
-  /* Duplicates group summary — stack on tablet */
+  /* Duplicates group summary ? stack on tablet */
   .admin-dup-group-summary {
     flex-direction: column;
     align-items: flex-start;
@@ -5582,36 +5666,36 @@ html[data-theme="light"] .cover-fallback-overlay {
   .admin-dup-table { font-size: .85em; }
   .admin-dup-table td { white-space: normal !important; }
 
-  /* Language table — checkbox alignment */
+  /* Language table ? checkbox alignment */
   .admin-lang-table td:first-child { display: inline-block; width: auto; }
 
-  /* Inputs — prevent tiny fixed-width inputs */
+  /* Inputs ? prevent tiny fixed-width inputs */
   .admin-input-sm,
   .admin-input-xs { width: auto; min-width: 56px; flex: 1 1 auto; max-width: 100px; }
 
-  /* Inline rows — allow wrapping */
+  /* Inline rows ? allow wrapping */
   .admin-inline-row { gap: 6px; }
 
   /* Disclosure details (reCaptcha etc.) */
   .admin-recaptcha-disclosure-summary { padding: 10px 12px; }
 
-  /* Login — compact on tablet */
+  /* Login ? compact on tablet */
   .login-shell { padding: 16px; }
   .login-card { padding: 22px; }
 }
 
-/* ── Admin responsive (phone) ── */
+/* ?? Admin responsive (phone) ?? */
 @media (max-width: 480px) {
-  /* Cards — minimal padding */
+  /* Cards ? minimal padding */
   .admin-card { padding: 12px; }
   .admin-card-title { font-size: 13px; gap: 6px; margin-bottom: 10px; }
   .admin-card-subtitle { font-size: 11px; margin-bottom: 10px; }
 
-  /* Alerts — compact */
+  /* Alerts ? compact */
   .flash, .alert { padding: 10px 12px; font-size: 12px; gap: 8px; }
   .alert-icon { width: 16px; height: 16px; }
 
-  /* Action items — stack vertically, full-width buttons */
+  /* Action items ? stack vertically, full-width buttons */
   .admin-action-item {
     flex-direction: column;
     align-items: stretch;
@@ -5627,11 +5711,11 @@ html[data-theme="light"] .cover-fallback-overlay {
   .admin-action-item .admin-actions-row button,
   .admin-action-item .admin-actions-row .button { width: 100%; text-align: center; }
 
-  /* Status bar — smaller text */
+  /* Status bar ? smaller text */
   .admin-status-bar { padding: 10px 12px; font-size: 12px; gap: 4px; }
   .admin-status-bar .admin-chip { font-size: 12px; }
 
-  /* Index progress — compact */
+  /* Index progress ? compact */
   #sources-index-progress.alert { padding: 10px 12px; }
   #sources-index-progress .admin-actions-row {
     flex-direction: row;
@@ -5643,7 +5727,7 @@ html[data-theme="light"] .cover-fallback-overlay {
     min-width: 0;
   }
 
-  /* User row body — tighter */
+  /* User row body ? tighter */
   .admin-user-row-summary { padding: 10px; padding-right: 28px; }
   .admin-user-row-body { padding: 10px; }
   .admin-user-row-body .admin-action-item {
@@ -5656,7 +5740,7 @@ html[data-theme="light"] .cover-fallback-overlay {
   .admin-user-row-body .admin-inline-row form { width: 100%; }
   .admin-user-row-body .admin-inline-row button { width: 100%; text-align: center; }
 
-  /* Events — compact */
+  /* Events ? compact */
   .admin-events-bar .admin-events-presets a { padding: 6px 10px; min-height: 36px; }
   .admin-events-bar select { height: 36px; font-size: 14px; }
   .admin-events-bar .admin-events-actions {
@@ -5672,13 +5756,13 @@ html[data-theme="light"] .cover-fallback-overlay {
   .admin-events-row .admin-events-message { display: block; margin-left: 0; margin-top: 4px; }
   .admin-event-category { display: block; margin-left: 0; margin-top: 2px; }
 
-  /* Duplicates — compact */
+  /* Duplicates ? compact */
   .admin-dup-group-summary { padding: 10px; font-size: 13px; }
   .admin-dup-group-title { font-size: 13px; }
   .admin-dup-table-wrap { padding: 0 8px 8px; }
   .admin-dup-auto-clean { padding: 12px !important; }
 
-  /* Languages table — touch-friendly checkboxes */
+  /* Languages table ? touch-friendly checkboxes */
   .admin-lang-table td:first-child {
     padding: 6px 0;
   }
@@ -5690,7 +5774,7 @@ html[data-theme="light"] .cover-fallback-overlay {
   /* Divider spacing */
   .admin-divider { margin: 10px 0; }
 
-  /* Checkbox labels — allow wrap */
+  /* Checkbox labels ? allow wrap */
   .admin-checkbox-label { font-size: 12px; }
 
   /* Section labels */
@@ -5699,19 +5783,19 @@ html[data-theme="light"] .cover-fallback-overlay {
   /* Utility overrides */
   .admin-compact-btn { font-size: .8em; }
 
-  /* Monitor — compact */
+  /* Monitor ? compact */
   .monitor-item { padding: 8px; }
   .monitor-label { font-size: 10px; }
   .monitor-value { font-size: 12px; }
   .monitor-foot { gap: 6px 10px; font-size: 12px; flex-direction: column; }
 
-  /* Login — phone */
+  /* Login ? phone */
   .login-shell { padding: 12px; }
   .login-card { padding: 18px; width: 100%; }
   .login-card .brand h2 { font-size: 18px; }
   .login-card input { font-size: 16px; }
 
-  /* Empty state — compact */
+  /* Empty state ? compact */
   .empty-state { padding: 28px 16px; }
   .empty-state-icon { width: 40px; height: 40px; }
   .empty-state strong { font-size: 14px; }
@@ -5732,9 +5816,14 @@ html[data-theme="light"] .cover-fallback-overlay {
   .admin-card > div[style*="display:flex"] { flex-direction: column; align-items: stretch !important; }
 }
 
-/* ── Modern fluid MPA View Transitions (Chrome 118+) ── */
+/* ?? Modern fluid MPA View Transitions (Chrome 118+) ?? */
 @view-transition {
   navigation: auto;
+}
+@media (prefers-reduced-motion: reduce) {
+  @view-transition {
+    navigation: none;
+  }
 }
 
 /* General page fade transition */
@@ -5782,7 +5871,7 @@ html[data-theme="light"] .cover-fallback-overlay {
   }
 }
 
-/* ── UI customization (admin appearance) ── */
+/* ?? UI customization (admin appearance) ?? */
 html[data-ui-bg="1"] {
   --shell-bg: transparent;
   --bg: transparent;
@@ -5811,7 +5900,7 @@ html[data-ui-bg="1"] body::after {
   pointer-events: none;
 }
 html[data-ui-bg="1"][data-theme="dark"] body::after {
-  /* Overlay strength (--ui-bg-overlay 0–80) is independent of panel glass; tint comes from theme. */
+  /* Overlay strength (--ui-bg-overlay 0?80) is independent of panel glass; tint comes from theme. */
   background: color-mix(in srgb, var(--ui-theme-dark-bg-overlay-color, #1a1612) calc(min(100, var(--ui-bg-overlay, 0) * 100 / 80) * 1%), transparent);
 }
 html[data-ui-bg="1"][data-theme="light"] body::after {
@@ -6230,7 +6319,7 @@ html[data-ui-sliders="1"] .admin-card {
   }
 }
 
-/* ── Переопределение теней для светлой темы при кастомной форме ── */
+/* ?? ??????????????? ????? ??? ??????? ???? ??? ????????? ????? ?? */
 html[data-ui-shape="1"][data-theme="light"] {
   --shadow-sm: var(--shadow-light-sm, 0 1px 2px rgba(32,24,14,0.08));
   --shadow-md: var(--shadow-light-md, 0 6px 18px -4px rgba(32,24,14,0.16));
@@ -6239,7 +6328,7 @@ html[data-ui-shape="1"][data-theme="light"] {
   --card-cover-shadow-hover: var(--shadow-light-card-cover-shadow-hover, 0 2px 2px rgba(32,24,14,0.42), 4px 6px 6px rgba(32,24,14,0.28), 12px 18px 24px rgba(32,24,14,0.24), 24px 38px 48px rgba(32,24,14,0.18));
 }
 
-/* ── Типографика и плотность (настройки из админки) ── */
+/* ?? ??????????? ? ????????? (????????? ?? ???????) ?? */
 html[data-ui-typography="1"] .shell {
   font-size: var(--font-size-base);
 }
@@ -6316,7 +6405,7 @@ html[data-ui-typography="1"] .login-card {
   padding: var(--space-xl) var(--space-lg);
 }
 
-/* ── Страница оформления: единая сетка секций ── */
+/* ?? ???????? ??????????: ?????? ????? ?????? ?? */
 .admin-appearance-layout {
   display: flex;
   flex-direction: column;
@@ -6442,7 +6531,7 @@ html[data-ui-typography="1"] .login-card {
   cursor: pointer;
   margin-bottom: 6px;
 }
-/* Футер карточки с кнопкой сброса — единое выравнивание во всех секциях */
+/* ????? ???????? ? ??????? ?????? ? ?????? ???????????? ?? ???? ??????? */
 .ui-color-field input[type="color"]:disabled {
   opacity: 0.55;
   cursor: not-allowed;
@@ -6460,7 +6549,7 @@ html[data-ui-typography="1"] .login-card {
   border-top: 0;
   justify-content: flex-start;
 }
-/* Липкий бар сохранения внизу страницы оформления */
+/* ?????? ??? ?????????? ????? ???????? ?????????? */
 .admin-appearance-save {
   position: sticky;
   bottom: 0;
@@ -6493,7 +6582,7 @@ html[data-ui-typography="1"] .login-card {
   }
 }
 
-/* ── E-Ink mode (cookie eink=1 → html[data-eink="1"]) ── */
+/* ?? E-Ink mode (cookie eink=1 ? html[data-eink="1"]) ?? */
 html[data-eink="1"] {
   color-scheme: light;
   scroll-behavior: auto;
@@ -6729,4 +6818,253 @@ html[data-eink="1"] .spinner {
 html[data-eink="1"] .topbar-lang-link.is-active {
   font-weight: 700;
   text-decoration: underline;
+}
+
+/* ?? Catalog multi-filter panel ?? */
+.catalog-filter-panel {
+  display: grid;
+  gap: 12px;
+  margin: 12px 0 18px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md, 12px);
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
+}
+.catalog-filter-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.catalog-filter-reset {
+  color: var(--link);
+  text-decoration: none;
+  font-size: 13px;
+}
+.catalog-filter-reset:hover { color: var(--link-hover); }
+.catalog-filter-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.catalog-filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--button-bg);
+  color: var(--text);
+  text-decoration: none;
+  font-size: 13px;
+}
+.catalog-filter-chip:hover {
+  background: var(--button-bg-hover);
+  border-color: var(--button-border-hover);
+}
+.catalog-filter-details {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px 12px;
+}
+.catalog-filter-details > summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+.catalog-genre-panel { margin-top: 10px; display: grid; gap: 8px; }
+.catalog-genre-search {
+  width: 100%;
+  max-width: 320px;
+}
+.catalog-genre-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 4px 10px;
+  max-height: 220px;
+  overflow: auto;
+  padding-right: 4px;
+}
+.catalog-genre-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-size: 13px;
+  line-height: 1.35;
+  cursor: pointer;
+}
+.catalog-genre-option[hidden] { display: none !important; }
+.catalog-filter-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 12px;
+  align-items: end;
+}
+.catalog-filter-row-inline .catalog-filter-field {
+  flex: 1 1 120px;
+  min-width: 110px;
+}
+.catalog-filter-row-inline .catalog-filter-field-narrow {
+  flex: 1 1 100px;
+  min-width: 90px;
+}
+.catalog-filter-field {
+  display: grid;
+  gap: 4px;
+  min-width: 140px;
+  flex: 1 1 160px;
+}
+.catalog-filter-field-narrow {
+  flex: 0 1 120px;
+  min-width: 100px;
+}
+.catalog-filter-field select,
+.catalog-filter-field input {
+  width: 100%;
+}
+.catalog-filter-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.empty-state-actions {
+  justify-content: center;
+  margin-top: 12px;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* —— Card annotation hover preview (over cover only; never covers .card-actions) —— */
+.card-annotation-preview {
+  display: none;
+}
+@media (hover: hover) and (min-width: 901px) {
+  /* Hover only for pointer; :focus-visible (not :focus-within) so long-press /
+     click "Прочитано" focus on the cover link does not pin the overlay open. */
+  .card.has-annotation-preview:hover .cover .card-annotation-preview,
+  .card.has-annotation-preview:has(:focus-visible) .cover .card-annotation-preview {
+    display: -webkit-box !important;
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 8;
+    max-height: 62%;
+    overflow: hidden;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 9;
+    line-clamp: 9;
+    padding: 28px 8px 8px;
+    border: 0;
+    border-radius: 0 0 var(--radius-card, 4px) var(--radius-card, 4px);
+    background: linear-gradient(
+      to top,
+      color-mix(in srgb, #0c0a08 92%, transparent) 0%,
+      color-mix(in srgb, #0c0a08 88%, transparent) 45%,
+      color-mix(in srgb, #0c0a08 72%, transparent) 72%,
+      color-mix(in srgb, #0c0a08 42%, transparent) 90%,
+      transparent 100%
+    );
+    color: rgba(255, 248, 238, 0.92);
+    font-size: 11px;
+    line-height: 1.35;
+    font-weight: 400;
+    letter-spacing: 0.01em;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
+    box-shadow: none;
+    pointer-events: none;
+    animation: annotation-preview-in .14s ease-out;
+  }
+  html[data-theme="light"] .card.has-annotation-preview:hover .cover .card-annotation-preview,
+  html[data-theme="light"] .card.has-annotation-preview:has(:focus-visible) .cover .card-annotation-preview {
+    background: linear-gradient(
+      to top,
+      color-mix(in srgb, #f7f1e6 94%, transparent) 0%,
+      color-mix(in srgb, #f7f1e6 90%, transparent) 45%,
+      color-mix(in srgb, #f7f1e6 74%, transparent) 72%,
+      color-mix(in srgb, #f7f1e6 44%, transparent) 90%,
+      transparent 100%
+    );
+    color: color-mix(in srgb, var(--text) 88%, #000 12%);
+    text-shadow: 0 1px 1px rgba(255, 255, 255, 0.55);
+  }
+}
+@keyframes annotation-preview-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .card.has-annotation-preview:hover .cover .card-annotation-preview,
+  .card.has-annotation-preview:has(:focus-visible) .cover .card-annotation-preview {
+    animation: none;
+  }
+}
+
+/* ?? Micro-feedback ?? */
+@keyframes ui-feedback-pulse {
+  0% { transform: scale(1); }
+  40% { transform: scale(1.06); }
+  100% { transform: scale(1); }
+}
+.ui-feedback-pulse {
+  animation: ui-feedback-pulse .32s ease;
+}
+@keyframes progress-pulse-kf {
+  0%, 100% { filter: brightness(1); }
+  50% { filter: brightness(1.25); }
+}
+.progress-pulse {
+  animation: progress-pulse-kf .45s ease;
+}
+@media (prefers-reduced-motion: reduce) {
+  .ui-feedback-pulse,
+  .progress-pulse { animation: none; }
+}
+
+/* ?? Mobile bottom nav ?? */
+.bottom-nav {
+  display: none;
+}
+@media (max-width: 900px) {
+  .bottom-nav {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 900;
+    padding: 6px 4px calc(6px + env(safe-area-inset-bottom, 0px));
+    background: var(--topbar-bg, var(--surface));
+    border-top: 1px solid var(--topbar-border, var(--border));
+    backdrop-filter: blur(10px);
+  }
+  .bottom-nav-item {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 44px;
+    padding: 4px 2px;
+    color: var(--muted);
+    text-decoration: none;
+    font-size: 11px;
+    line-height: 1.2;
+    text-align: center;
+  }
+  .bottom-nav-item.is-active {
+    color: var(--link);
+    font-weight: 600;
+  }
+  body:has(.bottom-nav) .shell {
+    padding-bottom: calc(58px + env(safe-area-inset-bottom, 0px));
+  }
+  body:has(.bottom-nav) .toast-host {
+    bottom: calc(66px + env(safe-area-inset-bottom, 0px));
+  }
+  body:has(.bottom-nav) .scroll-to-top {
+    bottom: calc(72px + env(safe-area-inset-bottom, 0px));
+  }
+  .bottom-nav:has(.bottom-nav-item:nth-child(3):last-child) {
+    grid-template-columns: repeat(3, 1fr);
+  }
 }

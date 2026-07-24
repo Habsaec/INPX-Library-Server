@@ -73,7 +73,7 @@ import {
   listGenresGrouped,
   hasContinueBooks
 } from '../inpx.js';
-import { getDistinctLanguages, getDistinctFormats } from '../inpx.js';
+import { getDistinctLanguages, getDistinctFormats, parseGenreList, parseHasSeries } from '../inpx.js';
 import { getOrExtractBookDetails, getStoredBookDetailsCover } from '../fb2.js';
 import {
   readFlibustaCover,
@@ -296,11 +296,14 @@ export function registerLibraryRoutes(app, deps) {
   // --- Catalog search ---
   app.get('/catalog', requireBrowseAuth, (req, res) => {
     const query = String(req.query.q || '');
-    const genre = String(req.query.genre || '').trim();
+    const genres = parseGenreList(req.query.genre);
+    const genre = genres.join(',');
     const letter = String(req.query.letter || '').trim().slice(0, 2);
     const lang = String(req.query.lang || '').trim();
     const format = String(req.query.format || '').trim();
     const year = Number(req.query.year) || 0;
+    const minRate = Math.min(5, Math.max(0, Math.floor(Number(req.query.minRate) || 0)));
+    const hasSeries = parseHasSeries(req.query.hasSeries);
     const field = ['books', 'authors', 'series'].includes(String(req.query.field || '')) ? String(req.query.field) : 'books';
     const isBookField = field === 'books';
     const bookSorts = ['recent', 'title', 'author', 'series', 'rating'];
@@ -311,13 +314,18 @@ export function registerLibraryRoutes(app, deps) {
     const page = safePage(req.query.page);
     const pageSize = 24;
     const stats = getCachedStats();
-    const cacheKey = `catalog:${field}:${sort}:${order}:${genre}:${letter}:${lang}:${format}:${year}:${query}:p${page}`;
-    const result = getCachedPageData(cacheKey, () => searchCatalog({ query, field, page, pageSize, sort, order, genre, letter, lang, format, year }));
+    const cacheKey = `catalog:${field}:${sort}:${order}:${genre}:${letter}:${lang}:${format}:${year}:${minRate}:${hasSeries}:${query}:p${page}`;
+    const result = getCachedPageData(cacheKey, () => searchCatalog({ query, field, page, pageSize, sort, order, genre, letter, lang, format, year, minRate, hasSeries }));
     const user = req.user || null;
     const readBookIds = user ? getReadBookIdSet(user.username) : null;
     const langs = getDistinctLanguages();
     const formats = getDistinctFormats();
-    res.send(renderCatalog({ ...result, page, pageSize, query, field, sort, order, genre, letter, lang, format, year, langs, formats, user, stats, indexStatus: getIndexStatus(), csrfToken: req.csrfToken || '', readBookIds }));
+    const genreOptions = getCachedPageData('catalog:genre-options', () => listGenresGrouped({ sort: 'name' }), PAGE_CACHE_TTL_MS);
+    res.send(renderCatalog({
+      ...result, page, pageSize, query, field, sort, order, genre, genres, letter, lang, format, year,
+      minRate, hasSeries, langs, formats, genreOptions, user, stats,
+      indexStatus: getIndexStatus(), csrfToken: req.csrfToken || '', readBookIds
+    }));
   });
 
   // --- Library views ---
@@ -326,7 +334,9 @@ export function registerLibraryRoutes(app, deps) {
     const page = safePage(req.query.page);
     const pageSize = 24;
     const type = String(req.query.type || '').trim();
-    const sort = ['recent', 'title', 'author', 'series', 'rating'].includes(String(req.query.sort || '')) ? String(req.query.sort) : 'title';
+    const requestedSort = String(req.query.sort || '');
+    const defaultSort = view === 'recent' ? 'recent' : 'title';
+    const sort = ['recent', 'title', 'author', 'series', 'rating'].includes(requestedSort) ? requestedSort : defaultSort;
     const order = String(req.query.order || '');
     const user = req.user || null;
     const stats = getCachedStats();
@@ -762,9 +772,11 @@ export function registerLibraryRoutes(app, deps) {
       readBooks = result.items;
       total = result.total;
     } else if (view === 'authors') {
-      authors = getFavoriteAuthorsLight(username, 50);
+      const authorSort = ['name', 'count', 'date'].includes(sort) ? sort : 'name';
+      authors = getFavoriteAuthors(username, 50, authorSort, order);
     } else if (view === 'series') {
-      series = getFavoriteSeriesLight(username, 50);
+      const seriesSort = ['name', 'count', 'date'].includes(sort) ? sort : 'name';
+      series = getFavoriteSeries(username, 50, seriesSort, order);
     }
     const readBookIds = view === 'books' || view === 'read' ? getReadBookIdSet(username) : null;
     const readSeriesNames = view === 'series' ? getFullyReadSeriesNames(username) : null;

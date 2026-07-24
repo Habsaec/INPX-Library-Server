@@ -41,6 +41,7 @@ import {
   addSource, updateSource, deleteSourceProgressive, forceDetachSourceRowUnsafe,
   getSmtpSettings, setSmtpSettings, getTelegramSettings, setTelegramSettings, resolveTelegramTokenForAdmin, syncTelegramChatsFromLinkedUsers, hasAdminUser, listUsers, countAdminUsers,
   isPasswordResetEnabled, getPublicBaseUrlSetting, setPasswordResetSettings,
+  getOidcSettings, setOidcSettings,
   getUserByUsername, upsertUser, updateUser, deleteUser, blockUser, unblockUser, getUserByTelegramId, normalizeTelegramId, setUserTelegramId, setUserTelegramBotAllowed, setUserEreaderEmailAllowed, setUserEreaderEmail, getEreaderEmail,
   db, getDistinctLanguages, getDistinctGenres, rebuildActiveBooksView, refreshCatalogBookCounts,
   getSuppressedBooks, unsuppressBook, unsuppressAll, getScheduleLog
@@ -60,6 +61,7 @@ import {
   listFlibustaIllustrationsForBook, refreshFlibustaSidecarForSource
 } from '../flibusta-sidecar.js';
 import { clearArchiveReadCaches } from '../archives.js';
+import { clearOidcDiscoveryCache } from '../services/oidc.js';
 import {
   SYSTEM_EVENTS_MAX_COUNT, SYSTEM_EVENTS_RETAIN_COUNT, SAFE_ADMIN_REDIRECTS
 } from '../constants.js';
@@ -615,8 +617,33 @@ export function registerAdminRoutes(app, deps) {
       allowAnonymousOpds: getSetting('allow_anonymous_opds') === '1',
       passwordResetEnabled: isPasswordResetEnabled(),
       publicBaseUrl: getPublicBaseUrlSetting(),
+      oidc: getOidcSettings(),
       csrfToken: req.csrfToken || ''
     }));
+  });
+
+  app.post('/admin/settings/oidc', requireAdminWeb, (req, res) => {
+    try {
+      const last = (v) => Array.isArray(v) ? v[v.length - 1] : v;
+      const secretRaw = String(last(req.body.clientSecret) || '');
+      setOidcSettings({
+        enabled: isFormFlagEnabled(req.body.enabled),
+        issuer: String(last(req.body.issuer) || ''),
+        clientId: String(last(req.body.clientId) || ''),
+        ...(secretRaw ? { clientSecret: secretRaw } : {}),
+        redirectUri: String(last(req.body.redirectUri) || ''),
+        scopes: String(last(req.body.scopes) || 'openid profile email'),
+        adminClaim: String(last(req.body.adminClaim) || ''),
+        adminValue: String(last(req.body.adminValue) || ''),
+        blockLocalRegister: isFormFlagEnabled(req.body.blockLocalRegister),
+        requireEmailVerified: isFormFlagEnabled(req.body.requireEmailVerified)
+      });
+      clearOidcDiscoveryCache();
+      logSystemEvent('info', 'admin', 'oidc settings updated', { actor: req.user.username });
+      res.redirect('/admin/users?flash=' + encodeURIComponent(t('admin.oidc.saved')));
+    } catch (error) {
+      res.redirect('/admin/users?flash=' + encodeURIComponent(uiAdminFlashMessage(error)));
+    }
   });
 
   app.get('/admin/update', requireAdminWeb, (req, res) => {

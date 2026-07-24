@@ -22,12 +22,24 @@ import { logSystemEvent } from './system-events.js';
 
 /** @type {Migration[]} */
 export const MIGRATIONS = [
-  // Example placeholder — keep here for reference. Real migrations get appended below.
-  // {
-  //   version: 1,
-  //   name: 'example_noop',
-  //   up(db) { /* db.exec('...'); */ }
-  // },
+  {
+    version: 1,
+    name: 'users_oidc_email_and_local_password',
+    up(db) {
+      const columns = db.prepare(`PRAGMA table_info(users)`).all();
+      if (!columns.some((c) => c.name === 'email')) {
+        db.exec(`ALTER TABLE users ADD COLUMN email TEXT DEFAULT ''`);
+      }
+      if (!columns.some((c) => c.name === 'has_local_password')) {
+        db.exec(`ALTER TABLE users ADD COLUMN has_local_password INTEGER NOT NULL DEFAULT 1`);
+      }
+      db.exec(`
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_unique
+        ON users(email)
+        WHERE email IS NOT NULL AND email != ''
+      `);
+    }
+  },
 ];
 
 export function getCurrentSchemaVersion(db) {

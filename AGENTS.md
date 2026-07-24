@@ -23,6 +23,11 @@ Key endpoints for reader:
 - `POST /api/reading-history/:id` — record `lastOpenedAt` when a book is opened
 - `DELETE /api/reading-history/:id` — remove a reading-history entry
 - Cross-device reading position uses server revisions/CAS; web reader and Android prompt when both the local position and a newer server revision changed
+- `GET /api/catalog` — additive filters (AND across dimensions): `genre` (single, CSV, or repeated; multiple genres = OR — at least one), `lang`, `format`, `year`, `minRate` (1–5), `hasSeries` (`1` = in a series, `0` = standalone), plus existing `q` / `letter` / `field` / `sort`
+
+### OIDC / SSO (web login)
+
+Optional OpenID Connect login (Authentik-compatible): Authorization Code + PKCE, JIT user provisioning, optional admin claim. Configure in **Admin → Users → OIDC / SSO** (`oidc_enabled` off by default). Routes: `GET /auth/oidc/start`, `GET /auth/oidc/callback`. Session cookie contract unchanged. OIDC users get `has_local_password=0` until they set a password in profile (needed for OPDS/Basic). Existing local accounts with the same email are **not** auto-linked.
 
 ### Reading position contract (Foliate glue)
 

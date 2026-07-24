@@ -6,6 +6,7 @@ import Database from 'better-sqlite3';
 import { config } from './config.js';
 import { appendIndexDiaryLine } from './services/file-log.js';
 import { hashPassword } from './auth.js';
+import { runMigrations } from './services/migrations.js';
 
 function deriveEncKey() {
   return crypto.scryptSync(config.sessionSecret, 'smtp-enc-salt', 32);
@@ -87,20 +88,57 @@ db.pragma('temp_store = MEMORY');       // temp tables in RAM
 // Force WAL checkpoint on startup to clear stale locks from crashed processes
 try { db.pragma('wal_checkpoint(PASSIVE)'); } catch { /* ignore if locked briefly */ }
 
-// Lightweight integrity check at startup (quick_check is faster than full integrity_check)
-try {
-  const result = db.pragma('quick_check');
-  if (result[0]?.quick_check !== 'ok') {
-    console.error('[db] DATABASE INTEGRITY WARNING:', result);
-    // logSystemEvent deferred to avoid circular import at module init
-    import('./services/system-events.js').then(m =>
-      m.logSystemEvent('error', 'database', 'integrity check failed at startup', { result })
-    ).catch(() => {});
-  } else {
-    console.log('[db] integrity check passed');
+/**
+ * PRAGMA quick_check reads the whole DB file. On multi‑GB libraries with a cold
+ * OS page cache this can take minutes, blocks the event loop, and used to delay
+ * HTTP bind until it finished. Large DBs skip it unless DB_QUICK_CHECK=1.
+ */
+function runStartupIntegrityCheck() {
+  try {
+    const t0 = Date.now();
+    const result = db.pragma('quick_check');
+    const seconds = Number(((Date.now() - t0) / 1000).toFixed(1));
+    if (result[0]?.quick_check !== 'ok') {
+      console.error('[db] DATABASE INTEGRITY WARNING:', result);
+      // logSystemEvent deferred to avoid circular import at module init
+      import('./services/system-events.js').then((m) =>
+        m.logSystemEvent('error', 'database', 'integrity check failed at startup', { result, seconds })
+      ).catch(() => {});
+    } else {
+      console.log(`[db] integrity check passed (${seconds}s)`);
+      if (seconds >= 5) {
+        import('./services/system-events.js').then((m) =>
+          m.logSystemEvent('info', 'database', 'startup integrity check completed', { seconds })
+        ).catch(() => {});
+      }
+    }
+  } catch (err) {
+    console.error('[db] integrity check error:', err.message);
   }
-} catch (err) {
-  console.error('[db] integrity check error:', err.message);
+}
+
+function envFlagTrue(name) {
+  return ['1', 'true', 'yes'].includes(String(process.env[name] || '').trim().toLowerCase());
+}
+
+const LARGE_DB_QUICK_CHECK_MB = 256;
+let dbFileSizeMb = 0;
+try {
+  dbFileSizeMb = fs.statSync(config.dbPath).size / (1024 * 1024);
+} catch {
+  dbFileSizeMb = 0;
+}
+
+if (envFlagTrue('SKIP_DB_QUICK_CHECK')) {
+  console.log('[db] integrity check skipped (SKIP_DB_QUICK_CHECK)');
+} else if (dbFileSizeMb >= LARGE_DB_QUICK_CHECK_MB && !envFlagTrue('DB_QUICK_CHECK')) {
+  console.log(
+    `[db] integrity check skipped on large DB (${dbFileSizeMb.toFixed(0)} MB). ` +
+      'Set DB_QUICK_CHECK=1 to force, or SKIP_DB_QUICK_CHECK=1 to silence this message.'
+  );
+} else {
+  // After listen: do not block port bind. Still freezes the loop for the scan duration.
+  setImmediate(runStartupIntegrityCheck);
 }
 
 function ensureUsersSchema() {
@@ -150,6 +188,22 @@ function ensureUsersSchema() {
   if (!hasEreaderEmailAllowed) {
     db.exec(`ALTER TABLE users ADD COLUMN ereader_email_allowed INTEGER NOT NULL DEFAULT 1`);
   }
+
+  const hasEmail = columns.some((column) => column.name === 'email');
+  if (!hasEmail) {
+    db.exec(`ALTER TABLE users ADD COLUMN email TEXT DEFAULT ''`);
+  }
+
+  const hasLocalPassword = columns.some((column) => column.name === 'has_local_password');
+  if (!hasLocalPassword) {
+    db.exec(`ALTER TABLE users ADD COLUMN has_local_password INTEGER NOT NULL DEFAULT 1`);
+  }
+
+  db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_unique
+    ON users(email)
+    WHERE email IS NOT NULL AND email != ''
+  `);
 }
 
 function ensureTelegramChatsSchema() {
@@ -478,7 +532,9 @@ export function getUserByUsername(username) {
            COALESCE(session_gen, 0) AS sessionGen, COALESCE(blocked, 0) AS blocked,
            telegram_id AS telegramId, telegram_linked_at AS telegramLinkedAt,
            COALESCE(telegram_bot_allowed, 1) AS telegramBotAllowed,
-           COALESCE(ereader_email_allowed, 1) AS ereaderEmailAllowed
+           COALESCE(ereader_email_allowed, 1) AS ereaderEmailAllowed,
+           COALESCE(email, '') AS email,
+           COALESCE(has_local_password, 1) AS hasLocalPassword
     FROM users
     WHERE username = ?
   `);
@@ -1469,6 +1525,7 @@ WHERE rp.progress >= 99
   `);
 
   ensureUsersSchema();
+  runMigrations(db);
   ensureTelegramLinkSchema();
   ensureTelegramChatsSchema();
   ensurePasswordResetSchema();
@@ -1643,16 +1700,30 @@ export function ensureSchemaIndexes() {
   ];
 
   let i = 0;
+  let created = 0;
+  const indexCountBefore = () =>
+    db.prepare(`SELECT COUNT(*) AS c FROM sqlite_master WHERE type = 'index'`).get()?.c ?? 0;
+  let beforeCount = indexCountBefore();
+
   function step() {
     if (i >= indexes.length) {
-      console.log('[boot] Индексы созданы — запускаем ANALYZE в фоне…');
-      analyzeDatabaseYielding()
-        .then(() => console.log('[boot] ANALYZE завершён после создания индексов.'))
-        .catch((err) => console.warn('[boot] ANALYZE после индексов не удался:', err.message));
+      // CREATE INDEX IF NOT EXISTS is cheap when present; ANALYZE on a multi‑GB DB is not.
+      // Only ANALYZE when this boot actually added indexes.
+      if (created > 0) {
+        console.log(`[boot] Создано индексов: ${created} — запускаем ANALYZE в фоне…`);
+        analyzeDatabaseYielding()
+          .then(() => console.log('[boot] ANALYZE завершён после создания индексов.'))
+          .catch((err) => console.warn('[boot] ANALYZE после индексов не удался:', err.message));
+      }
       return;
     }
     try {
       db.exec(indexes[i]);
+      const afterCount = indexCountBefore();
+      if (afterCount > beforeCount) {
+        created += afterCount - beforeCount;
+        beforeCount = afterCount;
+      }
     } catch (err) {
       console.warn('[boot] skip index:', err.message);
     }
@@ -2337,6 +2408,7 @@ export async function rebuildActiveBooksView() {
   resetDbPreparedStatements();
   for (const cb of _viewResetCallbacks) cb();
   await refreshCatalogBookCounts();
+  setMeta('active_books_filter_fp', `${excluded || ''}\n${excludedGenres || ''}`);
 }
 
 /**
@@ -3199,8 +3271,247 @@ export function changePassword(username, newPassword) {
   const normalizedPassword = String(newPassword || '');
   validatePassword(normalizedPassword);
   const passwordHash = hashPassword(normalizedPassword);
-  const result = db.prepare('UPDATE users SET password_hash = ?, session_gen = COALESCE(session_gen, 0) + 1 WHERE username = ?').run(passwordHash, username);
+  const result = db.prepare(
+    'UPDATE users SET password_hash = ?, has_local_password = 1, session_gen = COALESCE(session_gen, 0) + 1 WHERE username = ?'
+  ).run(passwordHash, username);
   if (result.changes === 0) throw new Error('Пользователь не найден');
+}
+
+/* ── OIDC / OAuth helpers ───────────────────────────────────────── */
+
+export const OIDC_PROVIDER = 'oidc';
+
+export function getOidcSettings() {
+  return {
+    enabled: getSetting('oidc_enabled') === '1',
+    issuer: String(getSetting('oidc_issuer') || '').trim(),
+    clientId: String(getSetting('oidc_client_id') || '').trim(),
+    clientSecret: decryptValue(getSetting('oidc_client_secret')) || '',
+    redirectUri: String(getSetting('oidc_redirect_uri') || '').trim(),
+    scopes: String(getSetting('oidc_scopes') || 'openid profile email').trim() || 'openid profile email',
+    adminClaim: String(getSetting('oidc_admin_claim') || '').trim(),
+    adminValue: String(getSetting('oidc_admin_value') || '').trim(),
+    blockLocalRegister: getSetting('oidc_block_local_register') === '1',
+    requireEmailVerified: getSetting('oidc_require_email_verified') !== '0'
+  };
+}
+
+export function setOidcSettings({
+  enabled,
+  issuer,
+  clientId,
+  clientSecret,
+  redirectUri,
+  scopes,
+  adminClaim,
+  adminValue,
+  blockLocalRegister,
+  requireEmailVerified
+} = {}) {
+  if (enabled !== undefined) setSetting('oidc_enabled', enabled ? '1' : '0');
+  if (issuer !== undefined) setSetting('oidc_issuer', String(issuer || '').trim().replace(/\/+$/, ''));
+  if (clientId !== undefined) setSetting('oidc_client_id', String(clientId || '').trim());
+  if (clientSecret !== undefined) {
+    const secret = String(clientSecret || '');
+    if (secret) setSetting('oidc_client_secret', encryptValue(secret));
+  }
+  if (redirectUri !== undefined) setSetting('oidc_redirect_uri', String(redirectUri || '').trim());
+  if (scopes !== undefined) {
+    setSetting('oidc_scopes', String(scopes || 'openid profile email').trim() || 'openid profile email');
+  }
+  if (adminClaim !== undefined) setSetting('oidc_admin_claim', String(adminClaim || '').trim());
+  if (adminValue !== undefined) setSetting('oidc_admin_value', String(adminValue || '').trim());
+  if (blockLocalRegister !== undefined) {
+    setSetting('oidc_block_local_register', blockLocalRegister ? '1' : '0');
+  }
+  if (requireEmailVerified !== undefined) {
+    setSetting('oidc_require_email_verified', requireEmailVerified ? '1' : '0');
+  }
+}
+
+export function isOidcRegistrationBlocked() {
+  return getSetting('oidc_block_local_register') === '1';
+}
+
+let _stmtGetUserByEmail = null;
+export function getUserByEmail(email) {
+  const normalized = normalizeLookupEmail(email);
+  if (!normalized) return null;
+  _stmtGetUserByEmail ??= db.prepare(`
+    SELECT username, password_hash AS passwordHash, role, created_at AS createdAt,
+           COALESCE(session_gen, 0) AS sessionGen, COALESCE(blocked, 0) AS blocked,
+           telegram_id AS telegramId, telegram_linked_at AS telegramLinkedAt,
+           COALESCE(telegram_bot_allowed, 1) AS telegramBotAllowed,
+           COALESCE(ereader_email_allowed, 1) AS ereaderEmailAllowed,
+           COALESCE(email, '') AS email,
+           COALESCE(has_local_password, 1) AS hasLocalPassword
+    FROM users
+    WHERE lower(email) = ?
+    LIMIT 1
+  `);
+  return _stmtGetUserByEmail.get(normalized);
+}
+
+let _stmtGetOauthUser = null;
+export function getOauthUser(provider, providerUserId) {
+  const p = String(provider || '').trim();
+  const id = String(providerUserId || '').trim();
+  if (!p || !id) return null;
+  _stmtGetOauthUser ??= db.prepare(`
+    SELECT provider, provider_user_id AS providerUserId, username, email, display_name AS displayName
+    FROM oauth_users
+    WHERE provider = ? AND provider_user_id = ?
+  `);
+  return _stmtGetOauthUser.get(p, id);
+}
+
+export function linkOauthUser({ provider, providerUserId, username, email = '', displayName = '' }) {
+  db.prepare(`
+    INSERT INTO oauth_users(provider, provider_user_id, username, email, display_name)
+    VALUES(?, ?, ?, ?, ?)
+    ON CONFLICT(provider, provider_user_id) DO UPDATE SET
+      username = excluded.username,
+      email = excluded.email,
+      display_name = excluded.display_name
+  `).run(
+    String(provider),
+    String(providerUserId),
+    String(username),
+    String(email || ''),
+    String(displayName || '')
+  );
+}
+
+/** Sanitize preferred_username / email local-part into a valid local username. */
+export function sanitizeOidcUsername(raw, fallback = 'user') {
+  let base = String(raw || '')
+    .trim()
+    .toLowerCase()
+    .replace(/@.*$/, '')
+    .replace(/[^a-z0-9_.-]+/g, '_')
+    .replace(/^[._-]+|[._-]+$/g, '')
+    .slice(0, 40);
+  if (base.length < 5) {
+    base = `${String(fallback || 'user').replace(/[^a-z0-9]/gi, '').toLowerCase().slice(0, 8) || 'user'}_${crypto.randomBytes(3).toString('hex')}`;
+  }
+  if (base.length < 5) base = `user_${crypto.randomBytes(4).toString('hex')}`;
+  return base.slice(0, 50);
+}
+
+export function allocateUniqueUsername(preferred) {
+  let candidate = sanitizeOidcUsername(preferred);
+  if (!getUserByUsername(candidate)) return candidate;
+  for (let i = 0; i < 20; i += 1) {
+    const suffix = crypto.randomBytes(2).toString('hex');
+    const next = sanitizeOidcUsername(`${candidate.slice(0, 40)}_${suffix}`);
+    if (!getUserByUsername(next)) return next;
+  }
+  return `user_${crypto.randomBytes(8).toString('hex')}`;
+}
+
+/**
+ * Create a local user for OIDC JIT with an unusable random password and has_local_password=0.
+ */
+export function createOidcUser({
+  preferredUsername = '',
+  email = '',
+  displayName = '',
+  providerUserId,
+  role = 'user'
+} = {}) {
+  const sub = String(providerUserId || '').trim();
+  if (!sub) throw new Error('OIDC subject is required');
+  const normalizedEmail = normalizeLookupEmail(email);
+  if (normalizedEmail && getUserByEmail(normalizedEmail)) {
+    throw new Error('EMAIL_EXISTS');
+  }
+  const username = allocateUniqueUsername(preferredUsername || normalizedEmail || `u${sub.slice(0, 8)}`);
+  const randomSecret = `${crypto.randomBytes(32).toString('base64url')}Aa1!`;
+  const passwordHash = hashPassword(randomSecret);
+  const normalizedRole = role === 'admin' ? 'admin' : 'user';
+  db.prepare(`
+    INSERT INTO users(username, password_hash, role, email, has_local_password)
+    VALUES(?, ?, ?, ?, 0)
+  `).run(username, passwordHash, normalizedRole, normalizedEmail || '');
+  linkOauthUser({
+    provider: OIDC_PROVIDER,
+    providerUserId: sub,
+    username,
+    email: normalizedEmail || '',
+    displayName: String(displayName || '')
+  });
+  return getUserByUsername(username);
+}
+
+export function promoteUserToAdmin(username) {
+  const user = getUserByUsername(username);
+  if (!user) return null;
+  if (user.role === 'admin') return user;
+  db.prepare(`UPDATE users SET role = 'admin' WHERE username = ?`).run(username);
+  _stmtGetUser = null;
+  return getUserByUsername(username);
+}
+
+export function oidcAdminClaimMatches(claims, claimName, claimValue) {
+  const name = String(claimName || '').trim();
+  const want = String(claimValue || '').trim();
+  if (!name || !want || !claims || typeof claims !== 'object') return false;
+  const raw = claims[name];
+  if (raw == null) return false;
+  if (Array.isArray(raw)) return raw.map((v) => String(v)).includes(want);
+  const asString = String(raw);
+  if (asString === want) return true;
+  if (asString.includes(' ') || asString.includes(',')) {
+    return asString.split(/[\s,]+/).filter(Boolean).includes(want);
+  }
+  return false;
+}
+
+/** Resolve local user from OIDC claims. Throws Error with code in message for known cases. */
+export function resolveOrProvisionOidcUser(claims, { adminClaim = '', adminValue = '', requireEmailVerified = true } = {}) {
+  const sub = String(claims?.sub || '').trim();
+  if (!sub) throw new Error('OIDC_MISSING_SUB');
+
+  const emailRaw = String(claims.email || '').trim();
+  const email = normalizeLookupEmail(emailRaw);
+  const emailVerified = claims.email_verified === true || claims.email_verified === 'true';
+  if (requireEmailVerified && email && !emailVerified) {
+    throw new Error('OIDC_EMAIL_UNVERIFIED');
+  }
+
+  const existingLink = getOauthUser(OIDC_PROVIDER, sub);
+  if (existingLink?.username) {
+    const user = getUserByUsername(existingLink.username);
+    if (!user) throw new Error('OIDC_LINK_ORPHAN');
+    if (user.blocked) throw new Error('OIDC_USER_BLOCKED');
+    if (oidcAdminClaimMatches(claims, adminClaim, adminValue)) {
+      return promoteUserToAdmin(user.username) || user;
+    }
+    return user;
+  }
+
+  if (email) {
+    const byEmail = getUserByEmail(email);
+    if (byEmail) {
+      throw new Error('OIDC_EMAIL_EXISTS');
+    }
+  }
+
+  const preferred =
+    String(claims.preferred_username || '').trim()
+    || String(claims.nickname || '').trim()
+    || email
+    || `user_${sub.slice(0, 8)}`;
+  const displayName = String(claims.name || claims.preferred_username || '').trim();
+  const wantAdmin = oidcAdminClaimMatches(claims, adminClaim, adminValue);
+  const user = createOidcUser({
+    preferredUsername: preferred,
+    email,
+    displayName,
+    providerUserId: sub,
+    role: wantAdmin ? 'admin' : 'user'
+  });
+  return user;
 }
 
 export function getBookShelves(username, bookId) {

@@ -356,7 +356,7 @@ export function renderAdminUpdate({ user, stats = {}, indexStatus = {}, operatio
   return pageShell({ title: t('admin.nav.backup'), content, user, stats, indexStatus, breadcrumbs: [{ label: t('admin.nav.backup') }], mode: 'admin', currentPath: '/admin/update', csrfToken });
 }
 
-export function renderAdminUsers({ user, stats, indexStatus, users = [], flash = '', adminCount = 0, registrationEnabled = false, recaptchaSiteKey = '', recaptchaSecretKey = '', allowAnonymousBrowse = false, allowAnonymousDownload = false, allowAnonymousOpds = false, passwordResetEnabled = false, publicBaseUrl = '', csrfToken = '' }) {
+export function renderAdminUsers({ user, stats, indexStatus, users = [], flash = '', adminCount = 0, registrationEnabled = false, recaptchaSiteKey = '', recaptchaSecretKey = '', allowAnonymousBrowse = false, allowAnonymousDownload = false, allowAnonymousOpds = false, passwordResetEnabled = false, publicBaseUrl = '', oidc = null, csrfToken = '' }) {
   const admins = users.filter((account) => account.role === 'admin');
   const regularUsers = users.filter((account) => account.role !== 'admin');
   const fmtDate = (d) => formatLocaleDateShort(d);
@@ -459,6 +459,72 @@ export function renderAdminUsers({ user, stats, indexStatus, users = [], flash =
           <label>${escapeHtml(t('admin.smtp.publicBaseUrl'))}</label>
           <input type="url" name="publicBaseUrl" value="${escapeHtml(publicBaseUrl || '')}" placeholder="https://books.example.com" autocomplete="off">
           <span class="admin-field-hint">${escapeHtml(t('admin.smtp.publicBaseUrlHint'))}</span>
+        </div>
+        <div class="admin-actions-row">
+          <button type="submit">${escapeHtml(t('admin.save'))}</button>
+        </div>
+      </form>
+    </div>
+
+    <div class="admin-card">
+      <div class="admin-card-title">${escapeHtml(t('admin.oidc.title'))}</div>
+      <div class="admin-card-subtitle">${escapeHtml(t('admin.oidc.subtitle'))}</div>
+      <form method="POST" action="/admin/settings/oidc" data-track-dirty>
+        ${csrfHiddenField(csrfToken)}
+        <div class="admin-field-group" style="flex-direction:row;align-items:center;gap:10px;">
+          <label class="admin-checkbox-label" style="text-transform:none;letter-spacing:0;">
+            <input type="hidden" name="enabled" value="0">
+            <input type="checkbox" name="enabled" value="1" ${oidc?.enabled ? 'checked' : ''} style="accent-color:var(--accent);width:16px;height:16px;">
+            ${escapeHtml(t('admin.oidc.enabled'))}
+          </label>
+        </div>
+        <div class="admin-form-grid admin-form-grid--align-start">
+          <div class="admin-field-group">
+            <label>${escapeHtml(t('admin.oidc.issuer'))}</label>
+            <input type="url" name="issuer" value="${escapeHtml(oidc?.issuer || '')}" placeholder="https://auth.example.com/application/o/inpx/" autocomplete="off">
+            <span class="admin-field-hint">${escapeHtml(t('admin.oidc.issuerHint'))}</span>
+          </div>
+          <div class="admin-field-group">
+            <label>${escapeHtml(t('admin.oidc.clientId'))}</label>
+            <input type="text" name="clientId" value="${escapeHtml(oidc?.clientId || '')}" autocomplete="off">
+          </div>
+          <div class="admin-field-group">
+            <label>${escapeHtml(t('admin.oidc.clientSecret'))}</label>
+            <input type="password" name="clientSecret" value="" placeholder="${oidc?.clientSecret ? '••••••••' : ''}" autocomplete="new-password">
+            <span class="admin-field-hint">${escapeHtml(t('admin.oidc.clientSecretHint'))}</span>
+          </div>
+          <div class="admin-field-group">
+            <label>${escapeHtml(t('admin.oidc.redirectUri'))}</label>
+            <input type="url" name="redirectUri" value="${escapeHtml(oidc?.redirectUri || '')}" placeholder="${escapeHtml((publicBaseUrl || 'https://books.example.com').replace(/\/+$/, '') + '/auth/oidc/callback')}" autocomplete="off">
+            <span class="admin-field-hint">${escapeHtml(t('admin.oidc.redirectUriHint'))}</span>
+          </div>
+          <div class="admin-field-group">
+            <label>${escapeHtml(t('admin.oidc.scopes'))}</label>
+            <input type="text" name="scopes" value="${escapeHtml(oidc?.scopes || 'openid profile email')}" autocomplete="off">
+          </div>
+          <div class="admin-field-group">
+            <label>${escapeHtml(t('admin.oidc.adminClaim'))}</label>
+            <input type="text" name="adminClaim" value="${escapeHtml(oidc?.adminClaim || '')}" placeholder="groups" autocomplete="off">
+            <span class="admin-field-hint">${escapeHtml(t('admin.oidc.adminClaimHint'))}</span>
+          </div>
+          <div class="admin-field-group">
+            <label>${escapeHtml(t('admin.oidc.adminValue'))}</label>
+            <input type="text" name="adminValue" value="${escapeHtml(oidc?.adminValue || '')}" placeholder="inpx-admins" autocomplete="off">
+          </div>
+        </div>
+        <div class="admin-field-group" style="flex-direction:row;align-items:center;gap:10px;margin-top:8px;">
+          <label class="admin-checkbox-label" style="text-transform:none;letter-spacing:0;">
+            <input type="hidden" name="blockLocalRegister" value="0">
+            <input type="checkbox" name="blockLocalRegister" value="1" ${oidc?.blockLocalRegister ? 'checked' : ''} style="accent-color:var(--accent);width:16px;height:16px;">
+            ${escapeHtml(t('admin.oidc.blockLocalRegister'))}
+          </label>
+        </div>
+        <div class="admin-field-group" style="flex-direction:row;align-items:center;gap:10px;">
+          <label class="admin-checkbox-label" style="text-transform:none;letter-spacing:0;">
+            <input type="hidden" name="requireEmailVerified" value="0">
+            <input type="checkbox" name="requireEmailVerified" value="1" ${oidc?.requireEmailVerified !== false ? 'checked' : ''} style="accent-color:var(--accent);width:16px;height:16px;">
+            ${escapeHtml(t('admin.oidc.requireEmailVerified'))}
+          </label>
         </div>
         <div class="admin-actions-row">
           <button type="submit">${escapeHtml(t('admin.save'))}</button>

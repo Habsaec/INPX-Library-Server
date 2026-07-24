@@ -18,6 +18,7 @@ import { registerProfileApiRoutes } from './routes/profile-api.js';
 import { registerOpdsRoutes } from './routes/opds.js';
 import { registerOpdsV2Routes } from './routes/opds-v2.js';
 import { registerAuthRoutes } from './routes/auth-routes.js';
+import { registerOidcRoutes } from './routes/oidc.js';
 import { registerDownloadRoutes } from './routes/download.js';
 import { registerReaderRoutes } from './routes/reader.js';
 import { registerUserApiRoutes } from './routes/user-api.js';
@@ -298,18 +299,25 @@ function warmSharedPageCaches() {
   if (getIndexStatus().active) {
     return;
   }
-  try {
-    getCachedStats();
-  } catch (error) {
-    console.error('Failed to warm stats cache', error);
-  }
-  setImmediate(() => {
+  // Heavy COUNT(*) / home pool queries — never run inside the listen callback.
+  // Stagger so the first HTTP requests are not stuck behind a multi-second freeze.
+  const warm = (fn, label) => {
     try {
-      getCachedPageData('home:sections', () => getLibrarySections(), HOME_SECTIONS_CACHE_TTL_MS);
+      fn();
     } catch (error) {
-      console.error('Failed to warm sections cache', error);
+      console.error(`Failed to warm ${label} cache`, error);
     }
-  });
+  };
+  const statsTimer = setTimeout(() => warm(() => getCachedStats(), 'stats'), 1_500);
+  const sectionsTimer = setTimeout(
+    () => warm(
+      () => getCachedPageData('home:sections', () => getLibrarySections(), HOME_SECTIONS_CACHE_TTL_MS),
+      'sections'
+    ),
+    2_500
+  );
+  if (typeof statsTimer.unref === 'function') statsTimer.unref();
+  if (typeof sectionsTimer.unref === 'function') sectionsTimer.unref();
 }
 
 /** Периодический прогрев shared-кэшей — stats и sections всегда актуальны для первого запроса. */
@@ -704,6 +712,7 @@ app.use(express.static(config.publicDir, {
 }));
 
 registerAuthRoutes(app, { getCachedStats });
+registerOidcRoutes(app);
 
 // ── Maintenance gate: block user-facing pages when a heavy DB operation is running ──
 function isMaintenanceActive() {
@@ -1167,6 +1176,11 @@ async function bootstrap() {
 
   setTimeout(async () => {
     try {
+      // Full catalog recount is multi-second on huge libraries — only when filters changed.
+      const fingerprint = `${getSetting('excluded_languages') || ''}\n${getSetting('excluded_genres') || ''}`;
+      if (getMeta('active_books_filter_fp') === fingerprint) {
+        return;
+      }
       await rebuildActiveBooksView();
     } catch (err) {
       console.error('[startup] rebuildActiveBooksView failed:', err.message);

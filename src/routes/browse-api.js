@@ -17,7 +17,9 @@ import {
   listGenresGrouped,
   listSeries,
   resolveAuthorName,
-  searchCatalog
+  searchCatalog,
+  parseGenreList,
+  parseHasSeries
 } from '../inpx.js';
 import {
   readFlibustaAuthorBioHtml,
@@ -47,7 +49,9 @@ export function registerBrowseApiRoutes(app) {
       ? Math.floor(pageSizeRaw)
       : 24;
     const type = String(req.query.type || '').trim();
-    const sort = ['recent', 'title', 'author', 'series', 'rating'].includes(String(req.query.sort || '')) ? String(req.query.sort) : 'title';
+    const requestedSort = String(req.query.sort || '');
+    const defaultSort = view === 'recent' ? 'recent' : 'title';
+    const sort = ['recent', 'title', 'author', 'series', 'rating'].includes(requestedSort) ? requestedSort : defaultSort;
     const order = String(req.query.order || '');
     const user = req.user || null;
     const canUseSharedCache = view === 'recent';
@@ -73,17 +77,20 @@ export function registerBrowseApiRoutes(app) {
     const allowedSorts = isBookField ? bookSorts : entitySorts;
     const sort = allowedSorts.includes(String(req.query.sort || '')) ? String(req.query.sort) : (isBookField ? 'title' : 'name');
     const order = String(req.query.order || '');
-    const genre = String(req.query.genre || '');
+    const genres = parseGenreList(req.query.genre);
+    const genre = genres.join(',');
     const letter = String(req.query.letter || '').trim().slice(0, 2);
     const lang = String(req.query.lang || '').trim();
     const format = String(req.query.format || '').trim();
     const year = Number(req.query.year) || 0;
+    const minRate = Math.min(5, Math.max(0, Math.floor(Number(req.query.minRate) || 0)));
+    const hasSeries = parseHasSeries(req.query.hasSeries);
     const page = safePage(req.query.page);
     const pageSize = 24;
-    const cacheKey = `api:catalog:${field}:${sort}:${order}:${genre}:${letter}:${lang}:${format}:${year}:${query}:p${page}:s${pageSize}`;
+    const cacheKey = `api:catalog:${field}:${sort}:${order}:${genre}:${letter}:${lang}:${format}:${year}:${minRate}:${hasSeries}:${query}:p${page}:s${pageSize}`;
     const result = getCachedPageData(
       cacheKey,
-      () => searchCatalog({ query, page, pageSize, field, sort, order, genre, letter, lang, format, year }),
+      () => searchCatalog({ query, page, pageSize, field, sort, order, genre, letter, lang, format, year, minRate, hasSeries }),
       PAGE_CACHE_TTL_MS
     );
     res.json({ items: result.items, total: result.total, page, pageSize, field: result.field });
@@ -125,7 +132,9 @@ export function registerBrowseApiRoutes(app) {
     const allGrouped = new Set(Object.values(groups).flat());
     const uncategorized = allGenres.filter((g) => !allGrouped.has(g.name));
     if (uncategorized.length) grouped.push({ groupName: t('genre.other'), items: uncategorized });
-    res.json({ total: allGenres.length, items: allGenres, groups, page: 1, pageSize: allGenres.length });
+    // groups — иерархия [{ groupName, items }], как genreGroups в HTML /genres
+    // (не сырой map из getGenreGroups — его Android-клиент не умеет рендерить)
+    res.json({ total: allGenres.length, items: allGenres, groups: grouped, page: 1, pageSize: allGenres.length });
   });
 
   app.get('/api/browse/authors/:value/grouped', requireBrowseAuth, async (req, res, next) => {

@@ -136,6 +136,8 @@ export function getSessionUser(req) {
     sessionGen: user.sessionGen || 0,
     telegramBotAllowed: Number(user.telegramBotAllowed ?? 1) !== 0,
     ereaderEmailAllowed: Number(user.ereaderEmailAllowed ?? 1) !== 0,
+    hasLocalPassword: Number(user.hasLocalPassword ?? 1) !== 0,
+    email: String(user.email || '')
   };
 }
 

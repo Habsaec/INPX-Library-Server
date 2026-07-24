@@ -164,6 +164,7 @@ export function renderCover(book, { readBookIds = null } = {}) {
       <img class="cover-image" loading="lazy" draggable="false" src="${apiBookPath(book.id, 'cover-thumb')}" data-cover-src="${apiBookPath(book.id, 'cover-thumb')}" alt="${escapeHtml(book.title)}">
       ${readBadge}
       ${coverRating}
+      <div class="card-annotation-preview" hidden data-card-annotation></div>
     </a>`;
 }
 
@@ -572,16 +573,28 @@ export function renderSkeletonGrid(_count = 8) {
   return `<div class="grid skeleton-grid" data-skeleton-grid></div>`;
 }
 
-export function renderEmptyState({ title, text, actionHref = '', actionLabel = '' }) {
+export function renderEmptyState({
+  title, text, actionHref = '', actionLabel = '',
+  secondaryHref = '', secondaryLabel = ''
+} = {}) {
   const textLine = String(text || '').trim()
     ? `<span class="muted">${escapeHtml(text)}</span>`
+    : '';
+  const primary = actionHref && actionLabel
+    ? `<a class="button" href="${escapeHtml(actionHref)}">${escapeHtml(actionLabel)}</a>`
+    : '';
+  const secondary = secondaryHref && secondaryLabel
+    ? `<a class="button" href="${escapeHtml(secondaryHref)}">${escapeHtml(secondaryLabel)}</a>`
+    : '';
+  const actions = (primary || secondary)
+    ? `<div class="actions empty-state-actions">${primary}${secondary}</div>`
     : '';
   return `
     <div class="empty-state">
       <span class="empty-state-icon"><svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="10" width="36" height="28" rx="4"/><path d="M6 18h36"/><circle cx="14" cy="30" r="3"/><path d="M22 28h12M22 34h8"/></svg></span>
       <strong>${escapeHtml(title)}</strong>
       ${textLine}
-      ${actionHref && actionLabel ? `<div class="actions" style="justify-content:center;margin-top:12px;"><a class="button" href="${actionHref}">${escapeHtml(actionLabel)}</a></div>` : ''}
+      ${actions}
     </div>`;
 }
 
@@ -694,6 +707,7 @@ function renderSidebarNavigation(user, currentPath = '/', stats = null) {
     <div class="sidenav-section">${escapeHtml(t('sidebar.section'))}</div>
     <div class="sidenav-links">
       ${link('/', t('nav.home'), true)}
+      ${link('/catalog', t('nav.catalog'), true)}
       ${link('/library/recent', t('nav.recent'), true)}
       ${user ? link('/library/recommended', t('nav.recommended'), true) : ''}
       ${link('/authors', t('nav.authors'), true)}
@@ -814,7 +828,8 @@ export function renderBookGrid(items = [], { isAuthenticated = false, lazyDetail
   const effectiveBatch = batchSelect && !hideDownloads;
   const canDl = canDownloadInUi(user);
   // Flags string encodes rendering-affecting state for cache key
-  const flags = `${effectiveBatch ? '1' : '0'}${hideDownloads ? '1' : '0'}${canDl ? '1' : '0'}${seriesContext ? 's' : ''}`;
+  /* a3: per-card download stays visible alongside batch checkboxes (series / outside-series). */
+  const flags = `${effectiveBatch ? '1' : '0'}${hideDownloads ? '1' : '0'}${canDl ? '1' : '0'}${seriesContext ? 's' : ''}a3`;
   const batchCb = (book) =>
     effectiveBatch
       ? `<label class="batch-select-hit" title="${escapeHtml(t('batch.selectTitle'))}"><input type="checkbox" class="batch-select-cb" ${batchSelectInputAttrs(book.id)} ${batchBookIdDataAttr(book.id)} aria-label="${escapeHtml(t('batch.selectAria'))}"></label>`
@@ -830,7 +845,7 @@ export function renderBookGrid(items = [], { isAuthenticated = false, lazyDetail
         const cacheKey = _cardCacheKey(book, `${flags}${isRead ? '1' : '0'}${book.libRate || 0}|p${progressKey}`);
         const cached = getCachedCardHtml(cacheKey);
         if (cached) return cached;
-        const cardDl = effectiveBatch || hideDownloads ? '' : renderDownloadMenu(book, { compact: true, user });
+        const cardDl = hideDownloads ? '' : renderDownloadMenu(book, { compact: true, user });
         const seriesInfo = seriesContext
           ? (book.seriesList?.find((s) => s.name === seriesContext) || null)
           : null;
@@ -1172,6 +1187,27 @@ function renderThemeBootScript() {
   </script>`;
 }
 
+function renderBottomNav({ user = null, currentPath = '', isAdmin = false } = {}) {
+  if (isAdmin) return '';
+  const path = String(currentPath || '');
+  const isAuthed = Boolean(user);
+  const item = (href, label, active) =>
+    `<a class="bottom-nav-item${active ? ' is-active' : ''}" href="${escapeHtml(href)}"><span>${escapeHtml(label)}</span></a>`;
+  const homeActive = path === '/' || path === '';
+  const catalogActive = path.startsWith('/catalog');
+  const favActive = path.startsWith('/favorites');
+  const profileActive = path.startsWith('/profile');
+  const loginActive = path.startsWith('/login');
+  return `
+    <nav class="bottom-nav" aria-label="${escapeHtml(t('aria.sidebar'))}" data-bottom-nav>
+      ${item('/', t('nav.bottomHome'), homeActive)}
+      ${item('/catalog', t('nav.bottomCatalog'), catalogActive)}
+      ${isAuthed
+        ? `${item('/favorites', t('nav.bottomFavorites'), favActive)}${item('/profile', t('nav.bottomProfile'), profileActive)}`
+        : item('/login', t('nav.bottomLogin'), loginActive)}
+    </nav>`;
+}
+
 function renderLoginLogoBlock() {
   const ui = getUiCustomization();
   if (!ui.showLogoOnLogin) return '';
@@ -1322,6 +1358,7 @@ export function pageShell({ title, content, user, query = '', field = 'all', sta
     </div>
     </div>
   </div>
+  ${!isAdmin ? renderBottomNav({ user, currentPath, isAdmin }) : ''}
   <button class="scroll-to-top" type="button" data-scroll-top aria-label="${escapeHtml(t('scrollTop'))}">↑</button>
   <script src="/book-ref.js?v=${STATIC_ASSET_VERSION}" defer></script>
   <script src="/${APP_ASSET_FILE}?v=${STATIC_ASSET_VERSION}" defer></script>
@@ -1359,6 +1396,7 @@ export function renderLoginScreen({
   error = '',
   successMessage = '',
   extraHtml = '',
+  beforeFormHtml = '',
   hideForm = false,
   submitLabel,
   passwordAutocomplete = 'current-password',
@@ -1426,6 +1464,7 @@ export function renderLoginScreen({
       </div>
       ${error ? renderAlert('error', error) : ''}
       ${successMessage ? renderAlert('success', successMessage) : ''}
+      ${beforeFormHtml}
       ${formFields}
       ${extraHtml}
       <div class="login-lang" aria-label="${escapeHtml(t('aria.langSwitch'))}">
