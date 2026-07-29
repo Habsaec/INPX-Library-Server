@@ -6,7 +6,7 @@ services:
     mem_limit: 4g
     network_mode: "bridge"
     ports:
-      - "3535:3000"
+      - "3000:3000"
     volumes:
       # Код и node_modules в именованном томе (в UI Synology раздел «Тома» может отсутствовать —
       # том всё равно есть; смотреть: SSH → docker volume ls).

@@ -1324,34 +1324,71 @@ function findAuthorsBySurnameToken(token = '') {
   `).all(key);
 }
 
+function matchAuthorsFromQueryTokens(authorTokens = []) {
+  if (!authorTokens.length) return [];
+  if (authorTokens.length >= 2) {
+    return findAuthorsMatchingTokenSubset(authorTokens.join(' '), { requireBooks: true });
+  }
+  return findAuthorsBySurnameToken(authorTokens[0]);
+}
+
+/** True if series_catalog has at least one hit for the series-name query. */
+function seriesCatalogMatchesQuery(seriesQuery = '') {
+  const search = buildCatalogSearchSql('search_name', seriesQuery);
+  if (!search) return false;
+  const row = db.prepare(`
+    SELECT 1 AS ok FROM series_catalog
+    WHERE (${search.where}) AND book_count > 0
+    LIMIT 1
+  `).get(...search.params);
+  return Boolean(row);
+}
+
 /**
- * Split multi-token series query into author prefix + series-name remainder.
- * Prefers the longest author prefix that matches known authors
- * ("Кир Булычев Алиса" → author "Кир Булычев", series "Алиса").
- * @returns {{ authorNames: string[], seriesQuery: string } | null}
+ * Split multi-token series query into author + series-name remainder(s).
+ * Tries author as prefix and as suffix. Keeps only splits where both the author
+ * exists and the series-name part matches a known series (so "ник ясинский"
+ * is not stuck on a false author prefix "ник").
+ * @returns {{ authorNames: string[], seriesQuery: string, authorLen: number }[]}
  */
-function resolveAuthorSeriesQuerySplit(tokens = []) {
-  if (!Array.isArray(tokens) || tokens.length < 2) return null;
+function resolveAuthorSeriesQuerySplits(tokens = []) {
+  if (!Array.isArray(tokens) || tokens.length < 2) return [];
 
-  for (let authorLen = tokens.length - 1; authorLen >= 1; authorLen -= 1) {
-    const authorTokens = tokens.slice(0, authorLen);
-    const seriesTokens = tokens.slice(authorLen);
-    if (!seriesTokens.length) continue;
-
-    let matched = [];
-    if (authorLen >= 2) {
-      matched = findAuthorsMatchingTokenSubset(authorTokens.join(' '), { requireBooks: true });
-    } else {
-      matched = findAuthorsBySurnameToken(authorTokens[0]);
-    }
-    if (!matched.length) continue;
-
+  const trySplit = (authorTokens, seriesTokens) => {
+    if (!authorTokens.length || !seriesTokens.length) return null;
+    const matched = matchAuthorsFromQueryTokens(authorTokens);
+    if (!matched.length) return null;
+    const seriesQuery = seriesTokens.join(' ');
+    if (!seriesCatalogMatchesQuery(seriesQuery)) return null;
     return {
       authorNames: matched.slice(0, 12).map((row) => row.name).filter(Boolean),
-      seriesQuery: seriesTokens.join(' ')
+      seriesQuery,
+      authorLen: authorTokens.length
     };
+  };
+
+  const seen = new Set();
+  const splits = [];
+  const pushSplit = (split) => {
+    if (!split?.authorNames?.length) return;
+    const key = `${split.seriesQuery}\0${split.authorNames.join('|')}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    splits.push(split);
+  };
+
+  for (let authorLen = tokens.length - 1; authorLen >= 1; authorLen -= 1) {
+    pushSplit(trySplit(tokens.slice(0, authorLen), tokens.slice(authorLen)));
   }
-  return null;
+  for (let authorLen = tokens.length - 1; authorLen >= 1; authorLen -= 1) {
+    pushSplit(trySplit(
+      tokens.slice(tokens.length - authorLen),
+      tokens.slice(0, tokens.length - authorLen)
+    ));
+  }
+
+  splits.sort((a, b) => b.authorLen - a.authorLen);
+  return splits;
 }
 
 export function resolveAuthorName(value) {
@@ -2951,7 +2988,8 @@ function buildBookSearchSql(field, query) {
       return { sql: `LOWER(COALESCE(${column}, '')) LIKE ?`, param: `%${value}%` };
     }
 
-    return { sql: `LOWER(COALESCE(${column}, '')) LIKE ?`, param: `%${value}%` };
+    /* Default = prefix (aligned with OPDS help), not mid-string contains. */
+    return { sql: `LOWER(COALESCE(${column}, '')) LIKE ?`, param: `${value}%` };
   };
 
   const tokenClauses = [];
@@ -3182,9 +3220,75 @@ function buildCatalogSearchSql(column, query, { startsWith = false } = {}) {
   };
 }
 
+function isBooksFtsUsable() {
+  return getMeta(BOOKS_FTS_DIRTY_META_KEY) !== '1';
+}
+
+/** Escape a token for FTS5 quoted phrase / prefix query. */
+function escapeFts5Token(token = '') {
+  return String(token || '').replace(/"/g, '').trim();
+}
+
+/**
+ * Build books_fts MATCH string.
+ * Default operator → prefix (`token*`); `=` → exact token; `*` → signal LIKE fallback.
+ * @returns {{ mode: 'fts', match: string } | { mode: 'like' } | null}
+ */
+function buildBooksFtsMatchQuery(field, query) {
+  const parsed = parseSearchOperator(query);
+  if (parsed.operator === 'empty' || parsed.operator === '~') return null;
+  if (parsed.operator === '*') return { mode: 'like' };
+
+  const needleKey = createSortKey(parsed.value || query);
+  const tokens = parsed.operator === '='
+    ? [needleKey].filter(Boolean)
+    : needleKey.split(/\s+/).filter(Boolean);
+  if (!tokens.length) return null;
+
+  const columnMap = {
+    all: '',
+    title: 'title_search',
+    authors: 'authors_search',
+    series: 'series_search',
+    genres: 'genres_search',
+    keywords: 'keywords_search'
+  };
+  if (!(field in columnMap)) return null;
+  const col = columnMap[field];
+
+  const parts = [];
+  for (const token of tokens) {
+    const safe = escapeFts5Token(token);
+    if (!safe) continue;
+    const body = parsed.operator === '=' ? `"${safe}"` : `"${safe}"*`;
+    parts.push(col ? `${col}:${body}` : body);
+  }
+  if (!parts.length) return null;
+  return { mode: 'fts', match: parts.join(' ') };
+}
+
+function appendBookFilterSql(whereParts, whereParams, genreFilter, extraFilters, { alias = 'active_books' } = {}) {
+  if (genreFilter) {
+    const sql = alias === 'active_books'
+      ? genreFilter.where
+      : genreFilter.where.replace(/active_books\./g, `${alias}.`);
+    whereParts.push(sql);
+    whereParams.push(...genreFilter.params);
+  }
+  for (const ef of extraFilters) {
+    const sql = alias === 'active_books'
+      ? ef.where
+      : ef.where.replace(/active_books\./g, `${alias}.`);
+    whereParts.push(sql);
+    whereParams.push(...ef.params);
+  }
+}
+
 export function searchBooks({
   query = '', page = 1, pageSize = 24, field = 'all', sort = 'title', order = '',
-  genre = '', letter = '', lang = '', format = '', year = 0, minRate = 0, hasSeries = null
+  genre = '', letter = '', lang = '', format = '', year = 0, minRate = 0, hasSeries = null,
+  /** exact = full COUNT(*); capped = COUNT up to 10001 (hub); omit = skip COUNT (suggest) */
+  totalMode = 'exact'
 }) {
   const offset = (page - 1) * pageSize;
   const orderBy = resolveSort(sort, order);
@@ -3192,6 +3296,21 @@ export function searchBooks({
   const extraFilters = buildCatalogExtraFilters({ lang, format, year, minRate, hasSeries });
   const parsedQuery = parseSearchOperator(query);
   const letterNorm = String(letter || '').trim().toLowerCase();
+  const countCap = 10_001;
+  const mode = ['exact', 'capped', 'omit'].includes(totalMode) ? totalMode : 'exact';
+
+  const resolveSqlTotal = (exactSql, exactParams, sampleSql, sampleParams) => {
+    if (mode === 'omit') return { total: 0, capped: false, omitted: true };
+    if (mode === 'capped') {
+      const n = Number(db.prepare(`
+        SELECT COUNT(*) AS count FROM (${sampleSql} LIMIT ?)
+      `).get(...sampleParams, countCap).count) || 0;
+      return { total: n, capped: n >= countCap, omitted: false };
+    }
+    const total = Number(db.prepare(exactSql).get(...exactParams).count) || 0;
+    return { total, capped: false, omitted: false };
+  };
+
   if (!query.trim()) {
     const whereParts = [];
     const whereParams = [];
@@ -3205,16 +3324,12 @@ export function searchBooks({
         ? applyOrder('COALESCE(s.flibusta_sidecar, 0) DESC, COALESCE(NULLIF(b.date, \'\'), b.imported_at) DESC, b.imported_at DESC, b.id DESC', order)
         : resolveBookAliasSort(sort, 'b', order);
 
-    const total = db
-      .prepare(
-        `
-      SELECT COUNT(*) AS count
-      FROM active_books b
-      LEFT JOIN sources s ON s.id = b.source_id
-      ${whereSql}
-    `
-      )
-      .get(...gfParams).count;
+    const { total } = resolveSqlTotal(
+      `SELECT COUNT(*) AS count FROM active_books b LEFT JOIN sources s ON s.id = b.source_id ${whereSql}`,
+      gfParams,
+      `SELECT 1 FROM active_books b LEFT JOIN sources s ON s.id = b.source_id ${whereSql}`,
+      gfParams
+    );
 
     const items = db
       .prepare(
@@ -3231,160 +3346,547 @@ export function searchBooks({
       .map(mapBookListRow);
 
     attachSeriesListsToBooks(items);
-    return { total, items };
+    return { total: mode === 'omit' ? items.length : total, items };
   }
 
-  if (['all', 'title', 'authors', 'series', 'genres', 'keywords'].includes(field)) {
-    const sqlSearch = buildBookSearchSql(field, query);
-    const authorMatch = (field === 'all' || field === 'authors') ? buildAuthorWhereForBooks(query) : null;
+  if (!['all', 'title', 'authors', 'series', 'genres', 'keywords'].includes(field)) {
+    return { total: 0, items: [] };
+  }
 
-    if (sqlSearch || authorMatch) {
-      const needleKey = createSortKey(parsedQuery.value || query);
-      const needleTokens = needleKey.split(/\s+/).filter(Boolean);
+  if (parsedQuery.operator === '~') {
+    // Regex can't be pushed to SQLite, so we scan a limited window of rows
+    // and filter in JS. 5000 is an intentional trade-off between coverage
+    // and memory pressure — raising it increases peak RSS linearly.
+    const REGEX_SCAN_LIMIT = 5000;
+    const filterParts = [];
+    const filterParams = [];
+    appendBookFilterSql(filterParts, filterParams, genreFilter, extraFilters);
+    const items = db.prepare(`
+      SELECT id, title, authors, genres, series, series_no AS seriesNo, ext, lang,
+             lib_rate AS libRate, archive_name AS archiveName, keywords,
+             title_search AS titleSearch,
+             authors_search AS authorsSearch,
+             series_search AS seriesSearch,
+             genres_search AS genresSearch,
+             keywords_search AS keywordsSearch
+      FROM active_books
+      ${filterParts.length ? `WHERE ${filterParts.join(' AND ')}` : ''}
+      ORDER BY ${orderBy}
+      LIMIT ${REGEX_SCAN_LIMIT}
+    `).all(...filterParams)
+      .map(mapBookListRow)
+      .filter((book) => matchesBookSearchField(book, field, query));
 
-      const mainWhereParts = [];
-      const mainWhereParams = [];
-      if (sqlSearch) {
-        mainWhereParts.push(sqlSearch.where);
-        mainWhereParams.push(...sqlSearch.params);
-      }
-      if (authorMatch) {
-        mainWhereParts.push(authorMatch.where);
-        mainWhereParams.push(...authorMatch.params);
-      }
-      const searchWhere = mainWhereParts.map(p => `(${p})`).join(' OR ');
+    attachSeriesListsToBooks(items);
+    return { total: items.length, items: items.slice(offset, offset + pageSize) };
+  }
 
-      const fullWhereParts = [searchWhere];
-      const fullWhereParams = [...mainWhereParams];
-      if (genreFilter) {
-        fullWhereParts.push(genreFilter.where);
-        fullWhereParams.push(...genreFilter.params);
-      }
-      for (const ef of extraFilters) { fullWhereParts.push(ef.where); fullWhereParams.push(...ef.params); }
-      const combinedWhere = fullWhereParts.map(p => `(${p})`).join(' AND ');
+  const authorMatch = (field === 'all' || field === 'authors') ? buildAuthorWhereForBooks(query) : null;
+  const ftsPlan = buildBooksFtsMatchQuery(field, query);
+  const useFts = Boolean(ftsPlan?.mode === 'fts' && ftsPlan.match && isBooksFtsUsable());
 
-      const total = db.prepare(`
-        SELECT COUNT(*) AS count FROM active_books WHERE ${combinedWhere}
-      `).get(...fullWhereParams).count;
+  /* ── Hot path: FTS5 MATCH + bm25 (FTS must drive the plan — never scan all books) ── */
+  if (useFts) {
+    const needleKey = createSortKey(parsedQuery.value || query);
+    const filterParts = [];
+    const filterParams = [];
+    appendBookFilterSql(filterParts, filterParams, genreFilter, extraFilters, { alias: 'b' });
 
-      const titleRankParts = [];
-      const titleRankParams = [];
-      if (sqlSearch && needleKey) {
-        const col = field === 'all' ? 'title_search' : ({ title: 'title_search', authors: 'authors_search', series: 'series_search' }[field] || null);
-        if (col) {
-          titleRankParts.push(`WHEN LOWER(COALESCE(${col}, '')) = ? THEN 0`);
-          titleRankParams.push(needleKey);
-          if (needleTokens.length > 1) {
-            titleRankParts.push(`WHEN LOWER(COALESCE(${col}, '')) = ? THEN 0`);
-            titleRankParams.push([...needleTokens].reverse().join(' '));
-          }
-          titleRankParts.push(`WHEN LOWER(COALESCE(${col}, '')) LIKE ? THEN 3`);
-          titleRankParams.push(`${needleKey}%`);
-        }
-      }
+    /* authors_search is already in books_fts; do not OR a full-table author EXISTS here. */
+    const whereSql = ['books_fts MATCH ?', ...filterParts].join(' AND ');
+    const whereParams = [ftsPlan.match, ...filterParams];
 
-      let rankSQL;
-      const allRankParams = [];
-      if (titleRankParts.length && authorMatch) {
-        rankSQL = `CASE ${titleRankParts.join(' ')} ELSE COALESCE(${authorMatch.authorRankSQL}, 20) END`;
-        allRankParams.push(...titleRankParams, ...authorMatch.authorRankParams);
-      } else if (titleRankParts.length) {
-        rankSQL = `CASE ${titleRankParts.join(' ')} ELSE 4 END`;
-        allRankParams.push(...titleRankParams);
-      } else if (authorMatch) {
-        rankSQL = authorMatch.authorRankSQL;
-        allRankParams.push(...authorMatch.authorRankParams);
-      } else {
-        rankSQL = '0';
-      }
+    // Peek / count without forcing a full MATCH materialization when possible.
+    let ftsHit = true;
+    let total = 0;
+    let capped = false;
+    if (mode === 'omit') {
+      ftsHit = Boolean(db.prepare(`
+        SELECT 1
+        FROM books_fts
+        JOIN active_books b ON b.id = books_fts.id
+        WHERE ${whereSql}
+        LIMIT 1
+      `).get(...whereParams));
+    } else {
+      const counted = resolveSqlTotal(
+        `SELECT COUNT(*) AS count
+         FROM books_fts
+         JOIN active_books b ON b.id = books_fts.id
+         WHERE ${whereSql}`,
+        whereParams,
+        `SELECT 1
+         FROM books_fts
+         JOIN active_books b ON b.id = books_fts.id
+         WHERE ${whereSql}`,
+        whereParams
+      );
+      total = counted.total;
+      capped = counted.capped;
+      ftsHit = total > 0;
+    }
 
+    // External-content FTS can be empty/desynced while books_fts_dirty=0.
+    // If MATCH finds nothing, fall through to LIKE instead of a false "0 results".
+    if (ftsHit) {
+      const titleBoost = needleKey
+        ? `CASE
+            WHEN LOWER(COALESCE(b.title_search, '')) = ? THEN -1000
+            WHEN LOWER(COALESCE(b.title_search, '')) LIKE ? THEN -500
+            ELSE 0
+          END`
+        : '0';
+      const titleBoostParams = needleKey ? [needleKey, `${needleKey}%`] : [];
+      const listOrderBy = resolveBookAliasSort(sort, 'b', order);
       const rankedOrderBy = sort === 'series'
-        ? `${orderBy}, ${rankSQL} ASC`
-        : `${rankSQL} ASC, ${orderBy}`;
-      const items = db.prepare(`
-        SELECT id, title, authors, genres, series, series_no AS seriesNo, ext, lang,
-               lib_rate AS libRate, archive_name AS archiveName
-        FROM active_books
-        WHERE ${combinedWhere}
+        ? `${listOrderBy}, bm25(books_fts) ASC, ${titleBoost} ASC`
+        : `bm25(books_fts) ASC, ${titleBoost} ASC, ${listOrderBy}`;
+
+      const items = pageSize > 0
+        ? db.prepare(`
+        SELECT b.id, b.title, b.authors, b.genres, b.series, b.series_no AS seriesNo, b.ext, b.lang,
+               b.lib_rate AS libRate, b.archive_name AS archiveName
+        FROM books_fts
+        JOIN active_books b ON b.id = books_fts.id
+        WHERE ${whereSql}
         ORDER BY ${rankedOrderBy}
         LIMIT ? OFFSET ?
-      `).all(...fullWhereParams, ...allRankParams, pageSize, offset).map(mapBookListRow);
-
-      return { total, items };
-    }
-
-    if (parsedQuery.operator === '~') {
-      // Regex can't be pushed to SQLite, so we scan a limited window of rows
-      // and filter in JS. 5000 is an intentional trade-off between coverage
-      // and memory pressure — raising it increases peak RSS linearly.
-      const REGEX_SCAN_LIMIT = 5000;
-      const items = db.prepare(`
-        SELECT id, title, authors, genres, series, series_no AS seriesNo, ext, lang,
-               lib_rate AS libRate, archive_name AS archiveName, keywords,
-               title_search AS titleSearch,
-               authors_search AS authorsSearch,
-               series_search AS seriesSearch,
-               genres_search AS genresSearch,
-               keywords_search AS keywordsSearch
-        FROM active_books
-        ${(() => { const parts = []; const params = []; if (genreFilter) { parts.push(genreFilter.where); params.push(...genreFilter.params); } for (const ef of extraFilters) { parts.push(ef.where); params.push(...ef.params); } return parts.length ? `WHERE ${parts.join(' AND ')}` : ''; })()}
-        ORDER BY ${orderBy}
-        LIMIT ${REGEX_SCAN_LIMIT}
-      `).all(...(() => { const params = []; if (genreFilter) params.push(...genreFilter.params); for (const ef of extraFilters) params.push(...ef.params); return params; })())
-        .map(mapBookListRow)
-        .filter((book) => matchesBookSearchField(book, field, query));
+      `).all(...whereParams, ...titleBoostParams, pageSize, offset).map(mapBookListRow)
+        : [];
 
       attachSeriesListsToBooks(items);
-      return { total: items.length, items: items.slice(offset, offset + pageSize) };
+      const outTotal = mode === 'omit' ? items.length : total;
+      return capped ? { total: outTotal, items, capped: true } : { total: outTotal, items };
     }
   }
 
-  const safeQuery = normalizeYo(query)
-    .trim()
-    .split(/\s+/)
-    .map((token) => `"${token.replace(/"/g, '')}"*`)
-    .filter((token) => token !== '""*')
-    .join(' ');
+  /* ── Fallback: LIKE (FTS dirty, empty MATCH, `*` contains, or FTS unavailable) ── */
+  const sqlSearch = buildBookSearchSql(field, query);
+  if (sqlSearch || authorMatch) {
+    const needleKey = createSortKey(parsedQuery.value || query);
+    const needleTokens = needleKey.split(/\s+/).filter(Boolean);
 
-  const columnMap = {
-    all: '',
-    title: 'title_search',
-    authors: 'authors_search',
-    series: 'series_search',
-    genres: 'genres_search',
-    languages: 'lang',
-    keywords: 'keywords_search'
-  };
+    const mainWhereParts = [];
+    const mainWhereParams = [];
+    if (sqlSearch) {
+      mainWhereParts.push(sqlSearch.where);
+      mainWhereParams.push(...sqlSearch.params);
+    }
+    if (authorMatch) {
+      mainWhereParts.push(authorMatch.where);
+      mainWhereParams.push(...authorMatch.params);
+    }
+    const searchWhere = mainWhereParts.map((p) => `(${p})`).join(' OR ');
 
-  const prefix = columnMap[field] ? `${columnMap[field]}:` : '';
-  const ftsQuery = `${prefix}${safeQuery}`;
-  const ftsWhereParts = ['books_fts MATCH ?'];
-  const ftsBaseParams = [ftsQuery];
-  if (genreFilter) {
-    ftsWhereParts.push(`(${genreFilter.where.replace(/active_books\./g, 'b.')})`);
-    ftsBaseParams.push(...genreFilter.params);
+    const fullWhereParts = [searchWhere];
+    const fullWhereParams = [...mainWhereParams];
+    appendBookFilterSql(fullWhereParts, fullWhereParams, genreFilter, extraFilters);
+    const combinedWhere = fullWhereParts.map((p) => `(${p})`).join(' AND ');
+
+    const counted = resolveSqlTotal(
+      `SELECT COUNT(*) AS count FROM active_books WHERE ${combinedWhere}`,
+      fullWhereParams,
+      `SELECT 1 FROM active_books WHERE ${combinedWhere}`,
+      fullWhereParams
+    );
+    const total = counted.total;
+    const capped = counted.capped;
+
+    const titleRankParts = [];
+    const titleRankParams = [];
+    if (sqlSearch && needleKey) {
+      const col = field === 'all' ? 'title_search' : ({ title: 'title_search', authors: 'authors_search', series: 'series_search' }[field] || null);
+      if (col) {
+        titleRankParts.push(`WHEN LOWER(COALESCE(${col}, '')) = ? THEN 0`);
+        titleRankParams.push(needleKey);
+        if (needleTokens.length > 1) {
+          titleRankParts.push(`WHEN LOWER(COALESCE(${col}, '')) = ? THEN 0`);
+          titleRankParams.push([...needleTokens].reverse().join(' '));
+        }
+        titleRankParts.push(`WHEN LOWER(COALESCE(${col}, '')) LIKE ? THEN 3`);
+        titleRankParams.push(`${needleKey}%`);
+      }
+    }
+
+    let rankSQL;
+    const allRankParams = [];
+    if (titleRankParts.length && authorMatch) {
+      rankSQL = `CASE ${titleRankParts.join(' ')} ELSE COALESCE(${authorMatch.authorRankSQL}, 20) END`;
+      allRankParams.push(...titleRankParams, ...authorMatch.authorRankParams);
+    } else if (titleRankParts.length) {
+      rankSQL = `CASE ${titleRankParts.join(' ')} ELSE 4 END`;
+      allRankParams.push(...titleRankParams);
+    } else if (authorMatch) {
+      rankSQL = authorMatch.authorRankSQL;
+      allRankParams.push(...authorMatch.authorRankParams);
+    } else {
+      rankSQL = '0';
+    }
+
+    const rankedOrderBy = sort === 'series'
+      ? `${orderBy}, ${rankSQL} ASC`
+      : `${rankSQL} ASC, ${orderBy}`;
+    const items = pageSize > 0
+      ? db.prepare(`
+      SELECT id, title, authors, genres, series, series_no AS seriesNo, ext, lang,
+             lib_rate AS libRate, archive_name AS archiveName
+      FROM active_books
+      WHERE ${combinedWhere}
+      ORDER BY ${rankedOrderBy}
+      LIMIT ? OFFSET ?
+    `).all(...fullWhereParams, ...allRankParams, pageSize, offset).map(mapBookListRow)
+      : [];
+
+    attachSeriesListsToBooks(items);
+    const outTotal = mode === 'omit' ? items.length : total;
+    return capped ? { total: outTotal, items, capped: true } : { total: outTotal, items };
   }
-  for (const ef of extraFilters) { ftsWhereParts.push(ef.where.replace(/active_books\./g, 'b.')); ftsBaseParams.push(...ef.params); }
-  const ftsWhere = ftsWhereParts.join(' AND ');
-  const total = db.prepare(`
-    SELECT COUNT(*) AS count
-    FROM books_fts f
-    JOIN active_books b ON b.rowid = f.rowid
-    WHERE ${ftsWhere}
-  `).get(...ftsBaseParams).count;
 
-  const searchOrderBy = resolveBookAliasSort(sort, 'b');
-  const items = db.prepare(`
-    SELECT b.id, b.title, b.authors, b.genres, b.series, b.series_no AS seriesNo, b.ext, b.lang, b.archive_name AS archiveName
-    FROM books_fts f
-    JOIN active_books b ON b.rowid = f.rowid
-    WHERE ${ftsWhere}
-    ORDER BY ${searchOrderBy}
-    LIMIT ? OFFSET ?
-  `).all(...ftsBaseParams, pageSize, offset).map(mapBookListRow);
+  return { total: 0, items: [] };
+}
 
-  attachSeriesListsToBooks(items);
-  return { total, items };
+/** Levenshtein distance for short catalog tokens (did-you-mean). */
+function levenshteinDistance(a, b) {
+  const s = String(a || '');
+  const t = String(b || '');
+  if (s === t) return 0;
+  if (!s.length) return t.length;
+  if (!t.length) return s.length;
+  const row = new Array(t.length + 1);
+  for (let j = 0; j <= t.length; j += 1) row[j] = j;
+  for (let i = 1; i <= s.length; i += 1) {
+    let prev = i - 1;
+    row[0] = i;
+    for (let j = 1; j <= t.length; j += 1) {
+      const cur = row[j];
+      const cost = s[i - 1] === t[j - 1] ? 0 : 1;
+      row[j] = Math.min(row[j] + 1, row[j - 1] + 1, prev + cost);
+      prev = cur;
+    }
+  }
+  return row[t.length];
+}
+
+/**
+ * Lightweight typo suggestions from authors/series catalogs (not full books FTS).
+ * @returns {{ type: 'author'|'series', label: string, query: string, name: string }[]}
+ */
+export function findDidYouMeanSuggestions(query = '', limit = 3) {
+  const tokens = createSortKey(query).split(/\s+/).filter((tok) => tok.length >= 4);
+  if (!tokens.length) return [];
+
+  const scored = [];
+  const seen = new Set();
+
+  for (const token of tokens) {
+    const maxDist = token.length >= 6 ? 2 : 1;
+    const prefixLen = Math.max(2, token.length - maxDist);
+    const prefix = `${token.slice(0, prefixLen)}%`;
+
+    const authors = db.prepare(`
+      SELECT name, COALESCE(display_name, name) AS displayName, sort_name, book_count
+      FROM authors
+      WHERE book_count > 0 AND COALESCE(search_name, '') LIKE ?
+      ORDER BY book_count DESC
+      LIMIT 48
+    `).all(prefix);
+
+    for (const row of authors) {
+      for (const part of createSortKey(row.sort_name || '').split(/\s+/).filter(Boolean)) {
+        const dist = levenshteinDistance(token, part);
+        if (dist <= 0 || dist > maxDist) continue;
+        const key = `author:${row.name}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        scored.push({
+          type: 'author',
+          label: row.displayName,
+          query: row.displayName,
+          name: row.name,
+          dist,
+          bookCount: row.book_count || 0
+        });
+      }
+    }
+
+    const seriesRows = db.prepare(`
+      SELECT name, COALESCE(display_name, name) AS displayName, sort_name, book_count
+      FROM series_catalog
+      WHERE book_count > 0 AND COALESCE(search_name, '') LIKE ?
+      ORDER BY book_count DESC
+      LIMIT 48
+    `).all(prefix);
+
+    for (const row of seriesRows) {
+      for (const part of createSortKey(row.sort_name || row.name || '').split(/\s+/).filter(Boolean)) {
+        const dist = levenshteinDistance(token, part);
+        if (dist <= 0 || dist > maxDist) continue;
+        const key = `series:${row.name}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        scored.push({
+          type: 'series',
+          label: row.displayName,
+          query: row.displayName,
+          name: row.name,
+          dist,
+          bookCount: row.book_count || 0
+        });
+      }
+    }
+  }
+
+  scored.sort((a, b) => {
+    if (a.dist !== b.dist) return a.dist - b.dist;
+    return (b.bookCount || 0) - (a.bookCount || 0);
+  });
+
+  return scored.slice(0, limit).map(({ type, label, query: q, name }) => ({ type, label, query: q, name }));
+}
+
+/**
+ * Genres present among books matching q + filters (genre filter excluded — faceted UX).
+ * Used by Android/web filter sheet to offer only relevant genres.
+ */
+export function listSearchGenres({
+  query = '',
+  lang = '',
+  format = '',
+  year = 0,
+  minRate = 0,
+  hasSeries = null,
+  limit = 100
+} = {}) {
+  const q = String(query || '').trim();
+  const extraFilters = buildCatalogExtraFilters({ lang, format, year, minRate, hasSeries });
+  const lim = Math.min(200, Math.max(1, Math.floor(Number(limit) || 100)));
+  if (!q && !extraFilters.length) {
+    return { items: [], scoped: false };
+  }
+
+  const mapRows = (rows) => (rows || []).map((row) => ({
+    name: row.name,
+    displayName: row.displayName || row.name,
+    bookCount: Math.max(0, Math.floor(Number(row.bookCount) || 0))
+  }));
+
+  const runGrouped = (fromSql, params) => mapRows(db.prepare(`
+    SELECT g.name AS name,
+           COALESCE(g.display_name, g.name) AS displayName,
+           COUNT(DISTINCT b.id) AS bookCount
+    ${fromSql}
+    GROUP BY g.id
+    ORDER BY bookCount DESC, displayName ASC
+    LIMIT ?
+  `).all(...params, lim));
+
+  const finalize = (items) => ({
+    scoped: true,
+    items: [...(items || [])].sort((a, b) => {
+      const la = String(a?.displayName || a?.name || '').trim();
+      const lb = String(b?.displayName || b?.name || '').trim();
+      return la.localeCompare(lb, 'ru', { sensitivity: 'base' });
+    })
+  });
+
+  if (!q) {
+    const whereParts = [];
+    const whereParams = [];
+    for (const ef of extraFilters) {
+      whereParts.push(ef.where.replace(/active_books\./g, 'b.'));
+      whereParams.push(...ef.params);
+    }
+    const whereSql = whereParts.length ? `WHERE ${whereParts.join(' AND ')}` : '';
+    return finalize(runGrouped(`
+        FROM active_books b
+        JOIN book_genres bg ON bg.book_id = b.id
+        JOIN genres_catalog g ON g.id = bg.genre_id
+        ${whereSql}
+      `, whereParams));
+  }
+
+  const field = 'all';
+  const parsedQuery = parseSearchOperator(q);
+  if (parsedQuery.operator === '~') {
+    // Rare path: sample books then collect genres in JS.
+    const filterParts = [];
+    const filterParams = [];
+    appendBookFilterSql(filterParts, filterParams, null, extraFilters);
+    const books = db.prepare(`
+      SELECT id, title, authors, genres, series, series_no AS seriesNo, ext, lang,
+             lib_rate AS libRate, archive_name AS archiveName, keywords,
+             title_search AS titleSearch, authors_search AS authorsSearch,
+             series_search AS seriesSearch, genres_search AS genresSearch,
+             keywords_search AS keywordsSearch
+      FROM active_books
+      ${filterParts.length ? `WHERE ${filterParts.join(' AND ')}` : ''}
+      LIMIT 5000
+    `).all(...filterParams)
+      .map(mapBookListRow)
+      .filter((book) => matchesBookSearchField(book, field, q));
+    const ids = books.map((b) => b.id).filter(Boolean);
+    if (!ids.length) return finalize([]);
+    const placeholders = ids.map(() => '?').join(',');
+    return finalize(runGrouped(`
+        FROM active_books b
+        JOIN book_genres bg ON bg.book_id = b.id
+        JOIN genres_catalog g ON g.id = bg.genre_id
+        WHERE b.id IN (${placeholders})
+      `, ids));
+  }
+
+  const authorMatch = buildAuthorWhereForBooks(q);
+  const ftsPlan = buildBooksFtsMatchQuery(field, q);
+  const useFts = Boolean(ftsPlan?.mode === 'fts' && ftsPlan.match && isBooksFtsUsable());
+
+  if (useFts) {
+    const filterParts = [];
+    const filterParams = [];
+    appendBookFilterSql(filterParts, filterParams, null, extraFilters, { alias: 'b' });
+    const whereSql = ['books_fts MATCH ?', ...filterParts].join(' AND ');
+    const whereParams = [ftsPlan.match, ...filterParams];
+    const peek = db.prepare(`
+      SELECT 1
+      FROM books_fts
+      JOIN active_books b ON b.id = books_fts.id
+      WHERE ${whereSql}
+      LIMIT 1
+    `).get(...whereParams);
+    if (peek) {
+      return finalize(runGrouped(`
+          FROM books_fts
+          JOIN active_books b ON b.id = books_fts.id
+          JOIN book_genres bg ON bg.book_id = b.id
+          JOIN genres_catalog g ON g.id = bg.genre_id
+          WHERE ${whereSql}
+        `, whereParams));
+    }
+  }
+
+  const sqlSearch = buildBookSearchSql(field, q);
+  if (!sqlSearch && !authorMatch) return finalize([]);
+
+  const mainWhereParts = [];
+  const mainWhereParams = [];
+  if (sqlSearch) {
+    mainWhereParts.push(sqlSearch.where);
+    mainWhereParams.push(...sqlSearch.params);
+  }
+  if (authorMatch) {
+    mainWhereParts.push(authorMatch.where);
+    mainWhereParams.push(...authorMatch.params);
+  }
+  const searchWhere = mainWhereParts.map((p) => `(${p})`).join(' OR ');
+  const fullWhereParts = [searchWhere];
+  const fullWhereParams = [...mainWhereParams];
+  appendBookFilterSql(fullWhereParts, fullWhereParams, null, extraFilters);
+  const combinedWhere = fullWhereParts.map((p) => `(${p})`).join(' AND ');
+
+  return finalize(runGrouped(`
+      FROM (
+        SELECT id FROM active_books WHERE ${combinedWhere}
+      ) matched
+      JOIN active_books b ON b.id = matched.id
+      JOIN book_genres bg ON bg.book_id = b.id
+      JOIN genres_catalog g ON g.id = bg.genre_id
+    `, fullWhereParams));
+}
+
+/**
+ * Unified catalog search overview: totals for books / authors / series.
+ * Used by main search hub (`GET /api/search`) before drilling into `/api/catalog?field=…`.
+ * Book totals use capped COUNT (≤10001) — full FTS COUNT on popular queries is too slow.
+ */
+export function searchOverview({ query = '' } = {}) {
+  const q = String(query || '').trim();
+  if (!q) {
+    return {
+      query: '',
+      books: { total: 0 },
+      authors: { total: 0 },
+      series: { total: 0 }
+    };
+  }
+  const books = searchBooks({
+    query: q,
+    page: 1,
+    pageSize: 0,
+    field: 'all',
+    sort: 'title',
+    totalMode: 'capped'
+  });
+  const authors = listAuthors({ query: q, page: 1, pageSize: 1, sort: 'count' });
+  const series = listSeries({ query: q, page: 1, pageSize: 1, sort: 'count', nameOnly: true });
+  const bookTotal = Math.max(0, Math.floor(Number(books.total) || 0));
+  return {
+    query: q,
+    books: {
+      total: books.capped ? Math.min(bookTotal, 10_000) : bookTotal,
+      capped: Boolean(books.capped)
+    },
+    authors: { total: Math.max(0, Math.floor(Number(authors.total) || 0)) },
+    series: { total: Math.max(0, Math.floor(Number(series.total) || 0)) }
+  };
+}
+
+/**
+ * Cross-mode recovery when the active search mode returned nothing.
+ * Additive: callers may ignore searchHints.
+ */
+export function buildSearchRecoveryHints({ query = '', field = 'books' } = {}) {
+  const q = String(query || '').trim();
+  const hints = { alternateModes: [], didYouMean: [] };
+  if (!q) return hints;
+
+  const normalizedField = ['books', 'authors', 'series'].includes(field) ? field : 'books';
+
+  if (normalizedField !== 'authors') {
+    const authors = listAuthors({ query: q, page: 1, pageSize: 3, sort: 'count' });
+    if (authors.total > 0) {
+      hints.alternateModes.push({
+        field: 'authors',
+        total: authors.total,
+        samples: authors.items.slice(0, 3).map((row) => ({
+          name: row.name,
+          displayName: row.displayName || row.name,
+          bookCount: row.bookCount
+        }))
+      });
+    }
+  }
+
+  if (normalizedField !== 'series') {
+    const series = listSeries({ query: q, page: 1, pageSize: 3, sort: 'count' });
+    if (series.total > 0) {
+      hints.alternateModes.push({
+        field: 'series',
+        total: series.total,
+        samples: series.items.slice(0, 3).map((row) => ({
+          name: row.name,
+          displayName: row.displayName || row.name,
+          bookCount: row.bookCount
+        }))
+      });
+    }
+  }
+
+  if (normalizedField !== 'books') {
+    const books = searchBooks({ query: q, page: 1, pageSize: 3, field: 'all', sort: 'title' });
+    if (books.total > 0) {
+      hints.alternateModes.push({
+        field: 'books',
+        total: books.total,
+        samples: books.items.slice(0, 3).map((row) => ({
+          id: row.id,
+          title: row.title,
+          authors: row.authors
+        }))
+      });
+    }
+  }
+
+  hints.didYouMean = findDidYouMeanSuggestions(q, 3);
+  return hints;
 }
 
 export function searchCatalog({
@@ -3401,43 +3903,48 @@ export function searchCatalog({
     return { total: 0, items: [], field: normalizedField };
   }
 
+  let result;
   if (normalizedField === 'authors') {
-    const result = listAuthors({ page, pageSize, query, sort: sort === 'name' ? 'name' : 'count', order, letter });
-    return { ...result, field: normalizedField };
-  }
-
-  if (normalizedField === 'series') {
+    result = { ...listAuthors({ page, pageSize, query, sort: sort === 'name' ? 'name' : 'count', order, letter }), field: normalizedField };
+  } else if (normalizedField === 'series') {
     /* nameOnly прокидывается дальше — для OPDS (искал по сериям, не по авторам)
        это критично для производительности на больших библиотеках. */
-    const result = listSeries({ page, pageSize, query, sort: sort === 'name' ? 'name' : 'count', order, letter, nameOnly });
-    return { ...result, field: normalizedField };
+    result = { ...listSeries({ page, pageSize, query, sort: sort === 'name' ? 'name' : 'count', order, letter, nameOnly }), field: normalizedField };
+  } else {
+    const bookFieldMap = {
+      books: 'all',
+      title: 'title',
+      'book-authors': 'authors',
+      'book-series': 'series',
+      genres: 'genres',
+      keywords: 'keywords'
+    };
+    result = {
+      ...searchBooks({
+        query,
+        page,
+        pageSize,
+        field: bookFields.has(normalizedField) ? bookFieldMap[normalizedField] : 'all',
+        sort,
+        order,
+        genre,
+        letter,
+        lang,
+        format,
+        year,
+        minRate,
+        hasSeries: seriesFlag
+      }),
+      field: normalizedField
+    };
   }
 
-  const bookFieldMap = {
-    books: 'all',
-    title: 'title',
-    'book-authors': 'authors',
-    'book-series': 'series',
-    genres: 'genres',
-    keywords: 'keywords'
-  };
+  if (result.total === 0 && String(query || '').trim()) {
+    const hintField = normalizedField === 'authors' || normalizedField === 'series' ? normalizedField : 'books';
+    result.searchHints = buildSearchRecoveryHints({ query, field: hintField });
+  }
 
-  const result = searchBooks({
-    query,
-    page,
-    pageSize,
-    field: bookFields.has(normalizedField) ? bookFieldMap[normalizedField] : 'all',
-    sort,
-    order,
-    genre,
-    letter,
-    lang,
-    format,
-    year,
-    minRate,
-    hasSeries: seriesFlag
-  });
-  return { ...result, field: normalizedField };
+  return result;
 }
 
 let _stmtGetBookById = null;
@@ -3886,7 +4393,7 @@ export function getStats() {
   return _stmtGetStats.get();
 }
 
-export function listAuthors({ page = 1, pageSize = 50, query = '', sort = 'name', order = '', startsWith = false, letter = '' }) {
+export function listAuthors({ page = 1, pageSize = 50, query = '', sort = 'name', order = '', startsWith = false, letter = '', skipTotal = false }) {
   const offset = (page - 1) * pageSize;
   const parsed = parseSearchOperator(query);
   const needleKey = createSortKey(parsed.value || query);
@@ -3985,11 +4492,6 @@ export function listAuthors({ page = 1, pageSize = 50, query = '', sort = 'name'
     ? `CASE ${rankCases.join(' ')} ELSE 3 END`
     : '3';
 
-  const total = db.prepare(`
-    SELECT COUNT(*) AS count FROM authors a
-    WHERE (${whereSQL}) AND a.book_count > 0
-  `).get(...whereParams).count;
-
   const orderBy = sort === 'name'
     ? applyOrder(`${rankSQL} ASC, COALESCE(a.sort_name, LOWER(a.name)) ASC`, order)
     : applyOrder(`${rankSQL} ASC, a.book_count DESC, COALESCE(a.sort_name, LOWER(a.name)) ASC`, order);
@@ -4005,20 +4507,24 @@ export function listAuthors({ page = 1, pageSize = 50, query = '', sort = 'name'
     LIMIT ? OFFSET ?
   `).all(...whereParams, ...rankParams, pageSize, offset);
 
+  if (skipTotal) return { total: offset + items.length, items };
+
+  const total = db.prepare(`
+    SELECT COUNT(*) AS count FROM authors a
+    WHERE (${whereSQL}) AND a.book_count > 0
+  `).get(...whereParams).count;
+
   return { total, items };
 }
 
 /**
- * Список серий с поиском по имени и/или автору.
+ * Список серий: поиск по названию серии; опционально «автор + серия».
  * @param {Object} opts
  * @param {boolean} [opts.nameOnly=false]
- *   Когда true — отключает поиск серий через авторов (тяжёлый EXISTS-JOIN
- *   с LIKE '% token%' по `authors.search_name`, на больших каталогах
- *   разгоняет CPU до 100%+). Полезно для OPDS «поиск по сериям»,
- *   где имя автора пользователь не вводит и не ожидает увидеть совпадения
- *   через автора. Дефолт оставлен false для обратной совместимости с UI.
+ *   Когда true — только название серии (без смешанного «автор + серия»).
+ *   Для OPDS «поиск по сериям».
  */
-export function listSeries({ page = 1, pageSize = 50, query = '', sort = 'name', order = '', letter = '', nameOnly = false } = {}) {
+export function listSeries({ page = 1, pageSize = 50, query = '', sort = 'name', order = '', letter = '', nameOnly = false, skipTotal = false } = {}) {
   const offset = (page - 1) * pageSize;
   const parsed = parseSearchOperator(query);
   const needleKey = createSortKey(parsed.value || query);
@@ -4056,66 +4562,32 @@ export function listSeries({ page = 1, pageSize = 50, query = '', sort = 'name',
   const nameSearch = buildCatalogSearchSql('s.search_name', query);
 
   /*
-   * Поиск серий ПО АВТОРАМ — это коррелированный EXISTS-JOIN через
-   * book_series → active_books → book_authors → authors с LIKE '% token%'.
-   * На большой библиотеке (Flibusta-сайз) это O(N×M×K) и легко съедает
-   * 100%+ CPU на одно «безобидное» поисковое слово. Если caller знает,
-   * что ему не нужны такие совпадения (например, OPDS «поиск по сериям»),
-   * передаёт nameOnly:true — и эта ветка целиком отключается.
+   * Режим «Серии» ищет по названию серии. Дополнительно (если !nameOnly):
+   * смешанный запрос «автор + название серии» / «серия + автор»
+   * («ясинский ник»). Поиск «всех серий автора» по одной фамилии отключён —
+   * для этого есть режим «Авторы».
    */
-  const authorTokens = needleTokens;
-  let authorWhere = null, authorWhereParams = [], authorRankSQL = null, authorRankParams = [];
-  if (!nameOnly) {
-    const snExpr = `SUBSTR(COALESCE(a2.sort_name, ''), 1, INSTR(COALESCE(a2.sort_name, '') || ' ', ' ') - 1)`;
-    if (authorTokens.length === 1) {
-      authorWhere = `EXISTS (
-        SELECT 1 FROM book_series bs2
-        JOIN active_books b2 ON b2.id = bs2.book_id
-        JOIN book_authors ba2 ON ba2.book_id = b2.id
-        JOIN authors a2 ON a2.id = ba2.author_id
-        WHERE bs2.series_id = s.id AND ${snExpr} = ?
-      )`;
-      authorWhereParams.push(authorTokens[0]);
-
-      authorRankSQL = `(SELECT MIN(CASE WHEN ${snExpr} = ? THEN 1 WHEN ${snExpr} LIKE ? THEN 2 ELSE 5 END) FROM book_series bs2 JOIN active_books b2 ON b2.id = bs2.book_id JOIN book_authors ba2 ON ba2.book_id = b2.id JOIN authors a2 ON a2.id = ba2.author_id WHERE bs2.series_id = s.id)`;
-      authorRankParams.push(authorTokens[0], `${authorTokens[0]}%`);
-    } else {
-      const aClauses = authorTokens.map(() => `(' ' || COALESCE(a2.search_name, '') || ' ') LIKE ?`);
-      authorWhere = `EXISTS (
-        SELECT 1 FROM book_series bs2
-        JOIN active_books b2 ON b2.id = bs2.book_id
-        JOIN book_authors ba2 ON ba2.book_id = b2.id
-        JOIN authors a2 ON a2.id = ba2.author_id
-        WHERE bs2.series_id = s.id AND ${aClauses.join(' AND ')}
-      )`;
-      for (const tok of authorTokens) authorWhereParams.push(`% ${tok}%`);
-
-      authorRankSQL = `(SELECT MIN(CASE WHEN COALESCE(a2.sort_name, '') = ? THEN 1 WHEN COALESCE(a2.sort_name, '') = ? THEN 1 ELSE 5 END) FROM book_series bs2 JOIN active_books b2 ON b2.id = bs2.book_id JOIN book_authors ba2 ON ba2.book_id = b2.id JOIN authors a2 ON a2.id = ba2.author_id WHERE bs2.series_id = s.id)`;
-      authorRankParams.push(needleKey, [...authorTokens].reverse().join(' '));
-    }
-  }
-
-  /* Автор + название серии: «Кир Булычев Алиса» → author IN (...) AND series name matches remainder. */
   let mixedWhere = null;
   let mixedWhereParams = [];
-  let mixedSeriesKey = '';
+  const mixedSeriesKeys = [];
   if (!nameOnly && needleTokens.length >= 2) {
-    const split = resolveAuthorSeriesQuerySplit(needleTokens);
-    if (split?.authorNames?.length && split.seriesQuery) {
+    const mixedParts = [];
+    for (const split of resolveAuthorSeriesQuerySplits(needleTokens)) {
       const seriesNameSearch = buildCatalogSearchSql('s.search_name', split.seriesQuery);
-      if (seriesNameSearch) {
-        const placeholders = split.authorNames.map(() => '?').join(', ');
-        mixedWhere = `(${seriesNameSearch.where}) AND EXISTS (
-          SELECT 1 FROM book_series bs2
-          JOIN active_books b2 ON b2.id = bs2.book_id
-          JOIN book_authors ba2 ON ba2.book_id = b2.id
-          JOIN authors a2 ON a2.id = ba2.author_id
-          WHERE bs2.series_id = s.id AND a2.name IN (${placeholders})
-        )`;
-        mixedWhereParams = [...seriesNameSearch.params, ...split.authorNames];
-        mixedSeriesKey = createSortKey(split.seriesQuery);
-      }
+      if (!seriesNameSearch || !split.authorNames.length) continue;
+      const placeholders = split.authorNames.map(() => '?').join(', ');
+      mixedParts.push(`((${seriesNameSearch.where}) AND EXISTS (
+        SELECT 1 FROM book_series bs2
+        JOIN active_books b2 ON b2.id = bs2.book_id
+        JOIN book_authors ba2 ON ba2.book_id = b2.id
+        JOIN authors a2 ON a2.id = ba2.author_id
+        WHERE bs2.series_id = s.id AND a2.name IN (${placeholders})
+      ))`);
+      mixedWhereParams.push(...seriesNameSearch.params, ...split.authorNames);
+      const seriesKey = createSortKey(split.seriesQuery);
+      if (seriesKey && !mixedSeriesKeys.includes(seriesKey)) mixedSeriesKeys.push(seriesKey);
     }
+    if (mixedParts.length) mixedWhere = mixedParts.join(' OR ');
   }
 
   const mainWhereParts = [];
@@ -4128,28 +4600,18 @@ export function listSeries({ page = 1, pageSize = 50, query = '', sort = 'name',
     mainWhereParts.push(nameSearch.where);
     mainWhereParams.push(...nameSearch.params);
   }
-  if (authorWhere) {
-    mainWhereParts.push(authorWhere);
-    mainWhereParams.push(...authorWhereParams);
-  }
-  /* Если ни имя-поиск не построился, ни авторы (nameOnly + пустой токен-поиск)
-     не дали условий — возвращаем пусто, иначе WHERE будет пустой и вернёт всё. */
   if (!mainWhereParts.length) return { total: 0, items: [] };
   const combinedWhere = mainWhereParts.map(p => `(${p})`).join(' OR ');
 
-  const total = db.prepare(`
-    SELECT COUNT(*) AS count FROM series_catalog s
-    WHERE (${combinedWhere}) AND s.book_count > 0
-  `).get(...mainWhereParams).count;
-
   const nameRankParts = [];
   const nameRankParams = [];
-  if (mixedSeriesKey) {
-    /* Mixed author+series hits rank above bare series-name matches. */
-    nameRankParts.push(`WHEN COALESCE(s.sort_name, '') = ? THEN 0`);
-    nameRankParams.push(mixedSeriesKey);
-    nameRankParts.push(`WHEN COALESCE(s.sort_name, '') LIKE ? THEN 1`);
-    nameRankParams.push(`${mixedSeriesKey}%`);
+  if (mixedSeriesKeys.length) {
+    for (const mixedSeriesKey of mixedSeriesKeys) {
+      nameRankParts.push(`WHEN COALESCE(s.sort_name, '') = ? THEN 0`);
+      nameRankParams.push(mixedSeriesKey);
+      nameRankParts.push(`WHEN COALESCE(s.sort_name, '') LIKE ? THEN 1`);
+      nameRankParams.push(`${mixedSeriesKey}%`);
+    }
     if (nameSearch) {
       nameRankParts.push(`WHEN COALESCE(s.sort_name, '') = ? THEN 2`);
       nameRankParams.push(needleKey);
@@ -4166,16 +4628,8 @@ export function listSeries({ page = 1, pageSize = 50, query = '', sort = 'name',
   let rankSQL;
   const allRankParams = [];
   if (nameRankParts.length) {
-    if (authorRankSQL) {
-      rankSQL = `CASE ${nameRankParts.join(' ')} ELSE COALESCE(${authorRankSQL}, 20) END`;
-      allRankParams.push(...nameRankParams, ...authorRankParams);
-    } else {
-      rankSQL = `CASE ${nameRankParts.join(' ')} ELSE 20 END`;
-      allRankParams.push(...nameRankParams);
-    }
-  } else if (authorRankSQL) {
-    rankSQL = authorRankSQL;
-    allRankParams.push(...authorRankParams);
+    rankSQL = `CASE ${nameRankParts.join(' ')} ELSE 20 END`;
+    allRankParams.push(...nameRankParams);
   } else {
     rankSQL = '0';
   }
@@ -4194,6 +4648,13 @@ export function listSeries({ page = 1, pageSize = 50, query = '', sort = 'name',
     ORDER BY ${orderBy}
     LIMIT ? OFFSET ?
   `).all(...mainWhereParams, ...allRankParams, pageSize, offset);
+
+  if (skipTotal) return { total: offset + items.length, items };
+
+  const total = db.prepare(`
+    SELECT COUNT(*) AS count FROM series_catalog s
+    WHERE (${combinedWhere}) AND s.book_count > 0
+  `).get(...mainWhereParams).count;
 
   return { total, items };
 }
@@ -4466,7 +4927,11 @@ function _getFacetStmts(facet, sort, order = '', author = '') {
   const seriesJoin = author ? ' JOIN book_authors ba ON ba.book_id = b.id JOIN authors a ON a.id = ba.author_id' : '';
   const seriesWhere = author ? ' AND a.name = ?' : '';
   const seriesItemsOrder = sort === 'series'
-    ? applyOrder('CAST(bs.series_no AS INTEGER) ASC, b.title_sort ASC, b.id DESC', order)
+    ? applyOrder(
+      // Числовой номер тома; пустые/нечисловые — в конец
+      `CASE WHEN TRIM(COALESCE(bs.series_no, '')) GLOB '[0-9]*' AND TRIM(bs.series_no) != '' THEN CAST(TRIM(bs.series_no) AS INTEGER) ELSE 1000000000 END ASC, TRIM(COALESCE(bs.series_no, '')) ASC, b.title_sort ASC, b.id ASC`,
+      order,
+    )
     : sort === 'recent' ? rankOrder : resolveBookAliasSort(sort, 'b', order);
   const totalSql = {
     // Junction PK (book_id, author_id) гарантирует уникальность книги на автора → COUNT(*) достаточно.
@@ -4477,7 +4942,8 @@ function _getFacetStmts(facet, sort, order = '', author = '') {
   };
   const itemsSql = {
     authors: `SELECT b.id, b.title, b.authors, b.genres, b.series, b.series_no AS seriesNo, b.ext, b.lang, b.lib_rate AS libRate, b.archive_name AS archiveName FROM book_authors ba JOIN authors a ON a.id = ba.author_id JOIN active_books b ON b.id = ba.book_id LEFT JOIN sources s ON s.id = b.source_id WHERE a.name = ? ORDER BY ${sort === 'recent' ? rankOrder : resolveBookAliasSort(sort, 'b', order)} LIMIT ? OFFSET ?`,
-    series: `SELECT b.id, b.title, b.authors, b.genres, b.series, b.series_no AS seriesNo, b.ext, b.lang, b.lib_rate AS libRate, b.archive_name AS archiveName FROM book_series bs JOIN series_catalog sc ON sc.id = bs.series_id JOIN active_books b ON b.id = bs.book_id${seriesJoin} LEFT JOIN sources s ON s.id = b.source_id WHERE sc.name = ?${seriesWhere} ORDER BY ${seriesItemsOrder} LIMIT ? OFFSET ?`,
+    // seriesNo из book_series (bs) — номер в открытой серии, не primary series_no книги
+    series: `SELECT b.id, b.title, b.authors, b.genres, sc.name AS series, bs.series_no AS seriesNo, b.ext, b.lang, b.lib_rate AS libRate, b.archive_name AS archiveName FROM book_series bs JOIN series_catalog sc ON sc.id = bs.series_id JOIN active_books b ON b.id = bs.book_id${seriesJoin} LEFT JOIN sources s ON s.id = b.source_id WHERE sc.name = ?${seriesWhere} ORDER BY ${seriesItemsOrder} LIMIT ? OFFSET ?`,
     genres: `SELECT b.id, b.title, b.authors, b.genres, b.series, b.series_no AS seriesNo, b.ext, b.lang, b.lib_rate AS libRate, b.archive_name AS archiveName FROM book_genres bg JOIN genres_catalog g ON g.id = bg.genre_id JOIN active_books b ON b.id = bg.book_id LEFT JOIN sources s ON s.id = b.source_id WHERE g.name = ? ORDER BY ${sort === 'recent' ? rankOrder : resolveBookAliasSort(sort, 'b', order)} LIMIT ? OFFSET ?`,
     languages: `SELECT b.id, b.title, b.authors, b.genres, b.series, b.series_no AS seriesNo, b.ext, b.lang, b.lib_rate AS libRate, b.archive_name AS archiveName FROM active_books b LEFT JOIN sources s ON s.id = b.source_id WHERE COALESCE(NULLIF(b.lang, ''), 'unknown') = ? ORDER BY ${sort === 'recent' ? rankOrder : resolveBookAliasSort(sort, 'b', order)} LIMIT ? OFFSET ?`
   };
@@ -4556,6 +5022,19 @@ export function getBooksByFacet({ facet, value, page = 1, pageSize = 24, sort = 
     ? stmts.items.all(value, author, pageSize, offset).map(mapBookListRow)
     : stmts.items.all(value, pageSize, offset).map(mapBookListRow);
   attachSeriesListsToBooks(items);
+  if (facet === 'series') {
+    for (const b of items) {
+      const match = Array.isArray(b.seriesList)
+        ? b.seriesList.find((s) => s.name === value)
+        : null;
+      if (match) {
+        b.series = match.name;
+        b.seriesNo = match.seriesNo || '';
+      } else {
+        b.series = value;
+      }
+    }
+  }
   const result = { total, items };
   writeTimedCache(facetBooksCache, cacheKey, result, FACET_CACHE_TTL_MS, 120);
   return result;
@@ -6143,38 +6622,60 @@ export function getReadBookIds(username) {
     .map((r) => r.id);
 }
 
-export function getSuggestions(query, limit = 5) {
+/**
+ * Typeahead suggestions — same matchers as full catalog modes.
+ * @param {string} query
+ * @param {number} [limit=5]
+ * @param {string} [field='books'] scope: books | authors | series
+ */
+export function getSuggestions(query, limit = 5, field = 'books') {
   const raw = String(query || '').trim();
   if (!raw || raw.length < 2) return { books: [], authors: [], series: [] };
   const key = createSortKey(raw);
   if (!key) return { books: [], authors: [], series: [] };
 
-  const books = db.prepare(`
-    SELECT id, title, authors, series FROM active_books
-    WHERE title_sort LIKE ? OR author_sort LIKE ?
-    ORDER BY CASE WHEN title_sort LIKE ? THEN 0 ELSE 1 END, title_sort ASC
-    LIMIT ?
-  `).all(`%${key}%`, `%${key}%`, `${key}%`, limit).map(mapBookListRow);
+  const scope = ['books', 'authors', 'series'].includes(field) ? field : 'books';
+  const n = Math.min(12, Math.max(1, Math.floor(Number(limit) || 5)));
 
-  const authors = db.prepare(`
-    SELECT a.name AS name, COALESCE(a.display_name, a.name) AS displayName,
-           COUNT(ab.id) AS bookCount
-    FROM authors a
-    JOIN book_authors ba ON ba.author_id = a.id
-    JOIN active_books ab ON ab.id = ba.book_id
-    WHERE COALESCE(a.search_name, '') LIKE ?
-    GROUP BY a.id ORDER BY bookCount DESC LIMIT ?
-  `).all(`%${key}%`, limit);
+  let books = [];
+  let authors = [];
+  let seriesItems = [];
 
-  const seriesItems = db.prepare(`
-    SELECT sc.name AS name, COALESCE(sc.display_name, sc.name) AS displayName,
-           COUNT(ab.id) AS bookCount
-    FROM series_catalog sc
-    JOIN book_series bs ON bs.series_id = sc.id
-    JOIN active_books ab ON ab.id = bs.book_id
-    WHERE COALESCE(sc.search_name, '') LIKE ?
-    GROUP BY sc.id ORDER BY bookCount DESC LIMIT ?
-  `).all(`%${key}%`, limit);
+  if (scope === 'books' || scope === 'authors') {
+    authors = listAuthors({ query: raw, page: 1, pageSize: n, sort: 'count', skipTotal: true }).items
+      .map((row) => ({
+        name: row.name,
+        displayName: row.displayName || row.name,
+        bookCount: row.bookCount
+      }));
+  }
+
+  if (scope === 'books' || scope === 'series') {
+    seriesItems = listSeries({ query: raw, page: 1, pageSize: n, sort: 'count', skipTotal: true }).items
+      .map((row) => ({
+        name: row.name,
+        displayName: row.displayName || row.name,
+        bookCount: row.bookCount
+      }));
+  }
+
+  if (scope === 'books') {
+    // Skip full COUNT(*) — typeahead only needs a few ranked rows.
+    books = searchBooks({
+      query: raw,
+      page: 1,
+      pageSize: n,
+      field: 'all',
+      sort: 'title',
+      totalMode: 'omit'
+    }).items
+      .map((row) => ({
+        id: row.id,
+        title: row.title,
+        authors: row.authors,
+        series: row.series
+      }));
+  }
 
   return { books, authors, series: seriesItems };
 }

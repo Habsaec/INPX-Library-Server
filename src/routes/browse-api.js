@@ -18,6 +18,8 @@ import {
   listSeries,
   resolveAuthorName,
   searchCatalog,
+  searchOverview,
+  listSearchGenres,
   parseGenreList,
   parseHasSeries
 } from '../inpx.js';
@@ -38,7 +40,43 @@ export function registerBrowseApiRoutes(app) {
   app.get('/api/search/suggest', requireBrowseAuth, (req, res) => {
     const q = String(req.query.q || '').trim();
     if (q.length < 2) return res.json({ books: [], authors: [], series: [] });
-    res.json(getSuggestions(q, 5));
+    const field = ['books', 'authors', 'series'].includes(String(req.query.field || ''))
+      ? String(req.query.field)
+      : 'books';
+    res.json(getSuggestions(q, 5, field));
+  });
+
+  /** Unified search hub: totals for books / authors / series before field drilldown. */
+  app.get('/api/search', requireBrowseAuth, (req, res) => {
+    const q = String(req.query.q || '').trim();
+    if (!q) {
+      return res.json({
+        query: '',
+        books: { total: 0 },
+        authors: { total: 0 },
+        series: { total: 0 }
+      });
+    }
+    const cacheKey = `api:search:overview:${q}`;
+    const result = getCachedPageData(cacheKey, () => searchOverview({ query: q }), PAGE_CACHE_TTL_MS);
+    res.json(result);
+  });
+
+  /** Genres present in books matching q + filters (excludes genre filter for faceting). */
+  app.get('/api/search/genres', requireBrowseAuth, (req, res) => {
+    const q = String(req.query.q || '').trim();
+    const lang = String(req.query.lang || '').trim();
+    const format = String(req.query.format || '').trim();
+    const year = Number(req.query.year) || 0;
+    const minRate = Math.min(5, Math.max(0, Math.floor(Number(req.query.minRate) || 0)));
+    const hasSeries = parseHasSeries(req.query.hasSeries);
+    const cacheKey = `api:search:genres:${q}:${lang}:${format}:${year}:${minRate}:${hasSeries}`;
+    const result = getCachedPageData(
+      cacheKey,
+      () => listSearchGenres({ query: q, lang, format, year, minRate, hasSeries }),
+      PAGE_CACHE_TTL_MS
+    );
+    res.json(result);
   });
 
   app.get('/api/library/:view(recent|continue|read|recommended)', requireBrowseAuth, (req, res) => {
@@ -93,7 +131,9 @@ export function registerBrowseApiRoutes(app) {
       () => searchCatalog({ query, page, pageSize, field, sort, order, genre, letter, lang, format, year, minRate, hasSeries }),
       PAGE_CACHE_TTL_MS
     );
-    res.json({ items: result.items, total: result.total, page, pageSize, field: result.field });
+    const payload = { items: result.items, total: result.total, page, pageSize, field: result.field };
+    if (result.searchHints) payload.searchHints = result.searchHints;
+    res.json(payload);
   });
 
   app.get('/api/browse/authors', requireBrowseAuth, (req, res) => {

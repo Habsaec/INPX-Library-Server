@@ -40,6 +40,7 @@ const DIRS = [
   'src',
   'public',
   'scripts',
+  'assets',
 ];
 
 // --- Individual files from project root ---

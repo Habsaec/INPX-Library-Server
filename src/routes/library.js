@@ -67,10 +67,12 @@ import {
   resolveSeriesCatalogName,
   recordReadingHistory,
   searchCatalog,
+  searchOverview,
   getSourceRoot,
   effectiveSourceFlibustaForBook,
   splitAuthorValues,
   listGenresGrouped,
+  listSearchGenres,
   hasContinueBooks
 } from '../inpx.js';
 import { getDistinctLanguages, getDistinctFormats, parseGenreList, parseHasSeries } from '../inpx.js';
@@ -253,7 +255,7 @@ export function registerLibraryRoutes(app, deps) {
   const {
     getCachedStats,
     templates: {
-      renderHome, renderCatalog, renderLibraryView, renderBrowsePage,
+      renderHome, renderCatalog, renderSearchOverview, renderLibraryView, renderBrowsePage,
       renderFacetBooks, renderAuthorFacetPage, renderAuthorOutsideSeriesPage,
       renderBook, renderFavorites, renderShelves, renderShelfDetail, renderReader
     }
@@ -304,7 +306,34 @@ export function registerLibraryRoutes(app, deps) {
     const year = Number(req.query.year) || 0;
     const minRate = Math.min(5, Math.max(0, Math.floor(Number(req.query.minRate) || 0)));
     const hasSeries = parseHasSeries(req.query.hasSeries);
-    const field = ['books', 'authors', 'series'].includes(String(req.query.field || '')) ? String(req.query.field) : 'books';
+    const fieldRaw = String(req.query.field || '').trim();
+    const hasExplicitField = ['books', 'authors', 'series'].includes(fieldRaw);
+    const hasFilterDims = Boolean(
+      genres.length || lang || format || year || minRate >= 1 || hasSeries === 0 || hasSeries === 1 || letter
+    );
+    const stats = getCachedStats();
+    const user = req.user || null;
+    const readBookIds = user ? getReadBookIdSet(user.username) : null;
+
+    // Main search (q without field) → hub with books/authors/series counts.
+    if (query.trim() && !hasExplicitField && !hasFilterDims) {
+      const overview = getCachedPageData(
+        `catalog:search-overview:${query.trim()}`,
+        () => searchOverview({ query }),
+        PAGE_CACHE_TTL_MS
+      );
+      return res.send(renderSearchOverview({
+        overview,
+        query: query.trim(),
+        user,
+        stats,
+        indexStatus: getIndexStatus(),
+        csrfToken: req.csrfToken || '',
+        readBookIds
+      }));
+    }
+
+    const field = hasExplicitField ? fieldRaw : 'books';
     const isBookField = field === 'books';
     const bookSorts = ['recent', 'title', 'author', 'series', 'rating'];
     const entitySorts = ['name', 'count'];
@@ -313,14 +342,42 @@ export function registerLibraryRoutes(app, deps) {
     const order = String(req.query.order || '');
     const page = safePage(req.query.page);
     const pageSize = 24;
-    const stats = getCachedStats();
     const cacheKey = `catalog:${field}:${sort}:${order}:${genre}:${letter}:${lang}:${format}:${year}:${minRate}:${hasSeries}:${query}:p${page}`;
     const result = getCachedPageData(cacheKey, () => searchCatalog({ query, field, page, pageSize, sort, order, genre, letter, lang, format, year, minRate, hasSeries }));
-    const user = req.user || null;
-    const readBookIds = user ? getReadBookIdSet(user.username) : null;
     const langs = getDistinctLanguages();
     const formats = getDistinctFormats();
-    const genreOptions = getCachedPageData('catalog:genre-options', () => listGenresGrouped({ sort: 'name' }), PAGE_CACHE_TTL_MS);
+    const allGenreOptions = getCachedPageData('catalog:genre-options', () => listGenresGrouped({ sort: 'name' }), PAGE_CACHE_TTL_MS);
+    // Faceted genres: when search/filters active, only genres present in matching books.
+    const hasGenreScope = Boolean(
+      query.trim()
+      || lang
+      || format
+      || year
+      || minRate >= 1
+      || hasSeries === 0
+      || hasSeries === 1
+    );
+    let genreOptions = allGenreOptions;
+    if (isBookField && hasGenreScope) {
+      const scoped = getCachedPageData(
+        `catalog:search-genres:${query.trim()}:${lang}:${format}:${year}:${minRate}:${hasSeries}`,
+        () => listSearchGenres({ query: query.trim(), lang, format, year, minRate, hasSeries }),
+        PAGE_CACHE_TTL_MS
+      );
+      const allowed = new Set(allGenreOptions.map((g) => g.name));
+      const byName = new Map(allGenreOptions.map((g) => [g.name, g]));
+      let items = (scoped.items || []).filter((g) => g?.name && allowed.has(g.name));
+      for (const selected of genres) {
+        if (!items.some((g) => g.name === selected)) {
+          const fromAll = byName.get(selected);
+          items = [{
+            name: selected,
+            displayName: fromAll?.displayName || selected
+          }, ...items];
+        }
+      }
+      if (items.length) genreOptions = items;
+    }
     res.send(renderCatalog({
       ...result, page, pageSize, query, field, sort, order, genre, genres, letter, lang, format, year,
       minRate, hasSeries, langs, formats, genreOptions, user, stats,

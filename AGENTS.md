@@ -19,10 +19,13 @@ Key endpoints for reader:
 - `POST /api/books/:id/position` — CAS write; requires `positionVersion: 4` and `baseRevision`, returns a new `revision`; stale writes receive `409 { current }`, legacy clients receive `428`; marks read at `progress >= 99` and clears that status when rereading drops below 95%
 - `GET /api/books/:id/reader-sync-meta` — bookmark/annotation revs and position sync metadata
 - `GET /api/profile` — user stats, recent books, bookmarks, annotations (Android profile screen)
+- `GET /api/favorites` — favorite authors (`name`, `displayName`, `bookCount`, `coverBookId`) and series (`name`, `displayName`, `bookCount`, `previewBookIds`)
 - `GET /api/reader-activity-sync-meta` — read-state and reading-history revs
 - `POST /api/reading-history/:id` — record `lastOpenedAt` when a book is opened
 - `DELETE /api/reading-history/:id` — remove a reading-history entry
 - Cross-device reading position uses server revisions/CAS; web reader and Android prompt when both the local position and a newer server revision changed
+- `GET /api/search?q=` — unified search hub: `{ query, books:{total, capped?}, authors:{total}, series:{total} }`; book totals are capped (≤10k) for speed; drilldown via `GET /api/catalog?q=&field=books|authors|series`
+- `GET /api/search/genres?q=` — genres present in matching books (optional `format` / `year` / `minRate` / `hasSeries`); used by filter sheet facets
 - `GET /api/catalog` — additive filters (AND across dimensions): `genre` (single, CSV, or repeated; multiple genres = OR — at least one), `lang`, `format`, `year`, `minRate` (1–5), `hasSeries` (`1` = in a series, `0` = standalone), plus existing `q` / `letter` / `field` / `sort`
 
 ### OIDC / SSO (web login)

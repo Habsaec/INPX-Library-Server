@@ -292,6 +292,8 @@
   "catalog.queryPhrase": " for query “{{q}}” {{scope}}",
   "catalog.emptyTitle": "Nothing found",
   "catalog.emptyText": "Simplify the query, change the search mode, or clear filters — then try the catalog again.",
+  "catalog.searchHintsTitle": "Found in another section",
+  "catalog.didYouMean": "Did you mean",
   "catalog.resetSearch": "Reset search",
   "catalog.allLanguages": "All languages",
   "catalog.allFormats": "All formats",

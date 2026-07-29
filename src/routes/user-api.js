@@ -11,7 +11,7 @@ import {
 } from '../db.js';
 import {
   getBookById, getBooksByIds, getReadingHistory, getBookmarks, getFavoriteAuthors, getFavoriteSeries,
-  getFavoriteAuthorsLight, getFavoriteSeriesLight, getBookmarksPage,
+  getBookmarksPage,
   isBookmarked, toggleBookmark, addBookmarksIfMissing,
   toggleFavoriteAuthor, toggleFavoriteSeries, getAllBookIdsByFacet,
   toggleReadBook, addReadBooksIfMissing, isSeriesFullyRead, removeReadBooksForSeries
@@ -50,8 +50,8 @@ export function registerUserApiRoutes(app, deps) {
 
   app.get('/api/favorites', requireApiAuth, (req, res) => {
     res.json({
-      authors: getFavoriteAuthorsLight(req.user.username, 20),
-      series: getFavoriteSeriesLight(req.user.username, 20)
+      authors: getFavoriteAuthors(req.user.username, 200),
+      series: getFavoriteSeries(req.user.username, 200),
     });
   });
 

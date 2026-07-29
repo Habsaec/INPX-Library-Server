@@ -754,23 +754,10 @@ export function renderAccountNav(active = '', counts = {}) {
 }
 
 function renderTopbarSearch(query = '', field = 'all') {
-  const normalizedField = field === 'authors' || field === 'series' ? field : 'books';
   const placeholderDefault = t('search.placeholder');
-  const placeholderSeries = t('search.placeholderSeries');
-  const activePlaceholder = normalizedField === 'series' ? placeholderSeries : placeholderDefault;
   return `
     <form class="topbar-search" data-smart-search data-catalog-loading action="/catalog" method="get" autocomplete="off">
-      <div class="search-suggest-wrap">
-        <input id="global-search-input" name="q" value="${escapeHtml(query)}" placeholder="${escapeHtml(activePlaceholder)}" data-suggest-input data-placeholder-default="${escapeHtml(placeholderDefault)}" data-placeholder-series="${escapeHtml(placeholderSeries)}" aria-label="${escapeHtml(activePlaceholder)}" aria-autocomplete="list" aria-haspopup="listbox" aria-expanded="false" aria-controls="global-search-suggest-list" role="combobox">
-        <div class="search-suggest-dropdown" id="global-search-suggest-list" data-suggest-dropdown role="listbox" aria-label="${escapeHtml(t('search.submit'))}" hidden></div>
-      </div>
-      <select name="field" data-search-scope>
-        ${[
-          ['books', t('search.books')],
-          ['authors', t('search.authors')],
-          ['series', t('search.series')]
-        ].map(([val,label]) => `<option value="${val}" ${val === normalizedField ? 'selected' : ''}>${escapeHtml(label)}</option>`).join('')}
-      </select>
+      <input id="global-search-input" name="q" value="${escapeHtml(query)}" placeholder="${escapeHtml(placeholderDefault)}" aria-label="${escapeHtml(placeholderDefault)}">
       <button type="submit">${escapeHtml(t('search.submit'))}</button>
     </form>`;
 }

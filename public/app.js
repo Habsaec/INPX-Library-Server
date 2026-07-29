@@ -2589,43 +2589,12 @@ function attachSmartSearch() {
   const forms = [...document.querySelectorAll('[data-smart-search]')];
   if (!forms.length) return;
 
-  const scopeRoutes = {
-    authors: '/authors',
-    series: '/series'
-  };
-
-  const syncSearchPlaceholder = (form) => {
-    const scope = form.querySelector('[data-search-scope]');
-    const queryInput = form.querySelector('[name="q"]');
-    if (!scope || !queryInput) return;
-    const seriesPh = queryInput.getAttribute('data-placeholder-series') || '';
-    const defaultPh = queryInput.getAttribute('data-placeholder-default') || '';
-    const next = scope.value === 'series' && seriesPh ? seriesPh : (defaultPh || queryInput.placeholder);
-    queryInput.placeholder = next;
-    queryInput.setAttribute('aria-label', next);
-  };
-
+  // Main search submits to /catalog?q=… (no field) → unified overview hub.
+  // Scoped drilldown uses /catalog?q=…&field=books|authors|series from overview links.
   for (const form of forms) {
-    const scope = form.querySelector('[data-search-scope]');
-    if (scope) {
-      syncSearchPlaceholder(form);
-      scope.addEventListener('change', () => syncSearchPlaceholder(form));
-    }
-
-    form.addEventListener('submit', (e) => {
-      const scopeEl = form.querySelector('[data-search-scope]');
+    form.addEventListener('submit', () => {
       const queryInput = form.querySelector('[name="q"]');
-      const q = (queryInput?.value || '').trim();
-      const field = scopeEl?.value || 'all';
-      const route = scopeRoutes[field];
-
-      if (!route) {
-        return;
-      }
-
-      e.preventDefault();
-      const browseSort = field === 'languages' ? 'count' : 'name';
-      window.location.href = q ? `${route}?q=${encodeURIComponent(q)}&sort=${browseSort}` : route;
+      if (queryInput) queryInput.value = (queryInput.value || '').trim();
     });
   }
 }
@@ -2806,128 +2775,6 @@ function attachFormSubmitSpinners() {
       }, 0);
     });
   }
-}
-
-function attachSearchSuggest() {
-  const input = document.querySelector('[data-suggest-input]');
-  const dropdown = document.querySelector('[data-suggest-dropdown]');
-  if (!input || !dropdown) return;
-
-  let timer = null;
-  let activeIdx = -1;
-  let items = [];
-
-  const setExpanded = (open) => {
-    input.setAttribute('aria-expanded', open ? 'true' : 'false');
-  };
-  const hide = () => {
-    dropdown.hidden = true;
-    activeIdx = -1;
-    input.removeAttribute('aria-activedescendant');
-    setExpanded(false);
-  };
-  const show = () => {
-    dropdown.hidden = false;
-    setExpanded(true);
-  };
-
-  const render = (data) => {
-    const sections = [];
-    let itemSeq = 0;
-    if (data.books?.length) {
-      sections.push(`<div class="suggest-group-title">${escapeHtml(uiT('search.books'))}</div>`);
-      data.books.forEach((b) => {
-        const itemId = `suggest-item-${itemSeq++}`;
-        sections.push(`<a class="suggest-item" id="${itemId}" href="${bookPagePath(b.id)}" data-suggest-item role="option"><span class="suggest-item-title">${escapeHtml(b.title)}</span><span class="suggest-item-sub">${escapeHtml(b.authors || '')}</span></a>`);
-      });
-    }
-    if (data.authors?.length) {
-      sections.push(`<div class="suggest-group-title">${escapeHtml(uiT('search.authors'))}</div>`);
-      data.authors.forEach((a) => {
-        const itemId = `suggest-item-${itemSeq++}`;
-        sections.push(`<a class="suggest-item" id="${itemId}" href="/facet/authors/${encodeURIComponent(a.name)}" data-suggest-item role="option"><span class="suggest-item-title">${escapeHtml(a.displayName || a.name)}</span><span class="suggest-item-sub">${uiCountLabel('book', a.bookCount)}</span></a>`);
-      });
-    }
-    if (data.series?.length) {
-      sections.push(`<div class="suggest-group-title">${escapeHtml(uiT('search.series'))}</div>`);
-      data.series.forEach((s) => {
-        const itemId = `suggest-item-${itemSeq++}`;
-        sections.push(`<a class="suggest-item" id="${itemId}" href="/facet/series/${encodeURIComponent(s.name)}" data-suggest-item role="option"><span class="suggest-item-title">${escapeHtml(s.displayName || s.name)}</span><span class="suggest-item-sub">${uiCountLabel('book', s.bookCount)}</span></a>`);
-      });
-    }
-    if (!sections.length) {
-      dropdown.innerHTML = `<div class="suggest-empty">${escapeHtml(uiT('browse.empty'))}</div>`;
-      dropdown.removeAttribute('aria-busy');
-    } else {
-      dropdown.innerHTML = sections.join('');
-      dropdown.removeAttribute('aria-busy');
-    }
-    items = [...dropdown.querySelectorAll('[data-suggest-item]')];
-    activeIdx = -1;
-    show();
-  };
-
-  const setActive = (idx) => {
-    items.forEach((el, i) => {
-      const active = i === idx;
-      el.classList.toggle('suggest-active', active);
-      el.setAttribute('aria-selected', active ? 'true' : 'false');
-    });
-    activeIdx = idx;
-    if (idx >= 0 && items[idx]) {
-      const activeItem = items[idx];
-      input.setAttribute('aria-activedescendant', activeItem.id);
-      activeItem.scrollIntoView({ block: 'nearest' });
-    } else {
-      input.removeAttribute('aria-activedescendant');
-    }
-  };
-
-  input.addEventListener('input', () => {
-    clearTimeout(timer);
-    const q = input.value.trim();
-    if (q.length < 2) { hide(); return; }
-    dropdown.setAttribute('aria-busy', 'true');
-    timer = setTimeout(async () => {
-      try {
-        const r = await fetch(`/api/search/suggest?q=${encodeURIComponent(q)}`);
-        if (r.ok) render(await r.json());
-        else hide();
-      } catch {}
-      finally {
-        dropdown.removeAttribute('aria-busy');
-      }
-    }, 250);
-  });
-
-  input.addEventListener('keydown', (e) => {
-    if (e.key === 'ArrowDown' && dropdown.hidden && items.length) {
-      e.preventDefault();
-      show();
-      setActive(0);
-      return;
-    }
-    if (dropdown.hidden || !items.length) return;
-    if (e.key === 'ArrowDown') { e.preventDefault(); setActive(Math.min(activeIdx + 1, items.length - 1)); }
-    else if (e.key === 'ArrowUp') { e.preventDefault(); setActive(Math.max(activeIdx - 1, 0)); }
-    else if (e.key === 'Enter' && activeIdx >= 0) { e.preventDefault(); items[activeIdx].click(); }
-    else if (e.key === 'Escape') { hide(); }
-  });
-
-  document.addEventListener('click', (e) => {
-    if (!dropdown.contains(e.target) && e.target !== input) hide();
-  });
-
-  input.addEventListener('focus', () => {
-    if (input.value.trim().length >= 2 && items.length) show();
-  });
-  input.addEventListener('blur', () => {
-    window.setTimeout(() => {
-      const active = document.activeElement;
-      if (active && dropdown.contains(active)) return;
-      hide();
-    }, 120);
-  });
 }
 
 function isPageDownloadAllowed() {
@@ -5950,7 +5797,6 @@ attachOperationActions();
 attachSidecarDiagnostics();
 attachCatalogNavLoading();
 attachSmartSearch();
-attachSearchSuggest();
 attachBookIllustrationLightbox();
 loadHomeRecommendationsProgressively();
 loadHomeContinueProgressively();

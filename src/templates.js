@@ -13,6 +13,7 @@ export { renderLogin, renderAdminLogin, renderRegister, renderForgotPassword, re
 export {
   renderHome,
   renderCatalog,
+  renderSearchOverview,
   renderLibraryView,
   renderBook,
   renderFavorites,

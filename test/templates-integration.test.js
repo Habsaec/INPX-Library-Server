@@ -16,7 +16,7 @@ test('templates.js barrel exports all expected symbols', async () => {
     // auth
     'renderLogin', 'renderAdminLogin', 'renderRegister', 'renderForgotPassword', 'renderResetPassword',
     // library
-    'renderHome', 'renderCatalog', 'renderLibraryView', 'renderBook',
+    'renderHome', 'renderCatalog', 'renderSearchOverview', 'renderLibraryView', 'renderBook',
     'renderFavorites', 'renderBrowsePage', 'renderFacetBooks',
     'renderAuthorFacetPage', 'renderAuthorOutsideSeriesPage',
     'renderShelves', 'renderShelfDetail', 'renderReader', 'renderProfile',

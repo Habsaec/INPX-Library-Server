@@ -305,6 +305,8 @@
   "catalog.queryPhrase": " по запросу «{{q}}» {{scope}}",
   "catalog.emptyTitle": "Ничего не найдено",
   "catalog.emptyText": "Упростите запрос, смените режим поиска или сбросьте фильтры — затем откройте каталог заново.",
+  "catalog.searchHintsTitle": "Нашли в другом разделе",
+  "catalog.didYouMean": "Возможно, вы имели в виду",
   "catalog.resetSearch": "Сбросить поиск",
   "catalog.allLanguages": "Все языки",
   "catalog.allFormats": "Все форматы",

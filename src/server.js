@@ -74,6 +74,7 @@ import {
   renderFavorites,
   renderBrowsePage,
   renderCatalog,
+  renderSearchOverview,
   renderFacetBooks,
   renderAuthorFacetPage,
   renderAuthorOutsideSeriesPage,
@@ -958,7 +959,7 @@ app.get('/admin/live-logs', requireAdminWeb, (req, res) => {
 registerLibraryRoutes(app, {
   getCachedStats,
   templates: {
-    renderHome, renderCatalog, renderLibraryView, renderBrowsePage,
+    renderHome, renderCatalog, renderSearchOverview, renderLibraryView, renderBrowsePage,
     renderFacetBooks, renderAuthorFacetPage, renderAuthorOutsideSeriesPage,
     renderBook, renderFavorites, renderShelves, renderShelfDetail, renderReader
   }
