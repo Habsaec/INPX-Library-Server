@@ -27,6 +27,8 @@ Key endpoints for reader:
 - `GET /api/search?q=` — unified search hub: `{ query, books:{total, capped?}, authors:{total}, series:{total} }`; book totals are capped (≤10k) for speed; drilldown via `GET /api/catalog?q=&field=books|authors|series`
 - `GET /api/search/genres?q=` — genres present in matching books (optional `format` / `year` / `minRate` / `hasSeries`); used by filter sheet facets
 - `GET /api/catalog` — additive filters (AND across dimensions): `genre` (single, CSV, or repeated; multiple genres = OR — at least one), `lang`, `format`, `year`, `minRate` (1–5), `hasSeries` (`1` = in a series, `0` = standalone), plus existing `q` / `letter` / `field` / `sort`
+- `POST /api/auth/pairing` — authenticated; creates a one-time 10-minute QR pairing code (`payload` JSON + `svg`) for Android app sign-in; does not include the password
+- `POST /api/auth/pairing/redeem` — public + rate-limited; exchanges pairing `code` for a device Bearer token (`deviceToken`, `deviceTokenId`, `username`, `serverUrl`)
 
 ### OIDC / SSO (web login)
 

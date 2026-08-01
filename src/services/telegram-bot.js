@@ -10,7 +10,16 @@ import cluster from 'node:cluster';
 import sharp from 'sharp';
 import { config } from '../config.js';
 import { getMeta, setMeta, resolveTelegramRuntimeConfig, getTelegramSettings, getUserByTelegramId, completeTelegramLink, unlinkTelegramByTelegramId, getUserShelves, getShelfBooks, getShelfById, isTelegramBotAllowedForUser, registerTelegramChat, removeTelegramChat, listTelegramAnnounceChats, getPublicBaseUrlSetting, syncTelegramChatsFromLinkedUsers } from '../db.js';
-import { searchCatalog, getBookById, getBooksByFacet, getAuthorBooksGrouped, getFavoriteAuthorsLight, getFavoriteSeriesLight } from '../inpx.js';
+import {
+  searchCatalog,
+  searchOverview,
+  getBookById,
+  getBooksByFacet,
+  getAuthorBooksGrouped,
+  getFavoriteAuthorsLight,
+  getFavoriteSeriesLight,
+  findDidYouMeanSuggestions,
+} from '../inpx.js';
 import { getRecommendedLibraryView } from './recommendations.js';
 import { resolveDownload } from '../conversion.js';
 import { getDetailsFull, resolveBestCoverDetails } from '../routes/library.js';
@@ -335,7 +344,8 @@ function buildBotHelpMessage() {
   const lines = [
     '🔍 <b>Как пользоваться</b>',
     '',
-    '<b>Просто напишите запрос</b> — бот найдёт автора, серию или книги.',
+    '<b>Просто напишите запрос</b> — сначала счётчики: Книги / Авторы / Серии.',
+    'Откройте раздел кнопкой — полный список, как на сайте.',
     '',
     'У автора сначала показываются <b>серии</b>, затем книги серии по номерам.',
     'Каждая книга — карточка с <b>обложкой</b> и <b>аннотацией</b> (если есть).',
@@ -1170,33 +1180,65 @@ async function doBookSearch(chatId, query, page = 1, { fresh = false } = {}) {
   await sendBookResults(chatId, result.items, page, result.total, `🔍 <b>Книги:</b> ${esc(q)} — найдено: ${result.total}`);
 }
 
-/** Умный поиск: 1 автор → серии; 1 серия → книги; иначе книги. */
-async function doSmartSearch(chatId, query) {
+/**
+ * Умный поиск (свободный текст) — тот же хаб, что `/catalog?q=` и `/api/search`:
+ * только счётчики Книги / Авторы / Серии; список открывается по кнопке раздела.
+ */
+async function doSmartSearch(chatId, query, { fresh = true } = {}) {
   const q = query.trim();
   if (!q) return;
-  resetNavForNewSearch(chatId);
+  if (fresh) resetNavForNewSearch(chatId);
 
-  const authors = searchCatalog({ query: q, field: 'authors', page: 1, pageSize: 2, sort: 'name' });
-  if (authors.total === 1) {
-    await doAuthorOverview(chatId, authors.items[0].name, 1, { fresh: false });
-    return;
-  }
-  if (authors.total > 1) {
-    await doAuthorSearch(chatId, q, 1, { fresh: false });
+  const overview = searchOverview({ query: q });
+  const booksTotal = Math.max(0, Math.floor(Number(overview.books?.total) || 0));
+  const authorsTotal = Math.max(0, Math.floor(Number(overview.authors?.total) || 0));
+  const seriesTotal = Math.max(0, Math.floor(Number(overview.series?.total) || 0));
+  const booksLabel = overview.books?.capped ? `${booksTotal}+` : String(booksTotal);
+
+  if (!booksTotal && !authorsTotal && !seriesTotal) {
+    const typos = findDidYouMeanSuggestions(q, 3);
+    let msg = `😔 По запросу «${esc(q)}» ничего не найдено.`;
+    if (typos.length) {
+      msg += '\n\nВозможно, вы имели в виду:';
+      const rows = typos.map((hint) => {
+        const key = regNavKey({ kind: 'smart-query', query: hint.query });
+        return [{ text: hint.label || hint.query, callback_data: `fa:${key}` }];
+      });
+      await sendText(chatId, msg, { reply_markup: { inline_keyboard: rows } });
+      return;
+    }
+    await sendText(chatId, `${msg}\nПопробуйте <code>/author</code> или <code>/series</code>.`);
     return;
   }
 
-  const series = searchCatalog({ query: q, field: 'series', page: 1, pageSize: 2, sort: 'name', nameOnly: true });
-  if (series.total === 1) {
-    await doSeriesBooks(chatId, series.items[0].name, 1, { fresh: false });
-    return;
-  }
-  if (series.total > 1) {
-    await doSeriesSearch(chatId, q, 1, { fresh: false });
-    return;
+  setSearchState(chatId, {
+    kind: 'smart',
+    query: q,
+    page: 1,
+    total: booksTotal + authorsTotal + seriesTotal,
+    booksTotal,
+    authorsTotal,
+    seriesTotal,
+  });
+
+  const session = getChatSession(chatId);
+  await clearListMessages(chatId);
+
+  const rows = [];
+  if (booksTotal > 0) rows.push([{ text: `Книги · ${booksLabel}`, callback_data: 'sm:b' }]);
+  if (authorsTotal > 0) rows.push([{ text: `Авторы · ${authorsTotal}`, callback_data: 'sm:a' }]);
+  if (seriesTotal > 0) rows.push([{ text: `Серии · ${seriesTotal}`, callback_data: 'sm:s' }]);
+  if (canNavigateBack(chatId)) {
+    rows.push([{ text: '⬅️ Назад', callback_data: 'nav:back' }]);
   }
 
-  await doBookSearch(chatId, q, 1, { fresh: false });
+  const headerRes = await sendText(
+    chatId,
+    `🔍 <b>Результаты поиска</b>\nЗапрос «${esc(q)}»\n\n` +
+      `<i>Откройте раздел, чтобы увидеть полный список</i>`,
+    { reply_markup: { inline_keyboard: rows } },
+  );
+  if (headerRes?.ok) session.messages.headerId = headerRes.result.message_id;
 }
 
 async function doAuthorSearch(chatId, query, page = 1, { fresh = false } = {}) {
@@ -1378,6 +1420,9 @@ async function openNavEntry(chatId, entry, page = 1) {
     case 'shelf':
       await doShelfBooks(chatId, entry.username, entry.shelfId, entry.shelfName, page);
       break;
+    case 'smart-query':
+      await doSmartSearch(chatId, entry.query, { fresh: false });
+      break;
     default:
       await sendText(chatId, '⚠️ Ссылка устарела. Повторите поиск.');
   }
@@ -1386,7 +1431,8 @@ async function openNavEntry(chatId, entry, page = 1) {
 async function restoreSearchState(chatId, state) {
   if (!state) return;
   setSearchState(chatId, state);
-  if (state.kind === 'books') await doBookSearch(chatId, state.query, state.page);
+  if (state.kind === 'smart') await doSmartSearch(chatId, state.query, { fresh: false });
+  else if (state.kind === 'books') await doBookSearch(chatId, state.query, state.page);
   else if (state.kind === 'authors') await doAuthorSearch(chatId, state.query, state.page);
   else if (state.kind === 'series') await doSeriesSearch(chatId, state.query, state.page);
   else if (state.kind === 'author-overview') await doAuthorOverview(chatId, state.authorName, state.page);
@@ -1533,6 +1579,18 @@ async function handleUpdate(upd) {
         }
         pushNavSnapshot(chatId);
         await openNavEntry(chatId, entry, 1);
+      } else if (data === 'sm:b' || data === 'sm:a' || data === 'sm:s') {
+        await answerCb(cq.id);
+        const state = getSearchState(chatId);
+        const q = String(state?.query || '').trim();
+        if (!q || state?.kind !== 'smart') {
+          await sendText(chatId, '⚠️ Ссылка устарела. Повторите поиск.');
+          return;
+        }
+        pushNavSnapshot(chatId);
+        if (data === 'sm:b') await doBookSearch(chatId, q, 1, { fresh: false });
+        else if (data === 'sm:a') await doAuthorSearch(chatId, q, 1, { fresh: false });
+        else await doSeriesSearch(chatId, q, 1, { fresh: false });
       } else if (data === 'nav:back') {
         await answerCb(cq.id);
         const prev = popNavSnapshot(chatId);

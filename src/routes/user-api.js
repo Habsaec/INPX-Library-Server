@@ -7,8 +7,11 @@ import {
   db, getUserShelves, getShelfById, createShelf, updateShelf, deleteShelf,
   addBookToShelf, removeBookFromShelf, getShelfBooks, getBookShelves,
   getEreaderEmail, setEreaderEmail, getSmtpSettings, getUserByUsername, isEreaderEmailAllowedForUser,
-  getMeta, setMeta,
+  getMeta, setMeta, createAppPairingToken, consumeAppPairingToken,
 } from '../db.js';
+import { resolvePublicBaseUrl } from '../services/password-reset.js';
+import { isPairingRedeemRateLimited, registerPairingRedeemAttempt } from '../services/rate-limiter.js';
+import QRCode from 'qrcode';
 import {
   getBookById, getBooksByIds, getReadingHistory, getBookmarks, getFavoriteAuthors, getFavoriteSeries,
   getBookmarksPage,
@@ -496,24 +499,29 @@ export function registerUserApiRoutes(app, deps) {
     return crypto.createHash('sha256').update(String(token)).digest('hex');
   }
 
-  app.post('/api/auth/device', requireApiAuth, (req, res) => {
+  function mintDeviceToken(username, deviceNameRaw) {
     const token = crypto.randomBytes(32).toString('hex');
     const tokenId = token.slice(0, 16);
-    const deviceName = String(req.body?.deviceName || 'INPX Reader').slice(0, 128);
-    setMeta(deviceTokenMetaKey(req.user.username, tokenId), JSON.stringify({
-      user: req.user.username,
+    const deviceName = String(deviceNameRaw || 'INPX Reader').slice(0, 128);
+    setMeta(deviceTokenMetaKey(username, tokenId), JSON.stringify({
+      user: username,
       tokenHash: hashDeviceToken(token),
       deviceName,
       createdAt: new Date().toISOString(),
     }));
-    setMeta(`device_token_hash:${hashDeviceToken(token)}`, `${req.user.username}:${tokenId}`);
-    res.json({ ok: true, token, tokenId, deviceName });
+    setMeta(`device_token_hash:${hashDeviceToken(token)}`, `${username}:${tokenId}`);
+    return { token, tokenId, deviceName };
+  }
+
+  app.post('/api/auth/device', requireApiAuth, (req, res) => {
+    const issued = mintDeviceToken(req.user.username, req.body?.deviceName);
+    res.json({ ok: true, token: issued.token, tokenId: issued.tokenId, deviceName: issued.deviceName });
   });
 
   app.delete('/api/auth/device/:tokenId', requireApiAuth, (req, res) => {
     const tokenId = String(req.params.tokenId || '').slice(0, 32);
     if (!tokenId) {
-      return apiFail(res, 400, ApiErrorCode.BAD_REQUEST, t('api.error.unknown'));
+      return apiFail(res, 400, ApiErrorCode.VALIDATION, t('api.error.unknown'));
     }
     const metaKey = deviceTokenMetaKey(req.user.username, tokenId);
     const raw = getMeta(metaKey);
@@ -525,5 +533,66 @@ export function registerUserApiRoutes(app, deps) {
     }
     setMeta(metaKey, '');
     res.json({ ok: true });
+  });
+
+  app.post('/api/auth/pairing', requireApiAuth, async (req, res) => {
+    try {
+      const { token, expiresAt } = createAppPairingToken(req.user.username);
+      const serverUrl = resolvePublicBaseUrl(req);
+      if (!serverUrl) {
+        return apiFail(res, 500, ApiErrorCode.INTERNAL, t('profile.appPair.errorNoServerUrl'));
+      }
+      const payloadObj = {
+        type: 'inpx-pair',
+        v: 1,
+        url: serverUrl,
+        code: token,
+        user: req.user.username,
+      };
+      const payload = JSON.stringify(payloadObj);
+      const svg = await QRCode.toString(payload, {
+        type: 'svg',
+        margin: 1,
+        errorCorrectionLevel: 'M',
+        width: 256,
+      });
+      res.json({
+        ok: true,
+        serverUrl,
+        username: req.user.username,
+        code: token,
+        expiresAt,
+        payload,
+        svg,
+      });
+    } catch (err) {
+      return apiFail(res, 500, ApiErrorCode.INTERNAL, err?.message || t('api.error.unknown'));
+    }
+  });
+
+  app.post('/api/auth/pairing/redeem', (req, res) => {
+    if (isPairingRedeemRateLimited(req)) {
+      return apiFail(res, 429, ApiErrorCode.RATE_LIMITED, t('auth.rateLimitLogin'));
+    }
+    const code = String(req.body?.code || '').trim();
+    if (!code || code.length > 128) {
+      registerPairingRedeemAttempt(req);
+      return apiFail(res, 400, ApiErrorCode.PAIRING_INVALID, t('profile.appPair.errorInvalid'));
+    }
+    const consumed = consumeAppPairingToken(code);
+    if (!consumed) {
+      registerPairingRedeemAttempt(req);
+      return apiFail(res, 400, ApiErrorCode.PAIRING_INVALID, t('profile.appPair.errorInvalid'));
+    }
+    const issued = mintDeviceToken(consumed.username, req.body?.deviceName || 'INPX Reader');
+    const serverUrl = resolvePublicBaseUrl(req);
+    res.json({
+      ok: true,
+      serverUrl,
+      username: consumed.username,
+      deviceToken: issued.token,
+      deviceTokenId: issued.tokenId,
+      deviceName: issued.deviceName,
+    });
   });
 }

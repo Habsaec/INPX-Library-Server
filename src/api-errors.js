@@ -49,7 +49,8 @@ export const ApiErrorCode = Object.freeze({
   CONVERTER_MISSING: 'CONVERTER_MISSING',
   SMTP_ERROR: 'SMTP_ERROR',
   SERVICE_NOT_READY: 'SERVICE_NOT_READY',
-  UPDATE_LOG_READ_ERROR: 'UPDATE_LOG_READ_ERROR'
+  UPDATE_LOG_READ_ERROR: 'UPDATE_LOG_READ_ERROR',
+  PAIRING_INVALID: 'PAIRING_INVALID'
 });
 
 /** Ответ об ошибке с `ok: false`, машиночитаемым `code` и человекочитаемым `error`. */

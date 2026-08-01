@@ -248,6 +248,19 @@ function ensurePasswordResetSchema() {
   `);
 }
 
+function ensureAppPairingSchema() {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS app_pairing_tokens (
+      token TEXT PRIMARY KEY,
+      username TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (username) REFERENCES users(username) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_app_pairing_tokens_username ON app_pairing_tokens(username);
+  `);
+}
+
 
 function dedupeTelegramIds() {
   const duplicateIds = db.prepare(`
@@ -618,6 +631,56 @@ export function createTelegramLinkToken(username) {
   return { token, expiresAt };
 }
 
+const APP_PAIRING_TOKEN_TTL_MS = 10 * 60_000;
+
+function pruneExpiredAppPairingTokens() {
+  db.prepare(`DELETE FROM app_pairing_tokens WHERE expires_at < datetime('now')`).run();
+}
+
+export function createAppPairingToken(username) {
+  const normalizedUsername = String(username || '').trim();
+  const user = getUserByUsername(normalizedUsername);
+  if (!user) throw new Error('User not found');
+  if (user.blocked) throw new Error('Account is blocked');
+
+  db.prepare('DELETE FROM app_pairing_tokens WHERE username = ?').run(normalizedUsername);
+  pruneExpiredAppPairingTokens();
+
+  const token = crypto.randomBytes(24).toString('hex');
+  const expiresAt = new Date(Date.now() + APP_PAIRING_TOKEN_TTL_MS).toISOString();
+  db.prepare(`
+    INSERT INTO app_pairing_tokens(token, username, expires_at)
+    VALUES(?, ?, ?)
+  `).run(token, normalizedUsername, expiresAt);
+  return { token, expiresAt };
+}
+
+/**
+ * Consume a one-time app pairing token. Returns `{ username }` or null.
+ */
+export function consumeAppPairingToken(token) {
+  const normalizedToken = String(token || '').trim();
+  if (!normalizedToken) return null;
+
+  return db.transaction(() => {
+    pruneExpiredAppPairingTokens();
+    const row = db.prepare(`
+      SELECT token, username, expires_at AS expiresAt
+      FROM app_pairing_tokens
+      WHERE token = ?
+    `).get(normalizedToken);
+    if (!row || new Date(row.expiresAt).getTime() < Date.now()) {
+      if (row) db.prepare('DELETE FROM app_pairing_tokens WHERE token = ?').run(normalizedToken);
+      return null;
+    }
+
+    const user = getUserByUsername(row.username);
+    db.prepare('DELETE FROM app_pairing_tokens WHERE token = ?').run(normalizedToken);
+    if (!user || user.blocked) return null;
+    return { username: row.username };
+  })();
+}
+
 const PASSWORD_RESET_TOKEN_TTL_MS = 60 * 60 * 1000;
 
 function pruneExpiredPasswordResetTokens() {
@@ -934,6 +997,7 @@ export function deleteUser(username) {
     db.prepare(`DELETE FROM shelves WHERE username = ?`).run(normalizedUsername);
     db.prepare(`DELETE FROM telegram_link_tokens WHERE username = ?`).run(normalizedUsername);
     db.prepare(`DELETE FROM password_reset_tokens WHERE username = ?`).run(normalizedUsername);
+    db.prepare(`DELETE FROM app_pairing_tokens WHERE username = ?`).run(normalizedUsername);
     return db.prepare(`DELETE FROM users WHERE username = ?`).run(normalizedUsername).changes;
   })();
 }
@@ -1529,6 +1593,7 @@ WHERE rp.progress >= 99
   ensureTelegramLinkSchema();
   ensureTelegramChatsSchema();
   ensurePasswordResetSchema();
+  ensureAppPairingSchema();
   ensureBooksSchema();
   db.exec(`
     CREATE TABLE IF NOT EXISTS library_dedup_projection (

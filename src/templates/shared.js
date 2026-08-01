@@ -757,7 +757,10 @@ function renderTopbarSearch(query = '', field = 'all') {
   const placeholderDefault = t('search.placeholder');
   return `
     <form class="topbar-search" data-smart-search data-catalog-loading action="/catalog" method="get" autocomplete="off">
-      <input id="global-search-input" name="q" value="${escapeHtml(query)}" placeholder="${escapeHtml(placeholderDefault)}" aria-label="${escapeHtml(placeholderDefault)}">
+      <div class="search-suggest-wrap">
+        <input id="global-search-input" name="q" value="${escapeHtml(query)}" placeholder="${escapeHtml(placeholderDefault)}" aria-label="${escapeHtml(placeholderDefault)}" data-suggest-input autocomplete="off" aria-autocomplete="list" aria-haspopup="listbox" aria-expanded="false" aria-controls="global-search-suggest-list" role="combobox">
+        <div class="search-suggest-dropdown" id="global-search-suggest-list" data-suggest-dropdown role="listbox" aria-label="${escapeHtml(t('search.recentTitle'))}" hidden></div>
+      </div>
       <button type="submit">${escapeHtml(t('search.submit'))}</button>
     </form>`;
 }
@@ -1205,6 +1208,38 @@ function renderLoginLogoBlock() {
   return `<div class="login-brand-logo"><img src="${escapeHtml(src)}" alt="" class="login-logo-img" onerror="if(this.dataset.fallback!=='1'){this.dataset.fallback='1';this.src='/logo.png'}else{this.parentElement.style.display='none'}"></div>`;
 }
 
+/**
+ * QR pairing widget markup (filled by public/app.js).
+ * @param {'panel'|'sidebar'} variant
+ */
+export function renderAppPairWidget(variant = 'panel') {
+  if (variant === 'sidebar') {
+    return `
+      <div class="sidebar-app-pair" data-app-pair-root data-app-pair-variant="sidebar">
+        <button type="button" class="sidebar-app-pair-btn" data-app-pair-open aria-label="${escapeHtml(t('profile.appPair.sidebarAria'))}" title="${escapeHtml(t('profile.appPair.open'))}">
+          <span class="sidebar-app-pair-qr" data-app-pair-qr aria-hidden="true"></span>
+        </button>
+      </div>`;
+  }
+  return `
+    <div class="app-pair-panel" data-app-pair-root data-app-pair-variant="panel" data-app-pair-autoload="1">
+      <strong>${escapeHtml(t('profile.appPair.title'))}</strong>
+      <p class="muted app-pair-hint">${escapeHtml(t('profile.appPair.hint'))}</p>
+      <div class="app-pair-body">
+        <div class="app-pair-qr-wrap" data-app-pair-qr aria-hidden="true"></div>
+        <div class="app-pair-meta">
+          <div class="app-pair-meta-row"><span class="muted">${escapeHtml(t('profile.appPair.serverUrl'))}</span> <code data-app-pair-url></code></div>
+          <div class="app-pair-meta-row"><span class="muted">${escapeHtml(t('profile.appPair.username'))}</span> <code data-app-pair-user></code></div>
+          <p class="muted app-pair-expires" data-app-pair-expires></p>
+          <p class="app-pair-error" data-app-pair-error hidden></p>
+          <div class="actions">
+            <button type="button" class="button" data-app-pair-refresh>${escapeHtml(t('profile.appPair.refresh'))}</button>
+          </div>
+        </div>
+      </div>
+    </div>`;
+}
+
 function renderUserSidebar({
   query = '',
   field = 'all',
@@ -1214,16 +1249,20 @@ function renderUserSidebar({
   canAccessAdmin = false,
   csrfToken = ''
 }) {
+  const appPairFooter = user
+    ? `<div class="sidebar-footer">${renderAppPairWidget('sidebar')}</div>`
+    : '';
   return `
-    <aside class="sidebar" aria-label="${escapeHtml(t('aria.sidebar'))}">
-      <div class="brand">
-        <a href="/" class="brand-home-link" title="${escapeHtml(t('nav.home'))}">
-          ${renderBrandLogoImg()}
-          <h2>${escapeHtml(siteTitleForDisplay())}</h2>
-        </a>
-      </div>
-      ${renderSidebarNavigation(user, currentPath, stats)}
-      ${renderChromeAccountTools({
+    <aside class="sidebar sidebar-user" aria-label="${escapeHtml(t('aria.sidebar'))}">
+      <div class="sidebar-user-scroll">
+        <div class="brand">
+          <a href="/" class="brand-home-link" title="${escapeHtml(t('nav.home'))}">
+            ${renderBrandLogoImg()}
+            <h2>${escapeHtml(siteTitleForDisplay())}</h2>
+          </a>
+        </div>
+        ${renderSidebarNavigation(user, currentPath, stats)}
+        ${renderChromeAccountTools({
     isAdmin: false,
     canAccessAdmin,
     isAuthenticated: Boolean(user),
@@ -1231,6 +1270,8 @@ function renderUserSidebar({
     csrfToken,
     className: 'sidebar-tools'
   })}
+      </div>
+      ${appPairFooter}
     </aside>
     <div class="sidebar-overlay" data-sidebar-overlay></div>`;
 }

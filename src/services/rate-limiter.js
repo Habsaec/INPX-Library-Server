@@ -6,6 +6,7 @@ import { config } from '../config.js';
 
 const loginAttempts = new Map();
 const passwordResetAttempts = new Map();
+const pairingRedeemAttempts = new Map();
 const MAX_TRACKED_CLIENTS = 10_000;
 
 /** Extract a client identifier from the request.
@@ -79,6 +80,16 @@ export function registerPasswordResetAttempt(req) {
   registerAttempt(passwordResetAttempts, getClientKey(req));
 }
 
+export function isPairingRedeemRateLimited(req) {
+  const key = getClientKey(req);
+  const state = getAttemptState(pairingRedeemAttempts, key);
+  return state.count >= config.loginMaxAttempts;
+}
+
+export function registerPairingRedeemAttempt(req) {
+  registerAttempt(pairingRedeemAttempts, getClientKey(req));
+}
+
 /** Remove expired entries. Called periodically and on overflow. */
 export function pruneExpiredEntries() {
   const now = Date.now();
@@ -90,6 +101,11 @@ export function pruneExpiredEntries() {
   for (const [key, state] of passwordResetAttempts) {
     if (now - state.firstAttemptAt > config.loginWindowMs) {
       passwordResetAttempts.delete(key);
+    }
+  }
+  for (const [key, state] of pairingRedeemAttempts) {
+    if (now - state.firstAttemptAt > config.loginWindowMs) {
+      pairingRedeemAttempts.delete(key);
     }
   }
 }

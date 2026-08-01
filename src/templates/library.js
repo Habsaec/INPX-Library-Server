@@ -9,7 +9,7 @@ import {
   renderHomeShelf, renderMiniBookList, renderDiscoveryTiles,
   renderStatsRibbon, renderBookMetaList, renderSkeletonGrid,
   renderAuthorFacetSeriesList, renderFacetSummaryBlock,
-  renderSectionIntro, renderFacetHero, renderAlert, renderAccountNav,
+  renderSectionIntro, renderFacetHero, renderAlert, renderAccountNav, renderAppPairWidget,
   renderListRemoveBtn, bookIdDataAttr, bookCardDataAttrs, batchBookIdDataAttr,
   firstAuthorValue, uniqueBooksById, batchSelectInputAttrs, safeDomIdPart,
   browseTotalLine, canDownloadInUi, canSendToEmailInUi, renderAuthorLinks, renderSeriesLinks, renderWelcomeQuoteAuthor,
@@ -1718,6 +1718,11 @@ export function renderProfileSettings({ user, stats, indexStatus, userStats, ere
     </header>
     ${renderAccountNav('settings', navCounts)}
     <div class="table-list">
+      <div class="table-row table-row-stack profile-form-row">
+        <div>
+          ${renderAppPairWidget('panel')}
+        </div>
+      </div>
       <div class="table-row table-row-stack profile-form-row">
         <div>
           <strong>${escapeHtml(t('profile.telegram.title'))}</strong>

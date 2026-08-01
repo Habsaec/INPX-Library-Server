@@ -2585,6 +2585,195 @@ function attachCatalogNavLoading() {
   });
 }
 
+const SEARCH_HISTORY_KEY = 'inpx-search-history';
+const SEARCH_HISTORY_MAX = 8;
+
+function readSearchHistory() {
+  try {
+    const raw = localStorage.getItem(SEARCH_HISTORY_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed)
+      ? parsed.filter((item) => typeof item === 'string' && item.trim()).map((item) => item.trim()).slice(0, SEARCH_HISTORY_MAX)
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeSearchHistory(list) {
+  try {
+    localStorage.setItem(SEARCH_HISTORY_KEY, JSON.stringify(list.slice(0, SEARCH_HISTORY_MAX)));
+  } catch { /* quota / private mode */ }
+}
+
+function addSearchHistory(query) {
+  const trimmed = String(query || '').trim();
+  if (trimmed.length < 2) return;
+  const next = [trimmed, ...readSearchHistory().filter((item) => item.toLowerCase() !== trimmed.toLowerCase())]
+    .slice(0, SEARCH_HISTORY_MAX);
+  writeSearchHistory(next);
+}
+
+function removeSearchHistory(query) {
+  const needle = String(query || '').trim().toLowerCase();
+  writeSearchHistory(readSearchHistory().filter((item) => item.toLowerCase() !== needle));
+}
+
+function clearSearchHistory() {
+  writeSearchHistory([]);
+}
+
+function attachSearchHistory() {
+  const form = document.querySelector('[data-smart-search]');
+  const input = form?.querySelector('[data-suggest-input], #global-search-input, [name="q"]');
+  const dropdown = form?.querySelector('[data-suggest-dropdown]');
+  if (!form || !input || !dropdown) return;
+
+  let activeIdx = -1;
+  let items = [];
+
+  const setExpanded = (open) => {
+    input.setAttribute('aria-expanded', open ? 'true' : 'false');
+  };
+  const hide = () => {
+    dropdown.hidden = true;
+    activeIdx = -1;
+    input.removeAttribute('aria-activedescendant');
+    setExpanded(false);
+  };
+  const show = () => {
+    dropdown.hidden = false;
+    setExpanded(true);
+  };
+
+  const filteredHistory = () => {
+    const q = input.value.trim().toLowerCase();
+    const all = readSearchHistory();
+    if (!q) return all;
+    return all.filter((item) => item.toLowerCase().includes(q));
+  };
+
+  const runHistoryQuery = (query) => {
+    input.value = query;
+    hide();
+    addSearchHistory(query);
+    if (typeof form.requestSubmit === 'function') form.requestSubmit();
+    else form.submit();
+  };
+
+  const render = () => {
+    const history = filteredHistory();
+    if (!history.length) {
+      hide();
+      return;
+    }
+    const rows = [
+      `<div class="suggest-history-header">
+        <span class="suggest-group-title">${escapeHtml(uiT('search.recentTitle'))}</span>
+        <button type="button" class="suggest-history-clear" data-search-history-clear>${escapeHtml(uiT('search.recentClear'))}</button>
+      </div>`
+    ];
+    let seq = 0;
+    for (const query of history) {
+      const itemId = `search-history-item-${seq++}`;
+      rows.push(`
+        <div class="suggest-history-row">
+          <button type="button" class="suggest-item" id="${itemId}" data-suggest-item data-search-history-query="${escapeHtml(query)}" role="option">
+            <span class="suggest-item-title">${escapeHtml(query)}</span>
+          </button>
+          <button type="button" class="suggest-history-remove" data-search-history-remove="${escapeHtml(query)}" aria-label="${escapeHtml(uiT('search.recentRemove'))} ${escapeHtml(query)}">×</button>
+        </div>`);
+    }
+    dropdown.innerHTML = rows.join('');
+    items = [...dropdown.querySelectorAll('[data-suggest-item]')];
+    activeIdx = -1;
+    show();
+  };
+
+  const setActive = (idx) => {
+    items.forEach((el, i) => {
+      const active = i === idx;
+      el.classList.toggle('suggest-active', active);
+      el.setAttribute('aria-selected', active ? 'true' : 'false');
+    });
+    activeIdx = idx;
+    if (idx >= 0 && items[idx]) {
+      input.setAttribute('aria-activedescendant', items[idx].id);
+      items[idx].scrollIntoView({ block: 'nearest' });
+    } else {
+      input.removeAttribute('aria-activedescendant');
+    }
+  };
+
+  form.addEventListener('submit', () => {
+    const q = (input.value || '').trim();
+    input.value = q;
+    if (q) addSearchHistory(q);
+    hide();
+  });
+
+  input.addEventListener('focus', () => {
+    render();
+  });
+
+  input.addEventListener('input', () => {
+    if (document.activeElement === input) render();
+  });
+
+  input.addEventListener('keydown', (e) => {
+    if (dropdown.hidden && (e.key === 'ArrowDown' || e.key === 'ArrowUp') && filteredHistory().length) {
+      render();
+    }
+    if (dropdown.hidden) return;
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setActive(activeIdx < items.length - 1 ? activeIdx + 1 : 0);
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setActive(activeIdx > 0 ? activeIdx - 1 : items.length - 1);
+    } else if (e.key === 'Enter' && activeIdx >= 0 && items[activeIdx]) {
+      e.preventDefault();
+      const q = items[activeIdx].getAttribute('data-search-history-query') || '';
+      if (q) runHistoryQuery(q);
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      hide();
+    }
+  });
+
+  dropdown.addEventListener('mousedown', (e) => {
+    /* Keep input focus while clicking inside dropdown. */
+    e.preventDefault();
+  });
+
+  dropdown.addEventListener('click', (e) => {
+    const clearBtn = e.target.closest('[data-search-history-clear]');
+    if (clearBtn) {
+      clearSearchHistory();
+      hide();
+      return;
+    }
+    const removeBtn = e.target.closest('[data-search-history-remove]');
+    if (removeBtn) {
+      removeSearchHistory(removeBtn.getAttribute('data-search-history-remove') || '');
+      render();
+      return;
+    }
+    const item = e.target.closest('[data-search-history-query]');
+    if (item) {
+      runHistoryQuery(item.getAttribute('data-search-history-query') || '');
+    }
+  });
+
+  document.addEventListener('click', (e) => {
+    if (!form.contains(e.target)) hide();
+  });
+
+  /* Persist query already shown in the bar (results / overview page). */
+  const current = (input.value || '').trim();
+  if (current.length >= 2) addSearchHistory(current);
+}
+
 function attachSmartSearch() {
   const forms = [...document.querySelectorAll('[data-smart-search]')];
   if (!forms.length) return;
@@ -2597,6 +2786,7 @@ function attachSmartSearch() {
       if (queryInput) queryInput.value = (queryInput.value || '').trim();
     });
   }
+  attachSearchHistory();
 }
 
 function attachSidebarToggle() {
@@ -5767,6 +5957,7 @@ attachBfCacheFacetReload();
 silenceSkippedViewTransitions();
 attachScrollToTop();
 attachSidebarToggle();
+initAppPairingUi();
 attachTopbarSearchToggle();
 attachTopbarAutoHide();
 attachThemeToggle();
@@ -6407,5 +6598,201 @@ function attachAdminUserFormAutofillGuard() {
   loadDuplicates(currentPage);
   loadSuppressed(suppPage);
 })();
+
+function formatAppPairCountdown(ms) {
+  const totalSec = Math.max(0, Math.ceil(ms / 1000));
+  const m = Math.floor(totalSec / 60);
+  const s = totalSec % 60;
+  return `${m}:${String(s).padStart(2, '0')}`;
+}
+
+function initAppPairingUi() {
+  const roots = [...document.querySelectorAll('[data-app-pair-root]')];
+  if (!roots.length) return;
+
+  let sharedState = null;
+  let sharedPromise = null;
+  let tickTimer = 0;
+  let modalEl = null;
+
+  function ensureModal() {
+    if (modalEl) return modalEl;
+    modalEl = document.createElement('div');
+    modalEl.className = 'app-pair-modal';
+    modalEl.hidden = true;
+    modalEl.setAttribute('role', 'dialog');
+    modalEl.setAttribute('aria-modal', 'true');
+    modalEl.setAttribute('aria-label', uiT('profile.appPair.title'));
+    modalEl.innerHTML = `
+      <div class="app-pair-modal-backdrop" data-app-pair-modal-close></div>
+      <div class="app-pair-modal-card">
+        <h3 class="app-pair-modal-title">${escapeHtml(uiT('profile.appPair.title'))}</h3>
+        <p class="muted app-pair-hint">${escapeHtml(uiT('profile.appPair.hint'))}</p>
+        <div class="app-pair-modal-qr" data-app-pair-modal-qr></div>
+        <div class="app-pair-meta-row"><span class="muted">${escapeHtml(uiT('profile.appPair.serverUrl'))}</span> <code data-app-pair-modal-url></code></div>
+        <div class="app-pair-meta-row"><span class="muted">${escapeHtml(uiT('profile.appPair.username'))}</span> <code data-app-pair-modal-user></code></div>
+        <p class="muted app-pair-expires" data-app-pair-modal-expires></p>
+        <p class="app-pair-error" data-app-pair-modal-error hidden></p>
+        <div class="app-pair-modal-actions">
+          <button type="button" class="button" data-app-pair-modal-refresh>${escapeHtml(uiT('profile.appPair.refresh'))}</button>
+          <button type="button" class="button" data-app-pair-modal-close>${escapeHtml(uiT('profile.appPair.close'))}</button>
+        </div>
+      </div>`;
+    document.body.appendChild(modalEl);
+    modalEl.addEventListener('click', (event) => {
+      if (event.target.closest('[data-app-pair-modal-close]')) closeModal();
+    });
+    modalEl.querySelector('[data-app-pair-modal-refresh]')?.addEventListener('click', () => {
+      fetchPairing(true).then(() => paintAll());
+    });
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape' && modalEl && !modalEl.hidden) {
+        event.preventDefault();
+        closeModal();
+      }
+    });
+    return modalEl;
+  }
+
+  function closeModal() {
+    if (!modalEl) return;
+    modalEl.hidden = true;
+  }
+
+  function openModal() {
+    const modal = ensureModal();
+    modal.hidden = false;
+    fetchPairing(false).then(() => paintAll());
+  }
+
+  async function fetchPairing(force) {
+    const expiresAt = sharedState?.expiresAt ? Date.parse(sharedState.expiresAt) : 0;
+    if (!force && sharedState?.svg && expiresAt > Date.now() + 15_000) {
+      return sharedState;
+    }
+    if (sharedPromise) return sharedPromise;
+    sharedPromise = (async () => {
+      try {
+        const res = await fetch('/api/auth/pairing', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+          body: '{}',
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data?.ok) {
+          throw new Error(data?.error || uiT('profile.appPair.error'));
+        }
+        sharedState = {
+          svg: String(data.svg || ''),
+          serverUrl: String(data.serverUrl || ''),
+          username: String(data.username || ''),
+          expiresAt: String(data.expiresAt || ''),
+          error: '',
+        };
+        return sharedState;
+      } catch (err) {
+        sharedState = {
+          svg: '',
+          serverUrl: sharedState?.serverUrl || '',
+          username: sharedState?.username || '',
+          expiresAt: '',
+          error: err?.message || uiT('profile.appPair.error'),
+        };
+        return sharedState;
+      } finally {
+        sharedPromise = null;
+      }
+    })();
+    return sharedPromise;
+  }
+
+  function paintExpires(el, expiresAt) {
+    if (!el) return;
+    const ms = expiresAt ? Date.parse(expiresAt) - Date.now() : 0;
+    if (!expiresAt) {
+      el.textContent = '';
+      return;
+    }
+    if (ms <= 0) {
+      el.textContent = uiT('profile.appPair.expired');
+      return;
+    }
+    el.textContent = uiTp('profile.appPair.expiresIn', { time: formatAppPairCountdown(ms) });
+  }
+
+  function setQr(el, svg) {
+    if (!el) return;
+    if (svg) {
+      el.innerHTML = svg;
+    } else if (!el.innerHTML) {
+      el.innerHTML = `<span class="muted" style="font-size:11px">${escapeHtml(uiT('profile.appPair.loading'))}</span>`;
+    }
+  }
+
+  function paintRoot(root) {
+    if (!sharedState) return;
+    const qr = root.querySelector('[data-app-pair-qr]');
+    setQr(qr, sharedState.svg);
+    const urlEl = root.querySelector('[data-app-pair-url]');
+    const userEl = root.querySelector('[data-app-pair-user]');
+    const expEl = root.querySelector('[data-app-pair-expires]');
+    const errEl = root.querySelector('[data-app-pair-error]');
+    if (urlEl) urlEl.textContent = sharedState.serverUrl || '';
+    if (userEl) userEl.textContent = sharedState.username || '';
+    paintExpires(expEl, sharedState.expiresAt);
+    if (errEl) {
+      errEl.hidden = !sharedState.error;
+      errEl.textContent = sharedState.error || '';
+    }
+  }
+
+  function paintModal() {
+    if (!modalEl || modalEl.hidden || !sharedState) return;
+    setQr(modalEl.querySelector('[data-app-pair-modal-qr]'), sharedState.svg);
+    const urlEl = modalEl.querySelector('[data-app-pair-modal-url]');
+    const userEl = modalEl.querySelector('[data-app-pair-modal-user]');
+    const expEl = modalEl.querySelector('[data-app-pair-modal-expires]');
+    const errEl = modalEl.querySelector('[data-app-pair-modal-error]');
+    if (urlEl) urlEl.textContent = sharedState.serverUrl || '';
+    if (userEl) userEl.textContent = sharedState.username || '';
+    paintExpires(expEl, sharedState.expiresAt);
+    if (errEl) {
+      errEl.hidden = !sharedState.error;
+      errEl.textContent = sharedState.error || '';
+    }
+  }
+
+  function paintAll() {
+    roots.forEach(paintRoot);
+    paintModal();
+  }
+
+  function startTicker() {
+    if (tickTimer) return;
+    tickTimer = window.setInterval(() => {
+      if (!sharedState?.expiresAt) return;
+      const ms = Date.parse(sharedState.expiresAt) - Date.now();
+      paintAll();
+      if (ms <= 0) {
+        fetchPairing(true).then(() => paintAll());
+      }
+    }, 1000);
+  }
+
+  roots.forEach((root) => {
+    root.querySelector('[data-app-pair-refresh]')?.addEventListener('click', () => {
+      fetchPairing(true).then(() => paintAll());
+    });
+    root.querySelector('[data-app-pair-open]')?.addEventListener('click', () => openModal());
+    if (root.getAttribute('data-app-pair-autoload') === '1' || root.getAttribute('data-app-pair-variant') === 'sidebar') {
+      setQr(root.querySelector('[data-app-pair-qr]'), '');
+      fetchPairing(false).then(() => {
+        paintAll();
+        startTicker();
+      });
+    }
+  });
+}
 
 // PWA: Service Worker registered by pageShell with versioned URL

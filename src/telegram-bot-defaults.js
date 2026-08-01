@@ -57,8 +57,8 @@ export const TELEGRAM_DEFAULT_PROFILE_SHORT =
 
 export const TELEGRAM_DEFAULT_WELCOME =
   '📚 <b>Библиотека книг</b>\n\n' +
-  'Напишите автора, серию или книгу — бот сам определит, что искать.\n\n' +
-  '<b>Поиск:</b> <code>/search</code> · <code>/author</code> · <code>/series</code>\n' +
+  'Напишите запрос — откроются разделы Книги / Авторы / Серии.\n\n' +
+  '<b>Поиск:</b> просто текст · <code>/search</code> · <code>/author</code> · <code>/series</code>\n' +
   '<b>Личное:</b> <code>/shelves</code> · <code>/favorites</code> · <code>/recommended</code> <i>(после привязки)</i>\n\n' +
   '<code>/help</code> — полная справка';
 

@@ -1,6 +1,6 @@
 {
   "name": "inpx-library-server",
-  "version": "2.2.0",
+  "version": "2.3.0",
   "description": "Self-hosted web server for INPX/FB2 book libraries with search, online reader, OPDS catalog and e-reader delivery",
   "private": true,
   "type": "module",
@@ -41,6 +41,7 @@
     "msedge-tts": "^2.0.5",
     "nodemailer": "^8.0.2",
     "openid-client": "^6.8.4",
+    "qrcode": "^1.5.4",
     "sharp": "^0.34.5",
     "unzipper": "^0.12.3"
   }
