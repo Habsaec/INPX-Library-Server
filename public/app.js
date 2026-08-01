@@ -6628,6 +6628,7 @@ function initAppPairingUi() {
       <div class="app-pair-modal-card">
         <h3 class="app-pair-modal-title">${escapeHtml(uiT('profile.appPair.title'))}</h3>
         <p class="muted app-pair-hint">${escapeHtml(uiT('profile.appPair.hint'))}</p>
+        <p class="app-pair-app-link"><a href="https://github.com/Habsaec/inpx-book-reader/releases/latest" target="_blank" rel="noopener noreferrer">${escapeHtml(uiT('profile.appPair.appLink'))}</a></p>
         <div class="app-pair-modal-qr" data-app-pair-modal-qr></div>
         <div class="app-pair-meta-row"><span class="muted">${escapeHtml(uiT('profile.appPair.serverUrl'))}</span> <code data-app-pair-modal-url></code></div>
         <div class="app-pair-meta-row"><span class="muted">${escapeHtml(uiT('profile.appPair.username'))}</span> <code data-app-pair-modal-user></code></div>

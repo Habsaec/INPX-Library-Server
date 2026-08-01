@@ -1225,6 +1225,7 @@ export function renderAppPairWidget(variant = 'panel') {
     <div class="app-pair-panel" data-app-pair-root data-app-pair-variant="panel" data-app-pair-autoload="1">
       <strong>${escapeHtml(t('profile.appPair.title'))}</strong>
       <p class="muted app-pair-hint">${escapeHtml(t('profile.appPair.hint'))}</p>
+      <p class="app-pair-app-link"><a href="https://github.com/Habsaec/inpx-book-reader/releases/latest" target="_blank" rel="noopener noreferrer">${escapeHtml(t('profile.appPair.appLink'))}</a></p>
       <div class="app-pair-body">
         <div class="app-pair-qr-wrap" data-app-pair-qr aria-hidden="true"></div>
         <div class="app-pair-meta">
