@@ -44,14 +44,16 @@ import {
   getOidcSettings, setOidcSettings,
   getUserByUsername, upsertUser, updateUser, deleteUser, blockUser, unblockUser, getUserByTelegramId, normalizeTelegramId, setUserTelegramId, setUserTelegramBotAllowed, setUserEreaderEmailAllowed, setUserEreaderEmail, getEreaderEmail,
   db, getDistinctLanguages, getDistinctGenres, rebuildActiveBooksView, refreshCatalogBookCounts,
-  getSuppressedBooks, unsuppressBook, unsuppressAll, getScheduleLog
+  getSuppressedBooks, unsuppressBook, unsuppressAll, getScheduleLog,
+  setMeta, rebuildBooksFtsFromContent, invalidateBooksFtsHealthCache
 } from '../db.js';
 import {
   getBookById, getIndexStatus, getConfiguredInpxFile, setConfiguredInpxFile,
   getSourceRoot, getAuthorFlibustaSourceId, startBackgroundIndexing, startSourceIndexing,
   requestIndexPause, requestIndexResume, requestIndexStop,
   splitAuthorValues, getDuplicateGroups, softDeleteBook, autoCleanDuplicates,
-  previewAutoClean, markLibraryDedupProjectionStale, invalidateDuplicatesCache
+  previewAutoClean, markLibraryDedupProjectionStale, invalidateDuplicatesCache,
+  rebuildTitleTokenDictionary
 } from '../inpx.js';
 import {
   detectFlibustaSidecarLayout, resolveLibraryArchiveRelPath, resolveSidecarArchivePath,
@@ -1573,6 +1575,59 @@ export function registerAdminRoutes(app, deps) {
   app.post('/api/operations/repair', requireAdminApi, (req, res) => {
     const started = runRepairMetadata();
     res.json({ ok: started, started, operations: getOperationsSnapshot() });
+  });
+
+  app.post('/api/operations/fts-rebuild', requireAdminApi, (req, res) => {
+    const indexStatus = getIndexStatus();
+    if (operationsState.ftsRebuildRunning) {
+      return res.status(409).json({
+        ok: false,
+        started: false,
+        error: t('admin.ftsRebuildBusy'),
+        operations: getOperationsSnapshot()
+      });
+    }
+    if (operationsState.reindexRunning || indexStatus.active) {
+      return res.status(409).json({
+        ok: false,
+        started: false,
+        error: t('admin.ftsRebuildBlocked'),
+        operations: getOperationsSnapshot()
+      });
+    }
+
+    operationsState.ftsRebuildRunning = true;
+    operationsState.lastFtsRebuildRequestedAt = new Date().toISOString();
+    setMeta('books_fts_dirty', '1');
+    invalidateBooksFtsHealthCache();
+    logSystemEvent('info', 'operations', 'FTS rebuild requested', {
+      user: req.user.username,
+      requestedAt: operationsState.lastFtsRebuildRequestedAt
+    });
+    res.json({ ok: true, started: true, operations: getOperationsSnapshot() });
+
+    setImmediate(async () => {
+      const t0 = Date.now();
+      try {
+        await rebuildBooksFtsFromContent();
+        setMeta('books_fts_dirty', '0');
+        invalidateBooksFtsHealthCache();
+        try {
+          rebuildTitleTokenDictionary({ force: true });
+        } catch (dictErr) {
+          console.warn('[ops] title token dictionary rebuild failed:', dictErr.message);
+        }
+        const seconds = Math.round((Date.now() - t0) / 1000);
+        console.log(`[ops] FTS rebuild completed (${seconds} s)`);
+        logSystemEvent('info', 'operations', 'FTS rebuild completed', { seconds });
+      } catch (err) {
+        console.error('[ops] FTS rebuild failed:', err.message);
+        logSystemEvent('error', 'operations', 'FTS rebuild failed', { error: err.message });
+      } finally {
+        operationsState.ftsRebuildRunning = false;
+        invalidateBooksFtsHealthCache();
+      }
+    });
   });
 
   app.post('/api/operations/cache-clear', requireAdminApi, (req, res) => {

@@ -385,17 +385,23 @@ export function buildSimilarBooks(book) {
   const MAX = 8;
   const seriesName = book.seriesList?.[0]?.name || book.series || '';
   if (seriesName) {
-    const items = getBooksByFacet({ facet: 'series', value: seriesName, page: 1, pageSize: MAX, sort: 'recent' }).items;
-    return { title: t('book.otherInSeries'), items: dedupeBooks(items, [book.id]).slice(0, MAX), hideDownloads: true };
+    const seriesItems = dedupeBooks(
+      getBooksByFacetLight('series', seriesName, MAX + 1, 'recent'),
+      [book.id]
+    ).slice(0, MAX);
+    if (seriesItems.length) {
+      return { title: t('book.otherInSeries'), items: seriesItems, hideDownloads: true };
+    }
+    /* Singleton / empty series → fall through to author (e.g. only this book in series). */
   }
   const author = pickFirstAuthor(book.authors);
   if (author) {
-    const items = getBooksByFacet({ facet: 'authors', value: author, page: 1, pageSize: MAX, sort: 'recent' }).items;
+    const items = getBooksByFacetLight('authors', author, MAX + 1, 'recent');
     return { title: t('book.otherByAuthor'), items: dedupeBooks(items, [book.id]).slice(0, MAX) };
   }
   const genre = firstGenreValue(book.genres);
   if (genre) {
-    const items = getBooksByFacet({ facet: 'genres', value: genre, page: 1, pageSize: MAX, sort: 'rating' }).items;
+    const items = getBooksByFacetLight('genres', genre, MAX + 1, 'rating');
     return { title: t('book.similar'), items: dedupeBooks(items, [book.id]).slice(0, MAX) };
   }
   return { title: t('book.similar'), items: [] };

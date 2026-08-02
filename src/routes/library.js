@@ -315,13 +315,27 @@ export function registerLibraryRoutes(app, deps) {
     const user = req.user || null;
     const readBookIds = user ? getReadBookIdSet(user.username) : null;
 
-    // Main search (q without field) → hub with books/authors/series counts.
+    const forceHub = String(req.query.hub || '') === '1';
+    const autoRouted = String(req.query.fromHub || '') === '1';
+
+    // Main search (q without field) → smart route or hub with books/authors/series counts.
     if (query.trim() && !hasExplicitField && !hasFilterDims) {
       const overview = getCachedPageData(
         `catalog:search-overview:${query.trim()}`,
         () => searchOverview({ query }),
         PAGE_CACHE_TTL_MS
       );
+      const routeField = ['books', 'authors', 'series'].includes(overview?.routeField)
+        ? overview.routeField
+        : null;
+      if (!forceHub && routeField) {
+        const params = new URLSearchParams({
+          q: query.trim(),
+          field: routeField,
+          fromHub: '1'
+        });
+        return res.redirect(302, `/catalog?${params.toString()}`);
+      }
       return res.send(renderSearchOverview({
         overview,
         query: query.trim(),
@@ -358,15 +372,50 @@ export function registerLibraryRoutes(app, deps) {
       || hasSeries === 1
     );
     let genreOptions = allGenreOptions;
+    let genreOptionsLazy = false;
     if (isBookField && hasGenreScope) {
-      const scoped = getCachedPageData(
-        `catalog:search-genres:${query.trim()}:${lang}:${format}:${year}:${minRate}:${hasSeries}`,
-        () => listSearchGenres({ query: query.trim(), lang, format, year, minRate, hasSeries }),
-        PAGE_CACHE_TTL_MS
-      );
-      const allowed = new Set(allGenreOptions.map((g) => g.name));
       const byName = new Map(allGenreOptions.map((g) => [g.name, g]));
-      let items = (scoped.items || []).filter((g) => g?.name && allowed.has(g.name));
+      const allowed = new Set(allGenreOptions.map((g) => g.name));
+      let items = [];
+      const resultTotal = Math.max(0, Math.floor(Number(result.total) || 0));
+      /*
+       * Free-text search: load scoped genres lazily in the browser so «Книги»
+       * HTML is not blocked by a second MATCH + GROUP BY.
+       * Small result sets still resolve inline from the page items.
+       */
+      if (
+        query.trim()
+        && resultTotal > 0
+        && resultTotal <= pageSize
+        && Array.isArray(result.items)
+        && result.items.length
+      ) {
+        const seen = new Set();
+        for (const book of result.items) {
+          const genreNames = Array.isArray(book.genresList) && book.genresList.length
+            ? book.genresList
+            : String(book.genres || '').split(/[:;,]/).map((s) => s.trim()).filter(Boolean);
+          for (const name of genreNames) {
+            if (!name || seen.has(name) || !allowed.has(name)) continue;
+            seen.add(name);
+            const fromAll = byName.get(name);
+            items.push({
+              name,
+              displayName: fromAll?.displayName || name
+            });
+          }
+        }
+      } else if (query.trim()) {
+        genreOptionsLazy = true;
+        items = [];
+      } else {
+        const scoped = getCachedPageData(
+          `catalog:search-genres:${query.trim()}:${lang}:${format}:${year}:${minRate}:${hasSeries}`,
+          () => listSearchGenres({ query: query.trim(), lang, format, year, minRate, hasSeries }),
+          PAGE_CACHE_TTL_MS
+        );
+        items = (scoped.items || []).filter((g) => g?.name && allowed.has(g.name));
+      }
       for (const selected of genres) {
         if (!items.some((g) => g.name === selected)) {
           const fromAll = byName.get(selected);
@@ -377,10 +426,14 @@ export function registerLibraryRoutes(app, deps) {
         }
       }
       if (items.length) genreOptions = items;
+      else if (genreOptionsLazy) genreOptions = [];
     }
+    const hubBackHref = autoRouted && query.trim()
+      ? `/catalog?${new URLSearchParams({ q: query.trim(), hub: '1' }).toString()}`
+      : '';
     res.send(renderCatalog({
       ...result, page, pageSize, query, field, sort, order, genre, genres, letter, lang, format, year,
-      minRate, hasSeries, langs, formats, genreOptions, user, stats,
+      minRate, hasSeries, langs, formats, genreOptions, genreOptionsLazy, hubBackHref, user, stats,
       indexStatus: getIndexStatus(), csrfToken: req.csrfToken || '', readBookIds
     }));
   });

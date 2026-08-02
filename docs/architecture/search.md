@@ -17,73 +17,85 @@ Avoid:
 
 ```text
 User query
-  → normalize + tokenize (createSortKey / operators)
+  → normalize (createSortKey + ё→е + mixed lookalike Latin/Cyrillic)
+  → optional author+title split (content tokens; no FTS peek loop)
   → light Russian stem expand (query-time OR variants)
-  → main search: GET /api/search (or /catalog?q without field) → overview totals
-  → user picks mode: books | authors | series
-  → GET /api/catalog?field=… primary matcher
-  → if empty: searchHints (tip + alternateModes + didYouMean)
-  → paginated page
+  → GET /api/search or /catalog?q (no field): cheap overview totals (pageSize 0)
+       → routeField when confident → redirect /catalog?q&field=…&fromHub=1
+       → else hub (Книги / Авторы / Серии); hub=1 forces hub
+       → background warm of first books page only if routeField=books
+  → typeahead: GET /api/search/suggest (web dropdown + Android)
+  → GET /api/catalog?field=… (reuses warm page when present)
+  → empty: recovery hints + one typo retry; weak: ≤1 did-you-mean
+  → paginated page (edition dedupe by title+author)
 ```
 
 | Mode | Matcher |
 |------|---------|
-| Overview | `searchOverview` — capped book COUNT (≤10k, no full FTS materialization) + authors/series totals |
-| Books | FTS5-driven: `FROM books_fts JOIN active_books … WHERE books_fts MATCH ?` + title boost then `bm25`; LIKE fallback when FTS is dirty/desynced, operator is `*`, or MATCH returns 0. Never `FROM active_books LEFT JOIN books_fts` (full library scan). |
-| Authors | `listAuthors` (initials, token subset, surname) — also used by OPDS |
-| Series | series name + mixed author+series both orders; **not** “all series by surname” |
+| Overview | `searchOverview` — capped book COUNT (≤10k) + authors/series totals + `preferredField` + `routeField` |
+| Books | FTS5 MATCH + title boost (exact/prefix/ordered-token) then `bm25`; author+title split when confident; phrase OR; stopwords skipped in AND; LIKE fallback when dirty/desynced/`*`/zero MATCH; free-text uses capped COUNT |
+| Authors | `listAuthors` (also OPDS) |
+| Series | series name + mixed author+series |
 
-Suggest (`GET /api/search/suggest`) is kept for API clients but **not used by the web UI** — search runs only on form submit (unified hub).
+## Smart routing (`routeField`)
 
-Unified hub (`GET /api/search?q=`):
+Conservative skip of the 3-row hub:
 
-```json
-{ "query": "Лукьяненко", "books": { "total": 10000, "capped": true }, "authors": { "total": 2 }, "series": { "total": 5 } }
-```
-
-Empty catalog / API results may include additive `searchHints`:
-
-- `tip` — `try_authors` / `try_series` / `try_books` when another mode has hits
-- `alternateModes[]` — counts/samples in other modes for the same `q` (no auto-jump)
-- `didYouMean[]` — 1–3 typo hints from compact `authors` / `series_catalog` (Levenshtein ≤ 1–2 on tokens length ≥ 4)
+- **books** — only books hit, or books dominate and query has ≥2 content tokens
+- **series** — `preferredField === 'series'` or series-only hits
+- **authors** — authors dominate, 1–3 tokens, not a multi-word title-like query
+- else hub; auto-routed pages link back via `/catalog?q=…&hub=1`
 
 ## Operators
 
 | Operator | Meaning |
 |----------|---------|
-| (default) | Prefix FTS (`token*` + stem OR-expand); LIKE fallback: single token `token%`, multi-token `%token%` per token |
-| `=` | Exact token / field equality |
-| `*` | Contains (`%token%` via LIKE fallback) |
-| `~` | Regex over a capped 5k-row scan (documented trade-off) |
+| (default) | Prefix FTS (`token*` + stem OR-expand) + multi-token phrase OR; LIKE: single `token%`, multi `%token%` |
+| `=` | Exact token |
+| `*` | Contains via LIKE |
+| `~` | Regex over capped 5k-row scan |
 
 ## Morphology
 
-Light Russian suffix stripping at **query time** (`src/search-stem.js`): each token ≥4 chars may expand to `( "облаками"* OR "облак"* )`. No Snowball, no external engine. Prefix FTS still covers many stems without expansion.
+- Query-time stem expand (`src/search-stem.js`)
+- Index-time: stemmed tokens appended to `title_search` / `authors_search` (meta `search_stems_v1` backfill)
+- Mixed Latin/Cyrillic lookalikes normalized at query time only (`src/search-normalize.js`)
+
+## Hot-path speed rules
+
+1. Overview never materializes/ranks 24 books synchronously
+2. No typo dictionary on suggest / overview
+3. No alternate-mode rescans except empty catalog results
+4. Suggest: `totalMode: 'omit'`; multi-word book suggest uses `field: 'title'`
+5. FTS when healthy; LIKE only on miss/dirty/`*`
 
 ## FTS reliability
 
-- Meta `books_fts_dirty=1` → FTS unusable → LIKE fallback
-- Health probe (`getBooksFtsStatus`): compares `books` count vs `books_fts_docsize`; large gap → `desynced` → mark dirty + background rebuild
-- Admin Operations dashboard shows FTS status chip (`ok` / `dirty` / `rebuilding` / `desynced` / `empty`)
-- Exposed on `GET /api/index-status` and `/api/operations` as additive `ftsStatus`
+- `books_fts_dirty`, desync probe vs `books_fts_docsize`
+- Auto-recovery: desync → dirty; dirty also scheduled from search hot path
+- Admin: FTS status + **Rebuild FTS** (`POST /api/operations/fts-rebuild`)
+- Post-index / post-rebuild: `warmupSearchFts`
+
+## Did-you-mean
+
+Authors + series + `search_title_tokens` (≤50k). Empty catalog → full `searchHints`; weak books page → ≤1 suggestion. Typo retry only after a true miss at catalog layer.
 
 ## Ranking (books)
 
-1. Exact `title_search` = full query sort-key
-2. Prefix phrase `title_search LIKE query%`
-3. `bm25(books_fts)` (FTS path) / author rank (LIKE path)
-4. Requested catalog sort
+1. Exact / stemmed-prefix `title_search`
+2. Ordered token contains (`%a%b%c%`)
+3. Prefix phrase
+4. `bm25` / author rank
+5. Catalog sort; page-level edition dedupe
+
+## UX extras
+
+- Web suggest dropdown → `/api/search/suggest` (+ history); debounce ≥300ms, min 3 chars
+- Genre facets for free-text load via `/api/search/genres` after HTML
+- Helpers: `src/search-enhance.js` (`resolveSearchRouteField`, warm cache, dedupe)
 
 ## What we do not do
 
-- Meilisearch / Elasticsearch / Typesense for catalog metadata
-- Trigram FTS over all books (index size on NAS)
-- Full morphological dictionaries / commercial stemmers
-- Full-text of book **content** (fb2 body) — separate epic if ever needed
-
-## Performance notes
-
-- Pagination stays in SQL (`LIMIT` / `OFFSET`); no full-result materialization for normal queries
-- Hot path must not use leading `%…%` on million-book LIKE for **single-token** default search
-- Multi-token LIKE contains is only the FTS-unavailable fallback
-- Keep `books_fts_dirty=0` and FTS docs ≈ book count after index/FTS rebuild
+- Meilisearch / Elasticsearch / Typesense
+- Trigram FTS over all books
+- Full-text of book content (fb2 body)

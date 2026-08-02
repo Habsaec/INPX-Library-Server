@@ -161,9 +161,11 @@ function getCpuCount() {
 const operationsState = {
   reindexRunning: false,
   repairRunning: false,
+  ftsRebuildRunning: false,
   sidecarRunning: false,
   sourceDeleteRunning: false,
   lastReindexRequestedAt: null,
+  lastFtsRebuildRequestedAt: null,
   lastSidecarRequestedAt: null,
   lastSourceDeleteRequestedAt: null,
   lastRestartRequestedAt: null,
@@ -1044,6 +1046,17 @@ function schedulePostIndexMaintenance() {
         logSystemEvent('info', 'index', 'post-index ANALYZE completed', { seconds: Number(sec) });
         clearPageDataCache();
         warmSharedPageCaches();
+        import('./inpx.js').then((m) => {
+          try { m.clearWarmSearchBooksPages?.(); } catch { /* ignore */ }
+          try {
+            const warm = m.warmupSearchFts?.();
+            if (warm?.ok) {
+              console.log(`[search] FTS warmup after index (${warm.probes} probes)`);
+            }
+          } catch (err) {
+            console.warn('[search] FTS warmup failed:', err.message);
+          }
+        }).catch(() => {});
         if (isBackfillEnabled()) {
           try {
             backfillCatalogSearchFields();

@@ -35,8 +35,24 @@ import {
   isBooksFtsUsable,
   getBooksFtsStatus,
   invalidateBooksFtsHealthCache,
+  ensureSearchTitleTokensTable,
+  scheduleBootFtsRecoveryIfNeeded,
 } from './db.js';
-import { expandSearchTokenVariants } from './search-stem.js';
+import { appendStemmedSearchTokens, expandSearchTokenVariants } from './search-stem.js';
+import { filterSearchContentTokens, normalizeLookalikeSortKey } from './search-normalize.js';
+import {
+  applyDidYouMeanToQuery,
+  buildOrderedTitleLikePattern,
+  clearWarmSearchBooksPages,
+  dedupeSearchBookItems,
+  detectPreferredSearchField,
+  isWeakBookSearchResult,
+  rememberWarmSearchBooksPage,
+  resolveSearchRouteField,
+  takeWarmSearchBooksPage,
+  warmupSearchFts
+} from './search-enhance.js';
+export { clearWarmSearchBooksPages, resolveSearchRouteField, warmupSearchFts };
 import { config } from './config.js';
 import { formatGenreLabel, formatGenreList } from './genre-map.js';
 import { getAvailableDownloadFormats, FORMAT_LABELS } from './download-formats.js';
@@ -517,8 +533,9 @@ const BOOK_SEARCH_BACKFILL_CHUNK = 40;
 export function backfillCatalogSearchFields() {
   const catalogDone = getMeta('catalog_normalization_v1') === 'done';
   const booksDone = getMeta('yo_normalization_v1') === 'done';
+  const stemsDone = getMeta('search_stems_v1') === 'done';
 
-  if (catalogDone && booksDone) {
+  if (catalogDone && booksDone && stemsDone) {
     return;
   }
 
@@ -641,8 +658,8 @@ export function backfillCatalogSearchFields() {
   `);
 
   function applyBookRow(row) {
-    const newTitleSearch = createSortKey(row.title);
-    const newAuthorsSearch = splitAuthorValues(row.authors).map((item) => createSortKey(formatSingleAuthorName(item) || item)).filter(Boolean).join(' | ');
+    const newTitleSearch = appendStemmedSearchTokens(createSortKey(row.title));
+    const newAuthorsSearch = buildAuthorsSearchField(row.authors);
     const newSeriesSearch = createSortKey(row.series);
     const genreSearchTokens = splitFacetValues(row.genres)
       .flatMap((item) => [item, formatGenreLabel(item)])
@@ -672,6 +689,10 @@ export function backfillCatalogSearchFields() {
     if (!bookRows.length) {
       setMeta('yo_normalization_v1', 'done');
       console.log('[backfill] Нормализация книг завершена.');
+      if (getMeta('search_stems_v1') !== 'done') {
+        console.log('[backfill] Добавление stem-токенов в поля поиска…');
+        setTimeout(() => runStemsBooksChunk(0), 8);
+      }
       return;
     }
     const tx = db.transaction(() => {
@@ -684,11 +705,39 @@ export function backfillCatalogSearchFields() {
     setTimeout(() => runYoBooksChunk(nextRowid), 8);
   }
 
+  function runStemsBooksChunk(lastRowid) {
+    if (indexState.active) {
+      setTimeout(() => runStemsBooksChunk(lastRowid), 2000);
+      return;
+    }
+    const bookRows = selectBooksChunk.all(lastRowid, BOOK_SEARCH_BACKFILL_CHUNK);
+    if (!bookRows.length) {
+      setMeta('search_stems_v1', 'done');
+      console.log('[backfill] Stem-токены в полях поиска готовы.');
+      setMeta('books_fts_dirty', '1');
+      invalidateBooksFtsHealthCache();
+      scheduleBootFtsRecoveryIfNeeded();
+      try { rebuildTitleTokenDictionary({ force: true }); } catch { /* ignore */ }
+      return;
+    }
+    const tx = db.transaction(() => {
+      for (const row of bookRows) {
+        applyBookRow(row);
+      }
+    });
+    tx();
+    const nextRowid = bookRows[bookRows.length - 1].rowid;
+    setTimeout(() => runStemsBooksChunk(nextRowid), 8);
+  }
+
   setTimeout(() => {
     if (catalogDone) {
       if (!booksDone) {
         console.log('[backfill] Нормализация книг (ё→е)…');
         setTimeout(() => runYoBooksChunk(0), 8);
+      } else if (!stemsDone) {
+        console.log('[backfill] Добавление stem-токенов в поля поиска…');
+        setTimeout(() => runStemsBooksChunk(0), 8);
       }
       return;
     }
@@ -702,6 +751,10 @@ export function backfillCatalogSearchFields() {
               setMeta('catalog_normalization_v1', 'done');
               console.log('[backfill] Нормализация каталогов завершена.');
               if (booksDone) {
+                if (getMeta('search_stems_v1') !== 'done') {
+                  console.log('[backfill] Добавление stem-токенов в поля поиска…');
+                  setTimeout(() => runStemsBooksChunk(0), 8);
+                }
                 return;
               }
               console.log('[backfill] Нормализация книг (ё→е)…');
@@ -750,6 +803,13 @@ function resolveDisplayDate(value = '') {
   return normalized;
 }
 
+function buildAuthorsSearchField(authors = '') {
+  return splitAuthorValues(authors)
+    .map((item) => appendStemmedSearchTokens(createSortKey(formatSingleAuthorName(item) || item)))
+    .filter(Boolean)
+    .join(' | ');
+}
+
 export function enrichBookRow(row) {
   if (!row) {
     return null;
@@ -768,8 +828,8 @@ export function enrichBookRow(row) {
     authorSort: createSortKey(authorSortKey(primaryAuthor)),
     seriesSort: createSortKey(row.series),
     seriesIndex: normalizeSeriesIndex(row.seriesNo),
-    titleSearch: createSortKey(row.title),
-    authorsSearch: splitAuthorValues(row.authors).map((item) => createSortKey(formatSingleAuthorName(item) || item)).filter(Boolean).join(' | '),
+    titleSearch: appendStemmedSearchTokens(createSortKey(row.title)),
+    authorsSearch: buildAuthorsSearchField(row.authors),
     seriesSearch: createSortKey(row.series),
     genresSearch: genreSearchTokens.join(' | '),
     keywordsSearch: createSortKey(row.keywords),
@@ -2967,8 +3027,14 @@ function buildBookSearchSql(field, query) {
 
   const needleNormalized = normalizeYo(normalizeText(parsed.value)).toLowerCase();
   const needleSortKey = createSortKey(parsed.value);
-  const tokenSource = parsed.operator === '=' ? [needleNormalized || needleSortKey] : createSortKey(parsed.value).split(/\s+/).filter(Boolean);
-  const tokens = tokenSource.filter(Boolean);
+  const tokenSource = parsed.operator === '='
+    ? [needleNormalized || needleSortKey]
+    : createSortKey(parsed.value).split(/\s+/).filter(Boolean);
+  const rawTokens = tokenSource.filter(Boolean);
+  /* Drop stopwords / 1–2 letter tokens from multi-word LIKE AND (keeps phrase via full needle ranks). */
+  const tokens = parsed.operator === '=' || rawTokens.length <= 1
+    ? rawTokens
+    : filterSearchContentTokens(rawTokens);
   if (!needleNormalized && !needleSortKey && !tokens.length) {
     return null;
   }
@@ -3246,10 +3312,62 @@ function escapeFts5Token(token = '') {
   return String(token || '').replace(/"/g, '').trim();
 }
 
+/** Query-time lookalike fix; preserves leading search operators. */
+function prepareSearchQueryInput(query = '') {
+  const parsed = parseSearchOperator(query);
+  if (parsed.operator === 'empty') return String(query || '');
+  const fixed = normalizeLookalikeSortKey(createSortKey(parsed.value || ''));
+  if (!fixed) return String(query || '').trim();
+  if (parsed.operator === 'prefix') return fixed;
+  return `${parsed.operator}${fixed}`;
+}
+
+/**
+ * Split "Author Title Words" into author names + title remainder when confident.
+ * @returns {{ authorNames: string[], titleQuery: string, fullNeedle: string } | null}
+ */
+function resolveAuthorTitleSplit(query = '') {
+  const parsed = parseSearchOperator(query);
+  if (parsed.operator !== 'prefix') return null;
+  const fullNeedle = normalizeLookalikeSortKey(createSortKey(parsed.value || query));
+  const tokens = fullNeedle.split(/\s+/).filter(Boolean);
+  if (tokens.length < 2) return null;
+
+  for (let i = 1; i < tokens.length; i += 1) {
+    const authorPart = tokens.slice(0, i).join(' ');
+    const titleQuery = tokens.slice(i).join(' ');
+    if (!titleQuery) continue;
+    const titleContent = filterSearchContentTokens(titleQuery.split(/\s+/));
+    /* Require a real title token — no extra FTS peek (was slow on every split attempt). */
+    if (!titleContent.length || !titleContent.some((tok) => tok.length >= 4)) continue;
+    const names = findAuthorNamesForBookSearch(authorPart);
+    if (names.length > 0 && names.length <= 12) {
+      return { authorNames: names, titleQuery, fullNeedle };
+    }
+  }
+
+  const bySurname = findAuthorsBySurnameToken(tokens[0]);
+  if (bySurname.length > 0 && bySurname.length <= 8) {
+    const titleQuery = tokens.slice(1).join(' ');
+    const titleContent = filterSearchContentTokens(titleQuery.split(/\s+/));
+    /* Avoid splitting title-first queries («Девочка с которой…») via surname collisions. */
+    const strongAuthor = bySurname.some((row) => Number(row.book_count) >= 2);
+    if (strongAuthor && titleContent.some((tok) => tok.length >= 4)) {
+      return {
+        authorNames: bySurname.map((row) => row.name),
+        titleQuery,
+        fullNeedle
+      };
+    }
+  }
+  return null;
+}
+
 /**
  * Build books_fts MATCH string.
  * Default operator → prefix (`token*`) with light Russian stem OR-expand;
  * `=` → exact token; `*` → signal LIKE fallback.
+ * Multi-token also ORs an exact phrase MATCH for ranking/recall.
  * @returns {{ mode: 'fts', match: string } | { mode: 'like' } | null}
  */
 function buildBooksFtsMatchQuery(field, query) {
@@ -3257,7 +3375,7 @@ function buildBooksFtsMatchQuery(field, query) {
   if (parsed.operator === 'empty' || parsed.operator === '~') return null;
   if (parsed.operator === '*') return { mode: 'like' };
 
-  const needleKey = createSortKey(parsed.value || query);
+  const needleKey = normalizeLookalikeSortKey(createSortKey(parsed.value || query));
   const tokens = parsed.operator === '='
     ? [needleKey].filter(Boolean)
     : needleKey.split(/\s+/).filter(Boolean);
@@ -3284,7 +3402,9 @@ function buildBooksFtsMatchQuery(field, query) {
       parts.push(prefixCol(`"${safe}"`));
     }
   } else {
-    const groups = expandSearchTokenVariants(tokens);
+    /* AND on content tokens only — «с»/«не» make FTS intersect huge posting lists. */
+    const andTokens = tokens.length >= 2 ? filterSearchContentTokens(tokens) : tokens;
+    const groups = expandSearchTokenVariants(andTokens);
     for (const variants of groups) {
       const bodies = [];
       for (const variant of variants) {
@@ -3299,7 +3419,15 @@ function buildBooksFtsMatchQuery(field, query) {
 
   if (!parts.length) return null;
   /* FTS5 requires explicit AND between parenthesized OR-groups; bare space fails. */
-  return { mode: 'fts', match: parts.join(' AND ') };
+  let match = parts.join(' AND ');
+  if (parsed.operator !== '=' && tokens.length >= 2) {
+    /* Full phrase keeps stopwords so exact titles still MATCH. */
+    const phraseSafe = tokens.map((tok) => escapeFts5Token(tok)).filter(Boolean).join(' ');
+    if (phraseSafe) {
+      match = `(${match}) OR ${prefixCol(`"${phraseSafe}"`)}`;
+    }
+  }
+  return { mode: 'fts', match };
 }
 
 function appendBookFilterSql(whereParts, whereParams, genreFilter, extraFilters, { alias = 'active_books' } = {}) {
@@ -3319,12 +3447,62 @@ function appendBookFilterSql(whereParts, whereParams, genreFilter, extraFilters,
   }
 }
 
+/** Title ranking: exact / prefix / ordered-token contains (NEAR-like). */
+function buildTitleBoostExpr(column, needleKey, contentTokens = []) {
+  const col = String(column || 'title_search');
+  if (!needleKey) return { sql: '0', params: [] };
+  const ordered = buildOrderedTitleLikePattern(contentTokens);
+  const parts = [
+    `WHEN LOWER(COALESCE(${col}, '')) = ? THEN -2000`,
+    `WHEN LOWER(COALESCE(${col}, '')) LIKE ? THEN -2000`,
+    `WHEN LOWER(COALESCE(${col}, '')) LIKE ? THEN -1000`
+  ];
+  const params = [needleKey, `${needleKey} %`, `${needleKey}%`];
+  if (ordered) {
+    parts.splice(2, 0, `WHEN LOWER(COALESCE(${col}, '')) LIKE ? THEN -1500`);
+    params.splice(2, 0, ordered);
+  }
+  return { sql: `CASE ${parts.join(' ')} ELSE 0 END`, params };
+}
+
+function finalizeSearchBookPage(items, pageSize) {
+  const list = dedupeSearchBookItems(items || []);
+  if (pageSize > 0 && list.length > pageSize) return list.slice(0, pageSize);
+  return list;
+}
+
+function tryTypoCorrectedSearchBooks(args) {
+  if (!args?.allowTypoRetry) return null;
+  /* Never on typeahead — dictionary scan is costly on Flibusta. */
+  if (args.totalMode === 'omit') return null;
+  const q = String(args.query || '').trim();
+  if (!q || q.length < 5) return null;
+  const suggestions = findDidYouMeanSuggestions(q, 1);
+  for (const suggestion of suggestions) {
+    if (suggestion.type !== 'title' && suggestion.type !== 'author') continue;
+    const corrected = applyDidYouMeanToQuery(q, suggestion);
+    if (!corrected || corrected.toLowerCase() === q.toLowerCase()) continue;
+    const retried = searchBooks({
+      ...args,
+      query: corrected,
+      allowTypoRetry: false
+    });
+    if ((retried.total || 0) > 0 || (retried.items || []).length) {
+      return { ...retried, correctedFrom: q, correctedQuery: corrected };
+    }
+  }
+  return null;
+}
+
 export function searchBooks({
   query = '', page = 1, pageSize = 24, field = 'all', sort = 'title', order = '',
   genre = '', letter = '', lang = '', format = '', year = 0, minRate = 0, hasSeries = null,
   /** exact = full COUNT(*); capped = COUNT up to 10001 (hub); omit = skip COUNT (suggest) */
-  totalMode = 'exact'
-}) {
+  totalMode = 'exact',
+  /** Internal: prevent recursive typo-correction loops */
+  allowTypoRetry = true
+} = {}) {
+  query = prepareSearchQueryInput(query);
   const offset = (page - 1) * pageSize;
   const orderBy = resolveSort(sort, order);
   const genreFilter = buildGenreFilterSql(genre);
@@ -3417,12 +3595,76 @@ export function searchBooks({
   }
 
   const authorMatch = (field === 'all' || field === 'authors') ? buildAuthorWhereForBooks(query) : null;
+
+  /* ── Author + title split: "Садовников Пешком над облаками" ── */
+  if (field === 'all' && isBooksFtsUsable()) {
+    const split = resolveAuthorTitleSplit(query);
+    if (split?.authorNames?.length && split.titleQuery) {
+      const titlePlan = buildBooksFtsMatchQuery('title', split.titleQuery);
+      const authorWhere = buildAuthorWhereFromMatchedNames(split.authorNames);
+      if (titlePlan?.mode === 'fts' && titlePlan.match && authorWhere) {
+        const filterParts = [];
+        const filterParams = [];
+        appendBookFilterSql(filterParts, filterParams, genreFilter, extraFilters, { alias: 'b' });
+        const authorSql = authorWhere.where.replace(/active_books\./g, 'b.');
+        const whereSql = ['books_fts MATCH ?', `(${authorSql})`, ...filterParts].join(' AND ');
+        const whereParams = [titlePlan.match, ...authorWhere.params, ...filterParams];
+        const titleNeedle = createSortKey(split.titleQuery);
+        let ftsHit = false;
+        let total = 0;
+        let capped = false;
+        if (mode === 'omit') {
+          ftsHit = Boolean(db.prepare(`
+            SELECT 1 FROM books_fts
+            JOIN active_books b ON b.id = books_fts.id
+            WHERE ${whereSql}
+            LIMIT 1
+          `).get(...whereParams));
+        } else {
+          const counted = resolveSqlTotal(
+            `SELECT COUNT(*) AS count FROM books_fts JOIN active_books b ON b.id = books_fts.id WHERE ${whereSql}`,
+            whereParams,
+            `SELECT 1 FROM books_fts JOIN active_books b ON b.id = books_fts.id WHERE ${whereSql}`,
+            whereParams
+          );
+          total = counted.total;
+          capped = counted.capped;
+          ftsHit = total > 0;
+        }
+        if (ftsHit) {
+          const contentTokens = filterSearchContentTokens(String(titleNeedle || '').split(/\s+/));
+          const boost = buildTitleBoostExpr('b.title_search', titleNeedle, contentTokens);
+          const titleBoost = boost.sql;
+          const titleBoostParams = boost.params;
+          const listOrderBy = resolveBookAliasSort(sort, 'b', order);
+          const rankedOrderBy = sort === 'series'
+            ? `${listOrderBy}, ${titleBoost} ASC, bm25(books_fts) ASC`
+            : `${titleBoost} ASC, bm25(books_fts) ASC, ${listOrderBy}`;
+          const items = pageSize > 0
+            ? finalizeSearchBookPage(db.prepare(`
+              SELECT b.id, b.title, b.authors, b.genres, b.series, b.series_no AS seriesNo, b.ext, b.lang,
+                     b.lib_rate AS libRate, b.archive_name AS archiveName
+              FROM books_fts
+              JOIN active_books b ON b.id = books_fts.id
+              WHERE ${whereSql}
+              ORDER BY ${rankedOrderBy}
+              LIMIT ? OFFSET ?
+            `).all(...whereParams, ...titleBoostParams, pageSize, offset).map(mapBookListRow), pageSize)
+            : [];
+          attachSeriesListsToBooks(items);
+          const outTotal = mode === 'omit' ? items.length : total;
+          return capped ? { total: outTotal, items, capped: true } : { total: outTotal, items };
+        }
+      }
+    }
+  }
+
   const ftsPlan = buildBooksFtsMatchQuery(field, query);
   const useFts = Boolean(ftsPlan?.mode === 'fts' && ftsPlan.match && isBooksFtsUsable());
 
   /* ── Hot path: FTS5 MATCH + bm25 (FTS must drive the plan — never scan all books) ── */
   if (useFts) {
-    const needleKey = createSortKey(parsedQuery.value || query);
+    const needleKey = normalizeLookalikeSortKey(createSortKey(parsedQuery.value || query));
     const filterParts = [];
     const filterParams = [];
     appendBookFilterSql(filterParts, filterParams, genreFilter, extraFilters, { alias: 'b' });
@@ -3464,22 +3706,18 @@ export function searchBooks({
     // External-content FTS can be empty/desynced while books_fts_dirty=0.
     // If MATCH finds nothing, fall through to LIKE instead of a false "0 results".
     if (ftsHit) {
-      const titleBoost = needleKey
-        ? `CASE
-            WHEN LOWER(COALESCE(b.title_search, '')) = ? THEN -2000
-            WHEN LOWER(COALESCE(b.title_search, '')) LIKE ? THEN -1000
-            ELSE 0
-          END`
-        : '0';
-      const titleBoostParams = needleKey ? [needleKey, `${needleKey}%`] : [];
+      const contentTokens = filterSearchContentTokens(String(needleKey || '').split(/\s+/));
+      const boost = buildTitleBoostExpr('b.title_search', needleKey, contentTokens);
+      const titleBoost = boost.sql;
+      const titleBoostParams = boost.params;
       const listOrderBy = resolveBookAliasSort(sort, 'b', order);
-      /* Exact/phrase title beat bm25 so multi-word titles land on page 1. */
+      /* Exact/phrase/ordered title beat bm25 so multi-word titles land on page 1. */
       const rankedOrderBy = sort === 'series'
         ? `${listOrderBy}, ${titleBoost} ASC, bm25(books_fts) ASC`
         : `${titleBoost} ASC, bm25(books_fts) ASC, ${listOrderBy}`;
 
       const items = pageSize > 0
-        ? db.prepare(`
+        ? finalizeSearchBookPage(db.prepare(`
         SELECT b.id, b.title, b.authors, b.genres, b.series, b.series_no AS seriesNo, b.ext, b.lang,
                b.lib_rate AS libRate, b.archive_name AS archiveName
         FROM books_fts
@@ -3487,7 +3725,7 @@ export function searchBooks({
         WHERE ${whereSql}
         ORDER BY ${rankedOrderBy}
         LIMIT ? OFFSET ?
-      `).all(...whereParams, ...titleBoostParams, pageSize, offset).map(mapBookListRow)
+      `).all(...whereParams, ...titleBoostParams, pageSize, offset).map(mapBookListRow), pageSize)
         : [];
 
       attachSeriesListsToBooks(items);
@@ -3535,9 +3773,19 @@ export function searchBooks({
       if (col) {
         titleRankParts.push(`WHEN LOWER(COALESCE(${col}, '')) = ? THEN 0`);
         titleRankParams.push(needleKey);
+        titleRankParts.push(`WHEN LOWER(COALESCE(${col}, '')) LIKE ? THEN 0`);
+        titleRankParams.push(`${needleKey} %`);
         if (needleTokens.length > 1) {
+          const reversedKey = [...needleTokens].reverse().join(' ');
           titleRankParts.push(`WHEN LOWER(COALESCE(${col}, '')) = ? THEN 0`);
-          titleRankParams.push([...needleTokens].reverse().join(' '));
+          titleRankParams.push(reversedKey);
+          titleRankParts.push(`WHEN LOWER(COALESCE(${col}, '')) LIKE ? THEN 0`);
+          titleRankParams.push(`${reversedKey} %`);
+          const ordered = buildOrderedTitleLikePattern(filterSearchContentTokens(needleTokens));
+          if (ordered) {
+            titleRankParts.push(`WHEN LOWER(COALESCE(${col}, '')) LIKE ? THEN 1`);
+            titleRankParams.push(ordered);
+          }
         }
         titleRankParts.push(`WHEN LOWER(COALESCE(${col}, '')) LIKE ? THEN 3`);
         titleRankParams.push(`${needleKey}%`);
@@ -3564,14 +3812,14 @@ export function searchBooks({
       ? `${orderBy}, ${rankSQL} ASC`
       : `${rankSQL} ASC, ${orderBy}`;
     const items = pageSize > 0
-      ? db.prepare(`
+      ? finalizeSearchBookPage(db.prepare(`
       SELECT id, title, authors, genres, series, series_no AS seriesNo, ext, lang,
              lib_rate AS libRate, archive_name AS archiveName
       FROM active_books
       WHERE ${combinedWhere}
       ORDER BY ${rankedOrderBy}
       LIMIT ? OFFSET ?
-    `).all(...fullWhereParams, ...allRankParams, pageSize, offset).map(mapBookListRow)
+    `).all(...fullWhereParams, ...allRankParams, pageSize, offset).map(mapBookListRow), pageSize)
       : [];
 
     attachSeriesListsToBooks(items);
@@ -3604,13 +3852,81 @@ function levenshteinDistance(a, b) {
   return row[t.length];
 }
 
+const TITLE_TOKEN_DICT_LIMIT = 50_000;
+const TITLE_TOKEN_META_KEY = 'search_title_tokens_built';
+let _titleTokenBuildScheduled = false;
+
 /**
- * Lightweight typo suggestions from authors/series catalogs (not full books FTS).
- * @returns {{ type: 'author'|'series', label: string, query: string, name: string }[]}
+ * Compact frequency dictionary of title tokens for did-you-mean (not full trigram).
+ * @param {{ force?: boolean }} [opts]
+ */
+export function rebuildTitleTokenDictionary({ force = false } = {}) {
+  ensureSearchTitleTokensTable();
+  if (!force && getMeta(TITLE_TOKEN_META_KEY) === '1') {
+    const n = Number(db.prepare('SELECT COUNT(*) AS c FROM search_title_tokens').get()?.c) || 0;
+    if (n > 0) return { ok: true, tokens: n, skipped: true };
+  }
+
+  const freqs = new Map();
+  const rows = db.prepare(`
+    SELECT title_search AS titleSearch
+    FROM books
+    WHERE deleted = 0 AND COALESCE(title_search, '') != ''
+  `).iterate();
+  for (const row of rows) {
+    for (const tok of String(row.titleSearch || '').split(/\s+/)) {
+      if (tok.length < 4) continue;
+      freqs.set(tok, (freqs.get(tok) || 0) + 1);
+    }
+    if (freqs.size > TITLE_TOKEN_DICT_LIMIT * 4) break;
+  }
+
+  const top = [...freqs.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, TITLE_TOKEN_DICT_LIMIT);
+
+  const clear = db.prepare('DELETE FROM search_title_tokens');
+  const ins = db.prepare('INSERT INTO search_title_tokens(token, freq) VALUES (?, ?)');
+  db.transaction(() => {
+    clear.run();
+    for (const [token, freq] of top) {
+      ins.run(token, freq);
+    }
+  })();
+  setMeta(TITLE_TOKEN_META_KEY, '1');
+  return { ok: true, tokens: top.length, skipped: false };
+}
+
+function ensureTitleTokenDictionaryLazy() {
+  try {
+    ensureSearchTitleTokensTable();
+    const n = Number(db.prepare('SELECT COUNT(*) AS c FROM search_title_tokens').get()?.c) || 0;
+    if (n > 0) return;
+  } catch {
+    /* ignore */
+  }
+  if (_titleTokenBuildScheduled) return;
+  _titleTokenBuildScheduled = true;
+  setImmediate(() => {
+    try {
+      rebuildTitleTokenDictionary({ force: true });
+    } catch (err) {
+      console.warn('[search] title token dictionary build failed:', err.message);
+    } finally {
+      _titleTokenBuildScheduled = false;
+    }
+  });
+}
+
+/**
+ * Lightweight typo suggestions from authors/series catalogs + title token dictionary.
+ * @returns {{ type: 'author'|'series'|'title', label: string, query: string, name: string }[]}
  */
 export function findDidYouMeanSuggestions(query = '', limit = 3) {
-  const tokens = createSortKey(query).split(/\s+/).filter((tok) => tok.length >= 4);
+  const tokens = normalizeLookalikeSortKey(createSortKey(query)).split(/\s+/).filter((tok) => tok.length >= 4);
   if (!tokens.length) return [];
+
+  ensureTitleTokenDictionaryLazy();
 
   const scored = [];
   const seen = new Set();
@@ -3671,6 +3987,34 @@ export function findDidYouMeanSuggestions(query = '', limit = 3) {
         });
       }
     }
+
+    try {
+      const titleRows = db.prepare(`
+        SELECT token, freq
+        FROM search_title_tokens
+        WHERE token LIKE ?
+        ORDER BY freq DESC
+        LIMIT 48
+      `).all(prefix);
+      for (const row of titleRows) {
+        const part = String(row.token || '');
+        const dist = levenshteinDistance(token, part);
+        if (dist <= 0 || dist > maxDist) continue;
+        const key = `title:${part}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        scored.push({
+          type: 'title',
+          label: part,
+          query: part,
+          name: part,
+          dist,
+          bookCount: row.freq || 0
+        });
+      }
+    } catch {
+      /* table may be missing on first call */
+    }
   }
 
   scored.sort((a, b) => {
@@ -3710,7 +4054,7 @@ export function listSearchGenres({
   const runGrouped = (fromSql, params) => mapRows(db.prepare(`
     SELECT g.name AS name,
            COALESCE(g.display_name, g.name) AS displayName,
-           COUNT(DISTINCT b.id) AS bookCount
+           COUNT(DISTINCT bg.book_id) AS bookCount
     ${fromSql}
     GROUP BY g.id
     ORDER BY bookCount DESC, displayName ASC
@@ -3776,6 +4120,9 @@ export function listSearchGenres({
   const ftsPlan = buildBooksFtsMatchQuery(field, q);
   const useFts = Boolean(ftsPlan?.mode === 'fts' && ftsPlan.match && isBooksFtsUsable());
 
+  /* Cap matched books before GROUP BY — full MATCH/LIKE + genre join on Flibusta is slow. */
+  const GENRE_MATCH_CAP = 2000;
+
   if (useFts) {
     const filterParts = [];
     const filterParams = [];
@@ -3791,11 +4138,15 @@ export function listSearchGenres({
     `).get(...whereParams);
     if (peek) {
       return finalize(runGrouped(`
-          FROM books_fts
-          JOIN active_books b ON b.id = books_fts.id
-          JOIN book_genres bg ON bg.book_id = b.id
+          FROM (
+            SELECT b.id AS id
+            FROM books_fts
+            JOIN active_books b ON b.id = books_fts.id
+            WHERE ${whereSql}
+            LIMIT ${GENRE_MATCH_CAP}
+          ) matched
+          JOIN book_genres bg ON bg.book_id = matched.id
           JOIN genres_catalog g ON g.id = bg.genre_id
-          WHERE ${whereSql}
         `, whereParams));
     }
   }
@@ -3822,9 +4173,9 @@ export function listSearchGenres({
   return finalize(runGrouped(`
       FROM (
         SELECT id FROM active_books WHERE ${combinedWhere}
+        LIMIT ${GENRE_MATCH_CAP}
       ) matched
-      JOIN active_books b ON b.id = matched.id
-      JOIN book_genres bg ON bg.book_id = b.id
+      JOIN book_genres bg ON bg.book_id = matched.id
       JOIN genres_catalog g ON g.id = bg.genre_id
     `, fullWhereParams));
 }
@@ -3841,28 +4192,73 @@ export function searchOverview({ query = '' } = {}) {
       query: '',
       books: { total: 0 },
       authors: { total: 0 },
-      series: { total: 0 }
+      series: { total: 0 },
+      preferredField: null,
+      routeField: null
     };
   }
+  /* Counts only — do not materialize/rank a books page here (was multi-second on Flibusta). */
   const books = searchBooks({
     query: q,
     page: 1,
     pageSize: 0,
     field: 'all',
     sort: 'title',
-    totalMode: 'capped'
+    totalMode: 'capped',
+    allowTypoRetry: false
   });
   const authors = listAuthors({ query: q, page: 1, pageSize: 1, sort: 'count' });
-  const series = listSeries({ query: q, page: 1, pageSize: 1, sort: 'count', nameOnly: true });
+  const series = listSeries({ query: q, page: 1, pageSize: 3, sort: 'count', nameOnly: true });
   const bookTotal = Math.max(0, Math.floor(Number(books.total) || 0));
+  const authorsTotal = Math.max(0, Math.floor(Number(authors.total) || 0));
+  const seriesTotal = Math.max(0, Math.floor(Number(series.total) || 0));
+  const preferredField = detectPreferredSearchField({
+    query: q,
+    booksTotal: bookTotal,
+    authorsTotal,
+    seriesTotal,
+    seriesSamples: series.items || []
+  });
+  const routeField = resolveSearchRouteField({
+    query: q,
+    booksTotal: bookTotal,
+    authorsTotal,
+    seriesTotal,
+    preferredField
+  });
+  /*
+   * Warm first «Книги» page only when we will (or likely will) open books —
+   * avoids wasting CPU when routing to authors/series/hub.
+   */
+  if (routeField === 'books') {
+    const warmQuery = q;
+    setImmediate(() => {
+      try {
+        const page = searchBooks({
+          query: warmQuery,
+          page: 1,
+          pageSize: 24,
+          field: 'all',
+          sort: 'title',
+          totalMode: 'capped',
+          allowTypoRetry: false
+        });
+        rememberWarmSearchBooksPage(warmQuery, 'title', { ...page, field: 'books' });
+      } catch {
+        /* warmup best-effort */
+      }
+    });
+  }
   return {
     query: q,
     books: {
       total: books.capped ? Math.min(bookTotal, 10_000) : bookTotal,
       capped: Boolean(books.capped)
     },
-    authors: { total: Math.max(0, Math.floor(Number(authors.total) || 0)) },
-    series: { total: Math.max(0, Math.floor(Number(series.total) || 0)) }
+    authors: { total: authorsTotal },
+    series: { total: seriesTotal },
+    preferredField,
+    routeField
   };
 }
 
@@ -3936,7 +4332,9 @@ export function buildSearchRecoveryHints({ query = '', field = 'books' } = {}) {
 export function searchCatalog({
   query = '', page = 1, pageSize = 24, field = 'books', sort = 'title', order = '',
   genre = '', letter = '', lang = '', format = '', year = 0, minRate = 0, hasSeries = null,
-  nameOnly = false
+  nameOnly = false,
+  /** books: default capped COUNT for free-text (same as search hub) — exact COUNT on Flibusta is too slow */
+  totalMode = ''
 }) {
   const bookFields = new Set(['books', 'title', 'book-authors', 'book-series', 'genres', 'keywords']);
   const normalizedField = ['books', 'authors', 'series', 'title', 'book-authors', 'book-series', 'genres', 'keywords'].includes(field) ? field : 'books';
@@ -3963,29 +4361,59 @@ export function searchCatalog({
       genres: 'genres',
       keywords: 'keywords'
     };
+    const bookTotalMode = ['exact', 'capped', 'omit'].includes(totalMode)
+      ? totalMode
+      : (String(query || '').trim() ? 'capped' : 'exact');
+    const bookField = bookFields.has(normalizedField) ? bookFieldMap[normalizedField] : 'all';
+    const warmed = (normalizedField === 'books' && bookField === 'all')
+      ? takeWarmSearchBooksPage(query, {
+        sort, page, pageSize, genre, letter, lang, format, year, minRate, hasSeries: seriesFlag
+      })
+      : null;
+    const bookArgs = {
+      query,
+      page,
+      pageSize,
+      field: bookField,
+      sort,
+      order,
+      genre,
+      letter,
+      lang,
+      format,
+      year,
+      minRate,
+      hasSeries: seriesFlag,
+      totalMode: bookTotalMode,
+      allowTypoRetry: false
+    };
     result = {
-      ...searchBooks({
-        query,
-        page,
-        pageSize,
-        field: bookFields.has(normalizedField) ? bookFieldMap[normalizedField] : 'all',
-        sort,
-        order,
-        genre,
-        letter,
-        lang,
-        format,
-        year,
-        minRate,
-        hasSeries: seriesFlag
-      }),
+      ...(warmed || searchBooks(bookArgs)),
       field: normalizedField
     };
+    /* Typo retry only after a true miss — not on every searchBooks call. */
+    if (!warmed && result.total === 0 && String(query || '').trim()) {
+      const corrected = tryTypoCorrectedSearchBooks({ ...bookArgs, allowTypoRetry: true });
+      if (corrected) result = { ...corrected, field: normalizedField };
+    }
   }
 
-  if (result.total === 0 && String(query || '').trim()) {
-    const hintField = normalizedField === 'authors' || normalizedField === 'series' ? normalizedField : 'books';
-    result.searchHints = buildSearchRecoveryHints({ query, field: hintField });
+  const q = String(query || '').trim();
+  const hintField = normalizedField === 'authors' || normalizedField === 'series' ? normalizedField : 'books';
+  if (q && result.total === 0) {
+    result.searchHints = buildSearchRecoveryHints({ query: q, field: hintField });
+  } else if (
+    q
+    && hintField === 'books'
+    && isWeakBookSearchResult({ total: result.total, items: result.items, query: q })
+  ) {
+    /* Cheap path: skip alternate-mode rescans; only one did-you-mean suggestion. */
+    result.searchHints = {
+      alternateModes: [],
+      didYouMean: findDidYouMeanSuggestions(q, 1),
+      tip: null,
+      weak: true
+    };
   }
 
   return result;
@@ -5012,7 +5440,14 @@ const _recStmtCache = new Map();
 const REC_STMT_CACHE_MAX = 50;
 
 export function getBooksByFacetLight(facet, value, limit = 8, sort = 'rating') {
-  if (facet === 'series') value = resolveSeriesCatalogName(String(value || ''));
+  let resolved = String(value || '');
+  if (facet === 'series') {
+    resolved = resolveSeriesCatalogName(resolved);
+  } else if (facet === 'authors') {
+    /* book.authors is display text; authors.name is canonical (фамилия,имя,…). */
+    resolved = resolveAuthorName(resolved) || resolved;
+  }
+  if (!resolved) return [];
   const key = `${facet}|${sort}`;
   let stmt = _recStmtCache.get(key);
   if (!stmt) {
@@ -5032,12 +5467,14 @@ export function getBooksByFacetLight(facet, value, limit = 8, sort = 'rating') {
       if (oldest !== undefined) _recStmtCache.delete(oldest);
     }
   }
-  return stmt.all(value, limit).map(mapBookListRow);
+  return stmt.all(resolved, limit).map(mapBookListRow);
 }
 
 export function getBooksByFacet({ facet, value, page = 1, pageSize = 24, sort = 'title', order = '', author = '' }) {
   if (facet === 'series') {
     value = resolveSeriesCatalogName(String(value || ''));
+  } else if (facet === 'authors') {
+    value = resolveAuthorName(String(value || '')) || String(value || '');
   }
   const cacheKey = `${facet}|${value}|${sort}|${order}|${page}|${pageSize}|${author}`;
   const cached = readTimedCache(facetBooksCache, cacheKey);
@@ -5088,9 +5525,11 @@ export function getBooksByFacet({ facet, value, page = 1, pageSize = 24, sort = 
  * Параллельные HTTP-запросы к одной странице фасета (двойной клик, префетч) — один тяжёлый запрос к SQLite.
  */
 export async function getBooksByFacetCoalesced({ facet, value, page = 1, pageSize = 24, sort = 'title', order = '', author = '' }) {
-  let v = value;
+  let v = String(value || '');
   if (facet === 'series') {
-    v = resolveSeriesCatalogName(String(value || ''));
+    v = resolveSeriesCatalogName(v);
+  } else if (facet === 'authors') {
+    v = resolveAuthorName(v) || v;
   }
   const cacheKey = `${facet}|${v}|${sort}|${order}|${page}|${pageSize}|${author}`;
   const cached = readTimedCache(facetBooksCache, cacheKey);
@@ -6670,13 +7109,17 @@ export function getSuggestions(query, limit = 5, field = 'books') {
 
   if (scope === 'books') {
     // Skip full COUNT(*) — typeahead only needs a few ranked rows.
+    // Multi-word queries: title-scoped MATCH is cheaper/more relevant than field=all.
+    const contentTokens = filterSearchContentTokens(key.split(/\s+/));
+    const bookField = contentTokens.length >= 2 ? 'title' : 'all';
     books = searchBooks({
       query: raw,
       page: 1,
       pageSize: n,
-      field: 'all',
+      field: bookField,
       sort: 'title',
-      totalMode: 'omit'
+      totalMode: 'omit',
+      allowTypoRetry: false
     }).items
       .map((row) => ({
         id: row.id,

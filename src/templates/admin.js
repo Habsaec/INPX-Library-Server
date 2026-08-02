@@ -196,15 +196,22 @@ export function renderOperations({ user, stats = {}, indexStatus = {}, operation
         <span class="admin-chip" title="${escapeHtml(t('admin.duplicates.suppressedTitle'))}"><strong data-operations-field="statsSuppressed">${escapeHtml(tp('admin.statsSuppressed', { n: (Number(operations.suppressedCount) || 0).toLocaleString(loc) }))}</strong></span>
         <span class="admin-sep"></span>
         <span class="admin-chip" data-index-field="active">${indexStatus.active ? escapeHtml(t('admin.indexUpdating')) : escapeHtml(t('admin.indexReady'))}</span>
-        <span class="admin-chip" title="${escapeHtml(t('admin.ftsStatusTitle'))}" data-operations-field="ftsStatus">${escapeHtml((() => {
-          const st = indexStatus?.ftsStatus?.status || operations?.ftsStatus?.status || '';
-          if (st === 'ok') return t('admin.ftsStatusOk');
-          if (st === 'dirty') return t('admin.ftsStatusDirty');
-          if (st === 'rebuilding') return t('admin.ftsStatusRebuilding');
-          if (st === 'desynced') return t('admin.ftsStatusDesynced');
-          if (st === 'empty') return t('admin.ftsStatusEmpty');
-          return t('admin.ftsStatusUnknown');
-        })())}</span>
+        ${(() => {
+          const fts = indexStatus?.ftsStatus || operations?.ftsStatus || {};
+          const st = fts.status || '';
+          const warn = st === 'dirty' || st === 'desynced' || st === 'rebuilding' || operations?.ftsRebuildRunning;
+          const label = st === 'ok' ? t('admin.ftsStatusOk')
+            : st === 'dirty' ? t('admin.ftsStatusDirty')
+              : st === 'rebuilding' || operations?.ftsRebuildRunning ? t('admin.ftsStatusRebuilding')
+                : st === 'desynced' ? t('admin.ftsStatusDesynced')
+                  : st === 'empty' ? t('admin.ftsStatusEmpty')
+                    : t('admin.ftsStatusUnknown');
+          const tip = tp('admin.ftsStatusTip', {
+            books: Number(fts.booksCount) || 0,
+            fts: Number(fts.ftsDocCount) || 0
+          });
+          return `<span class="admin-chip${warn ? ' admin-chip--warn' : ''}" title="${escapeHtml(tip)}" data-operations-field="ftsStatus" data-fts-status="${escapeHtml(st)}">${escapeHtml(label)}</span>`;
+        })()}
         <span class="admin-chip" title="${escapeHtml(t('admin.statsLastIndexTitle'))}"><span data-operations-field="statsLastIndex">${escapeHtml(lastIndexSummary)}</span></span>
         <span class="admin-sep"></span>
         <span class="admin-chip">${escapeHtml(tp('admin.uptime', { s: uptimeStr }))}</span>
@@ -303,6 +310,15 @@ export function renderOperations({ user, stats = {}, indexStatus = {}, operation
               <span class="muted" data-operations-field="monitorUptime">${escapeHtml(t('admin.monitor.uptime'))}: ${escapeHtml(uptimeStr)}</span>
               <span class="muted" data-operations-field="monitorUsers">${escapeHtml(t('admin.monitor.users'))}: ${escapeHtml(tp('admin.monitor.usersFmt', { total: (Number(operations.totalUsers) || 0).toLocaleString(loc), online: (Number(operations.onlineUsers) || 0).toLocaleString(loc) }))}</span>
             </div>
+          </div>
+        </div>
+        <div class="admin-action-item">
+          <div class="admin-action-item-info">
+            <strong>${escapeHtml(t('admin.ftsRebuild'))}</strong>
+            <span class="muted">${escapeHtml(t('admin.ftsRebuildHint'))}</span>
+          </div>
+          <div class="admin-actions-row">
+            <button type="button" data-operation-action="fts-rebuild" data-operation-label="${escapeHtml(t('admin.ftsRebuildBtn'))}" ${operations.ftsRebuildRunning || indexStatus.active ? 'disabled' : ''}>${escapeHtml(t('admin.ftsRebuildBtn'))}</button>
           </div>
         </div>
         <div class="admin-action-item">

@@ -54,7 +54,9 @@ export function registerBrowseApiRoutes(app) {
         query: '',
         books: { total: 0 },
         authors: { total: 0 },
-        series: { total: 0 }
+        series: { total: 0 },
+        preferredField: null,
+        routeField: null
       });
     }
     const cacheKey = `api:search:overview:${q}`;

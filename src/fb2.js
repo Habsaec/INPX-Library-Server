@@ -406,32 +406,68 @@ export async function getOrExtractBookDetails(book, { skipCoverAugment = false }
     return failEntry.details;
   }
 
-  let details;
+  let details = {
+    title: book.title || '',
+    annotation: '',
+    annotationIsHtml: false,
+    cover: null
+  };
   let extractFailed = false;
-  try {
-    details = await extractBookDetails(book);
-  } catch {
-    extractFailed = true;
-    details = { title: book.title || '', annotation: '', cover: null };
-  }
-  if (details.cover && !details.cover.data?.length) details.cover = null;
 
+  /*
+   * Flibusta: prefer sidecar annotation/cover BEFORE unzipping the book archive.
+   * Book page SSR uses skipCoverAugment and only needs annotation — opening fb2.zip
+   * on NAS made /book/:id multi-second even when annotations.7z already had the text.
+   */
   if (shouldTryFlibustaCoverPaths(book)) {
     const root = getSourceRoot(book.sourceId);
     try {
       const sideAnn = await readFlibustaAnnotationHtml(root, book.archiveName, book.fileName);
-      if (sideAnn && (!details.annotation || !String(details.annotation).trim())) {
+      if (sideAnn) {
         details.annotation = sideAnn;
         details.annotationIsHtml = true;
-      }
-      if (!details.cover) {
-        const cov = await readFlibustaCover(root, book.archiveName, book);
-        if (cov) details.cover = cov;
       }
     } catch {
       /* sidecar optional */
     }
+    if (!skipCoverAugment) {
+      try {
+        const cov = await readFlibustaCover(root, book.archiveName, book);
+        if (cov) details.cover = cov;
+      } catch {
+        /* optional */
+      }
+    }
   }
+
+  /*
+   * Book page / OPDS meta (skipCoverAugment): never unzip the book archive for Flibusta.
+   * Annotation comes from etc/annotations.7z; cover is served later via /cover*.
+   * Opening fb2.zip on NAS was the main delay when clicking a search result.
+   */
+  const flibustaSsrSkipArchive = skipCoverAugment && bookHasFlibustaSidecar(book);
+  const needArchiveExtract =
+    !flibustaSsrSkipArchive &&
+    (!String(details.annotation || '').trim() ||
+      (!skipCoverAugment && !details.cover?.data?.length));
+
+  if (needArchiveExtract) {
+    try {
+      const extracted = await extractBookDetails(book);
+      if (!String(details.annotation || '').trim() && extracted.annotation) {
+        details.annotation = extracted.annotation;
+        details.annotationIsHtml = false;
+      }
+      if (extracted.title) details.title = extracted.title;
+      if (!details.cover?.data?.length && extracted.cover?.data?.length) {
+        details.cover = extracted.cover;
+      }
+    } catch {
+      extractFailed = true;
+    }
+  }
+
+  if (details.cover && !details.cover.data?.length) details.cover = null;
 
   if (!details.cover && !book.archiveName) {
     const nearCover = findNearFileCover(book);

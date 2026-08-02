@@ -450,6 +450,10 @@ html[data-theme="light"] .topbar-admin {
 .admin-status-bar .admin-chip strong {
   color: var(--text); font-weight: 600;
 }
+.admin-status-bar .admin-chip--warn {
+  color: var(--danger, #b45309);
+  font-weight: 600;
+}
 .admin-status-bar .admin-sep {
   width: 1px; height: 16px; background: var(--border); flex-shrink: 0;
 }
@@ -3493,6 +3497,14 @@ button.download-format-link {
   background: var(--panel-soft-bg);
   text-decoration: none;
   color: var(--text);
+}
+.search-overview-item.is-preferred .search-overview-link {
+  border-color: color-mix(in srgb, var(--accent, #3b82f6) 55%, transparent);
+}
+.search-overview-preferred {
+  margin-left: 0.4em;
+  font-size: 0.85em;
+  font-weight: 500;
 }
 .search-overview-link:hover {
   background: var(--surface-hover);

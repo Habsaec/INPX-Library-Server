@@ -43,3 +43,25 @@ export function expandSearchTokenVariants(tokens = []) {
     return variants;
   }).filter((group) => group.length > 0);
 }
+
+/**
+ * Append stemmed forms to a sort-key / search field for index-time matching.
+ * @param {string} sortKey
+ * @returns {string}
+ */
+export function appendStemmedSearchTokens(sortKey = '') {
+  const key = String(sortKey || '').trim();
+  if (!key) return '';
+  const tokens = key.split(/\s+/).filter(Boolean);
+  const extra = [];
+  const seen = new Set(tokens);
+  for (const token of tokens) {
+    if (token.length < 4) continue;
+    const stem = stemRussianToken(token);
+    if (stem && stem !== token && stem.length >= 3 && !seen.has(stem)) {
+      seen.add(stem);
+      extra.push(stem);
+    }
+  }
+  return extra.length ? `${key} ${extra.join(' ')}` : key;
+}

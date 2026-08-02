@@ -1390,6 +1390,11 @@ export function initDb() {
       value TEXT
     );
 
+    CREATE TABLE IF NOT EXISTS search_title_tokens (
+      token TEXT PRIMARY KEY,
+      freq INTEGER NOT NULL DEFAULT 0
+    );
+
     CREATE TABLE IF NOT EXISTS bookmarks (
       username TEXT NOT NULL,
       book_id TEXT NOT NULL,
@@ -1649,12 +1654,22 @@ WHERE rp.progress >= 99
   }
 
   ensureBooksFtsTriggers();
+  ensureSearchTitleTokensTable();
 
   // FTS rebuild after crash can take minutes on large libraries — defer until HTTP is up.
   scheduleBootFtsRecoveryIfNeeded();
 
   seedDefaultAdmin();
   migrateInpxToSources();
+}
+
+export function ensureSearchTitleTokensTable() {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS search_title_tokens (
+      token TEXT PRIMARY KEY,
+      freq INTEGER NOT NULL DEFAULT 0
+    );
+  `);
 }
 
 /** @returns {boolean} */
@@ -1705,20 +1720,26 @@ export function getBooksFtsStatus({ force = false, recover = false } = {}) {
   };
   _ftsHealthCache = { at: now, status: snapshot };
 
-  if (recover && status === 'desynced' && !_ftsRebuildScheduled) {
-    console.warn(
-      `[fts] index desynced (books=${booksCount}, fts_docs=${ftsDocCount}) — marking dirty and scheduling rebuild`
-    );
-    setMeta('books_fts_dirty', '1');
-    import('./services/system-events.js').then((m) => {
-      m.logSystemEvent('warn', 'database', 'FTS index desynced — recovery scheduled', {
-        booksCount,
-        ftsDocCount
-      });
-    }).catch(() => {});
-    invalidateBooksFtsHealthCache();
-    scheduleBootFtsRecoveryIfNeeded();
-    return getBooksFtsStatus({ force: true, recover: false });
+  if (recover && !_ftsRebuildScheduled) {
+    if (status === 'desynced') {
+      console.warn(
+        `[fts] index desynced (books=${booksCount}, fts_docs=${ftsDocCount}) — marking dirty and scheduling rebuild`
+      );
+      setMeta('books_fts_dirty', '1');
+      import('./services/system-events.js').then((m) => {
+        m.logSystemEvent('warn', 'database', 'FTS index desynced — recovery scheduled', {
+          booksCount,
+          ftsDocCount
+        });
+      }).catch(() => {});
+      invalidateBooksFtsHealthCache();
+      scheduleBootFtsRecoveryIfNeeded();
+      return getBooksFtsStatus({ force: true, recover: false });
+    }
+    if (status === 'dirty') {
+      /* Search hot path: do not wait for next boot — rebuild in background. */
+      scheduleBootFtsRecoveryIfNeeded();
+    }
   }
 
   return { ...snapshot };
@@ -1754,6 +1775,9 @@ export function scheduleBootFtsRecoveryIfNeeded() {
       console.log(`[boot] FTS index rebuilt in background (${seconds} s)`);
       import('./services/system-events.js').then((m) => {
         m.logSystemEvent('info', 'database', 'FTS boot recovery completed', { seconds });
+      }).catch(() => {});
+      import('./search-enhance.js').then((m) => {
+        try { m.warmupSearchFts(); } catch { /* ignore */ }
       }).catch(() => {});
     } catch (err) {
       console.error('[boot] FTS background rebuild failed:', err.message);

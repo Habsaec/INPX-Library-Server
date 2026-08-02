@@ -699,17 +699,66 @@ function pulseUi(el, className = 'ui-feedback-pulse') {
 function attachCatalogFilters() {
   const panel = document.querySelector('[data-catalog-filters]');
   if (!panel) return;
+  const list = panel.querySelector('.catalog-genre-list');
   const search = panel.querySelector('[data-catalog-genre-search]');
-  const options = [...panel.querySelectorAll('.catalog-genre-option')];
-  if (search && options.length) {
-    search.addEventListener('input', () => {
+
+  const bindGenreSearch = () => {
+    const options = [...panel.querySelectorAll('.catalog-genre-option')];
+    if (!search || !options.length) return;
+    search.oninput = () => {
       const q = search.value.trim().toLowerCase();
       for (const opt of options) {
         const hay = String(opt.dataset.genreSearch || '');
         opt.hidden = Boolean(q) && !hay.includes(q);
       }
+    };
+  };
+  bindGenreSearch();
+
+  if (panel.getAttribute('data-catalog-genres-lazy') !== '1' || !list) return;
+  const params = new URLSearchParams();
+  const q = panel.getAttribute('data-genres-q') || '';
+  if (q) params.set('q', q);
+  const lang = panel.getAttribute('data-genres-lang') || '';
+  const format = panel.getAttribute('data-genres-format') || '';
+  const year = panel.getAttribute('data-genres-year') || '';
+  const minRate = panel.getAttribute('data-genres-min-rate') || '';
+  const hasSeries = panel.getAttribute('data-genres-has-series') || '';
+  if (lang) params.set('lang', lang);
+  if (format) params.set('format', format);
+  if (year) params.set('year', year);
+  if (minRate) params.set('minRate', minRate);
+  if (hasSeries !== '') params.set('hasSeries', hasSeries);
+  const selected = new Set(
+    [...panel.querySelectorAll('input[name="genre"]:checked')].map((el) => el.value)
+  );
+  fetch(`/api/search/genres?${params.toString()}`, { credentials: 'same-origin' })
+    .then((r) => (r.ok ? r.json() : null))
+    .then((data) => {
+      const loading = list.querySelector('[data-catalog-genres-loading]');
+      if (loading) loading.remove();
+      const items = Array.isArray(data?.items) ? data.items : [];
+      const html = items.map((g) => {
+        const name = String(g.name || '');
+        if (!name || selected.has(name)) return '';
+        const label = String(g.displayName || name);
+        const count = Number.isFinite(Number(g.bookCount)) ? Math.max(0, Math.floor(Number(g.bookCount))) : null;
+        const searchHay = `${name} ${label}`.toLowerCase();
+        const countHtml = count != null
+          ? `<span class="catalog-genre-count muted">${escapeHtml(String(count))}</span>`
+          : '';
+        return `<label class="catalog-genre-option" data-genre-search="${escapeHtml(searchHay)}"><input type="checkbox" name="genre" value="${escapeHtml(name)}"><span class="catalog-genre-label">${escapeHtml(label)}</span>${countHtml}</label>`;
+      }).join('');
+      if (html) list.insertAdjacentHTML('beforeend', html);
+      else if (!list.querySelector('.catalog-genre-option')) {
+        list.insertAdjacentHTML('beforeend', `<span class="muted">${escapeHtml(uiT('browse.empty') || '—')}</span>`);
+      }
+      bindGenreSearch();
+    })
+    .catch(() => {
+      const loading = list.querySelector('[data-catalog-genres-loading]');
+      if (loading) loading.textContent = uiT('catalog.filtersGenresLoading') || '…';
     });
-  }
 }
 
 function attachThemeToggle() {
@@ -2224,6 +2273,7 @@ async function pollOperationsDashboard() {
         'reindex-toggle-pause': !Boolean(indexStatus.active),
         'reindex-stop': !Boolean(indexStatus.active),
         repair: Boolean(operations.repairRunning),
+        'fts-rebuild': Boolean(operations.ftsRebuildRunning || indexStatus.active),
         'sidecar-rebuild': Boolean(operations.sidecarRunning),
         'cache-clear': false,
         'events-retain': false
@@ -2269,15 +2319,19 @@ async function pollOperationsDashboard() {
       const lastIndexText = (lastImported > 0 || lastUnique > 0)
         ? uiTp('admin.statsLastIndex', { imported: lastImported.toLocaleString(loc), unique: lastUnique.toLocaleString(loc) })
         : uiT('admin.statsLastIndexEmpty');
-      const ftsSt = (operations.ftsStatus && operations.ftsStatus.status)
-        || (indexStatus && indexStatus.ftsStatus && indexStatus.ftsStatus.status)
-        || '';
+      const ftsSnap = operations.ftsStatus || (indexStatus && indexStatus.ftsStatus) || {};
+      let ftsSt = ftsSnap.status || '';
+      if (operations.ftsRebuildRunning) ftsSt = 'rebuilding';
       const ftsStatusText = ftsSt === 'ok' ? uiT('admin.ftsStatusOk')
         : ftsSt === 'dirty' ? uiT('admin.ftsStatusDirty')
           : ftsSt === 'rebuilding' ? uiT('admin.ftsStatusRebuilding')
             : ftsSt === 'desynced' ? uiT('admin.ftsStatusDesynced')
               : ftsSt === 'empty' ? uiT('admin.ftsStatusEmpty')
                 : uiT('admin.ftsStatusUnknown');
+      const ftsTip = uiTp('admin.ftsStatusTip', {
+        books: Number(ftsSnap.booksCount) || 0,
+        fts: Number(ftsSnap.ftsDocCount) || 0
+      });
       const operationsFields = {
         statsBooks: uiCountLabel('book', Number(operations.totalBooks) || 0),
         statsAuthors: uiCountLabel('author', Number(operations.totalAuthors) || 0),
@@ -2325,6 +2379,11 @@ async function pollOperationsDashboard() {
         node.textContent = value;
         if (field === 'lastRepairError') {
           node.style.display = value ? '' : 'none';
+        }
+        if (field === 'ftsStatus') {
+          node.title = ftsTip;
+          node.dataset.ftsStatus = ftsSt;
+          node.classList.toggle('admin-chip--warn', ftsSt === 'ok' && ftsSt !== 'empty' && Boolean(ftsSt));
         }
       }
 
@@ -2641,6 +2700,9 @@ function attachSearchHistory() {
 
   let activeIdx = -1;
   let items = [];
+  let suggestTimer = 0;
+  let suggestSeq = 0;
+  let lastApi = { books: [], authors: [], series: [] };
 
   const setExpanded = (open) => {
     input.setAttribute('aria-expanded', open ? 'true' : 'false');
@@ -2671,33 +2733,113 @@ function attachSearchHistory() {
     else form.submit();
   };
 
-  const render = () => {
-    const history = filteredHistory();
-    if (!history.length) {
+  const activateSuggestItem = (el) => {
+    if (!el) return;
+    const href = el.getAttribute('data-suggest-href');
+    const q = el.getAttribute('data-search-history-query')
+      || el.getAttribute('data-suggest-query')
+      || '';
+    if (href) {
+      if (q) addSearchHistory(q);
       hide();
+      window.location.href = href;
       return;
     }
-    const rows = [
-      `<div class="suggest-history-header">
-        <span class="suggest-group-title">${escapeHtml(uiT('search.recentTitle'))}</span>
-        <button type="button" class="suggest-history-clear" data-search-history-clear>${escapeHtml(uiT('search.recentClear'))}</button>
-      </div>`
-    ];
+    if (q) runHistoryQuery(q);
+  };
+
+  const render = () => {
+    const history = filteredHistory();
+    const q = input.value.trim();
+    const rows = [];
     let seq = 0;
-    for (const query of history) {
-      const itemId = `search-history-item-${seq++}`;
+
+    const pushGroup = (title, groupItems) => {
+      if (!groupItems.length) return;
+      rows.push(`<div class="suggest-history-header"><span class="suggest-group-title">${escapeHtml(title)}</span></div>`);
+      for (const row of groupItems) rows.push(row);
+    };
+
+    if (history.length) {
       rows.push(`
-        <div class="suggest-history-row">
-          <button type="button" class="suggest-item" id="${itemId}" data-suggest-item data-search-history-query="${escapeHtml(query)}" role="option">
-            <span class="suggest-item-title">${escapeHtml(query)}</span>
-          </button>
-          <button type="button" class="suggest-history-remove" data-search-history-remove="${escapeHtml(query)}" aria-label="${escapeHtml(uiT('search.recentRemove'))} ${escapeHtml(query)}">×</button>
+        <div class="suggest-history-header">
+          <span class="suggest-group-title">${escapeHtml(uiT('search.recentTitle'))}</span>
+          <button type="button" class="suggest-history-clear" data-search-history-clear>${escapeHtml(uiT('search.recentClear'))}</button>
         </div>`);
+      for (const query of history.slice(0, 6)) {
+        const itemId = `search-history-item-${seq++}`;
+        rows.push(`
+          <div class="suggest-history-row">
+            <button type="button" class="suggest-item" id="${itemId}" data-suggest-item data-search-history-query="${escapeHtml(query)}" role="option">
+              <span class="suggest-item-title">${escapeHtml(query)}</span>
+            </button>
+            <button type="button" class="suggest-history-remove" data-search-history-remove="${escapeHtml(query)}" aria-label="${escapeHtml(uiT('search.recentRemove'))} ${escapeHtml(query)}">×</button>
+          </div>`);
+      }
+    }
+
+    if (q.length >= 2) {
+      const bookRows = (lastApi.books || []).slice(0, 5).map((book) => {
+        const itemId = `search-suggest-book-${seq++}`;
+        const href = bookPagePath(book.id);
+        return `<button type="button" class="suggest-item" id="${itemId}" data-suggest-item data-suggest-href="${escapeHtml(href)}" data-suggest-query="${escapeHtml(book.title || q)}" role="option">
+          <span class="suggest-item-title">${escapeHtml(book.title || '')}</span>
+          <span class="suggest-item-sub">${escapeHtml(book.authors || '')}</span>
+        </button>`;
+      });
+      const authorRows = (lastApi.authors || []).slice(0, 4).map((row) => {
+        const itemId = `search-suggest-author-${seq++}`;
+        const label = row.displayName || row.name || '';
+        const href = `/catalog?${new URLSearchParams({ q: label, field: 'authors' }).toString()}`;
+        return `<button type="button" class="suggest-item" id="${itemId}" data-suggest-item data-suggest-href="${escapeHtml(href)}" data-suggest-query="${escapeHtml(label)}" role="option">
+          <span class="suggest-item-title">${escapeHtml(label)}</span>
+          <span class="suggest-item-sub">${escapeHtml(String(row.bookCount || ''))}</span>
+        </button>`;
+      });
+      const seriesRows = (lastApi.series || []).slice(0, 4).map((row) => {
+        const itemId = `search-suggest-series-${seq++}`;
+        const label = row.displayName || row.name || '';
+        const href = `/catalog?${new URLSearchParams({ q: label, field: 'series' }).toString()}`;
+        return `<button type="button" class="suggest-item" id="${itemId}" data-suggest-item data-suggest-href="${escapeHtml(href)}" data-suggest-query="${escapeHtml(label)}" role="option">
+          <span class="suggest-item-title">${escapeHtml(label)}</span>
+          <span class="suggest-item-sub">${escapeHtml(String(row.bookCount || ''))}</span>
+        </button>`;
+      });
+      pushGroup(uiT('search.suggestBooks'), bookRows);
+      pushGroup(uiT('search.suggestAuthors'), authorRows);
+      pushGroup(uiT('search.suggestSeries'), seriesRows);
+    }
+
+    if (!rows.length) {
+      hide();
+      return;
     }
     dropdown.innerHTML = rows.join('');
     items = [...dropdown.querySelectorAll('[data-suggest-item]')];
     activeIdx = -1;
     show();
+  };
+
+  const fetchSuggest = () => {
+    const q = input.value.trim();
+    if (q.length < 3) {
+      lastApi = { books: [], authors: [], series: [] };
+      render();
+      return;
+    }
+    const seq = ++suggestSeq;
+    fetch(`/api/search/suggest?q=${encodeURIComponent(q)}&field=books`, { credentials: 'same-origin' })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (seq !== suggestSeq) return;
+        lastApi = {
+          books: Array.isArray(data?.books) ? data.books : [],
+          authors: Array.isArray(data?.authors) ? data.authors : [],
+          series: Array.isArray(data?.series) ? data.series : []
+        };
+        if (document.activeElement === input) render();
+      })
+      .catch(() => {});
   };
 
   const setActive = (idx) => {
@@ -2724,14 +2866,18 @@ function attachSearchHistory() {
 
   input.addEventListener('focus', () => {
     render();
+    if (input.value.trim().length >= 3) fetchSuggest();
   });
 
   input.addEventListener('input', () => {
-    if (document.activeElement === input) render();
+    if (document.activeElement !== input) return;
+    render();
+    window.clearTimeout(suggestTimer);
+    suggestTimer = window.setTimeout(fetchSuggest, 320);
   });
 
   input.addEventListener('keydown', (e) => {
-    if (dropdown.hidden && (e.key === 'ArrowDown' || e.key === 'ArrowUp') && filteredHistory().length) {
+    if (dropdown.hidden && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
       render();
     }
     if (dropdown.hidden) return;
@@ -2743,8 +2889,7 @@ function attachSearchHistory() {
       setActive(activeIdx > 0 ? activeIdx - 1 : items.length - 1);
     } else if (e.key === 'Enter' && activeIdx >= 0 && items[activeIdx]) {
       e.preventDefault();
-      const q = items[activeIdx].getAttribute('data-search-history-query') || '';
-      if (q) runHistoryQuery(q);
+      activateSuggestItem(items[activeIdx]);
     } else if (e.key === 'Escape') {
       e.preventDefault();
       hide();
@@ -2769,10 +2914,8 @@ function attachSearchHistory() {
       render();
       return;
     }
-    const item = e.target.closest('[data-search-history-query]');
-    if (item) {
-      runHistoryQuery(item.getAttribute('data-search-history-query') || '');
-    }
+    const item = e.target.closest('[data-suggest-item]');
+    if (item) activateSuggestItem(item);
   });
 
   document.addEventListener('click', (e) => {

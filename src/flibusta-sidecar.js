@@ -698,13 +698,9 @@ export async function readFlibustaAnnotationHtml(libraryRoot, archiveName, fileN
   for (const internalRaw of keys) {
     const internal = String(internalRaw || '').replace(/\\/g, '/').replace(/^\/+/, '');
     if (!internal || internal.includes('..')) continue;
-    try {
-      const xmlBuf = await readSevenZipEntry(annPath, internal, config.sevenZipPath);
-      xml = xmlBuf.toString('utf8');
-      if (xml) break;
-    } catch {
-      /* next key */
-    }
+    /* Use shard cache — raw 7z extract on every /book/:id was multi-second on NAS. */
+    xml = await loadAnnotationShardXml(annPath, internal);
+    if (xml) break;
   }
   if (!xml) return '';
   const fileBase = String(fileName || '').replace(/\.fb2$/i, '');
