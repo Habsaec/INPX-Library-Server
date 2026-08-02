@@ -1662,9 +1662,83 @@ export function isBootFtsRecoveryPending() {
   return db.prepare(`SELECT value FROM meta WHERE key = 'books_fts_dirty'`).get()?.value === '1';
 }
 
+const FTS_HEALTH_TTL_MS = 60_000;
+let _ftsHealthCache = { at: 0, status: null };
+let _ftsRebuildScheduled = false;
+
+function countBooksFtsDocs() {
+  try {
+    return Number(db.prepare('SELECT COUNT(*) AS c FROM books_fts_docsize').get()?.c) || 0;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * FTS health for admin / search hot path.
+ * status: ok | dirty | rebuilding | desynced | empty
+ * @param {{ force?: boolean, recover?: boolean }} [opts]
+ */
+export function getBooksFtsStatus({ force = false, recover = false } = {}) {
+  const now = Date.now();
+  if (!force && _ftsHealthCache.status && now - _ftsHealthCache.at < FTS_HEALTH_TTL_MS) {
+    return { ..._ftsHealthCache.status };
+  }
+
+  const dirty = getMeta('books_fts_dirty') === '1';
+  const rebuildProgress = getMeta(FTS_REBUILD_PROGRESS_KEY);
+  const booksCount = Number(db.prepare('SELECT COUNT(*) AS c FROM books').get()?.c) || 0;
+  const ftsDocCount = countBooksFtsDocs();
+
+  let status = 'ok';
+  if (dirty && rebuildProgress) status = 'rebuilding';
+  else if (dirty) status = 'dirty';
+  else if (booksCount === 0) status = 'empty';
+  else if (ftsDocCount === 0 || ftsDocCount < Math.floor(booksCount * 0.5)) status = 'desynced';
+
+  const snapshot = {
+    status,
+    dirty,
+    booksCount,
+    ftsDocCount,
+    rebuilding: status === 'rebuilding' || Boolean(rebuildProgress)
+  };
+  _ftsHealthCache = { at: now, status: snapshot };
+
+  if (recover && status === 'desynced' && !_ftsRebuildScheduled) {
+    console.warn(
+      `[fts] index desynced (books=${booksCount}, fts_docs=${ftsDocCount}) — marking dirty and scheduling rebuild`
+    );
+    setMeta('books_fts_dirty', '1');
+    import('./services/system-events.js').then((m) => {
+      m.logSystemEvent('warn', 'database', 'FTS index desynced — recovery scheduled', {
+        booksCount,
+        ftsDocCount
+      });
+    }).catch(() => {});
+    invalidateBooksFtsHealthCache();
+    scheduleBootFtsRecoveryIfNeeded();
+    return getBooksFtsStatus({ force: true, recover: false });
+  }
+
+  return { ...snapshot };
+}
+
+export function invalidateBooksFtsHealthCache() {
+  _ftsHealthCache = { at: 0, status: null };
+}
+
+/** True when search may use books_fts MATCH (not dirty/desynced/rebuilding). */
+export function isBooksFtsUsable() {
+  const snap = getBooksFtsStatus({ recover: true });
+  return snap.status === 'ok' || snap.status === 'empty';
+}
+
 /** Восстановление FTS после сбоя индексации — в фоне, не блокирует открытие порта. */
 export function scheduleBootFtsRecoveryIfNeeded() {
   if (!isBootFtsRecoveryPending()) return;
+  if (_ftsRebuildScheduled) return;
+  _ftsRebuildScheduled = true;
   setImmediate(() => {
     console.warn('[boot] FTS index marked dirty — rebuilding in background…');
     import('./services/system-events.js').then((m) => {
@@ -1674,6 +1748,8 @@ export function scheduleBootFtsRecoveryIfNeeded() {
     try {
       rebuildBooksFtsFromContentSync();
       db.prepare(`INSERT INTO meta(key, value) VALUES('books_fts_dirty', '0') ON CONFLICT(key) DO UPDATE SET value = '0'`).run();
+      try { db.prepare('DELETE FROM meta WHERE key = ?').run(FTS_REBUILD_PROGRESS_KEY); } catch { /* ignore */ }
+      invalidateBooksFtsHealthCache();
       const seconds = Math.round((Date.now() - t0) / 1000);
       console.log(`[boot] FTS index rebuilt in background (${seconds} s)`);
       import('./services/system-events.js').then((m) => {
@@ -1684,6 +1760,9 @@ export function scheduleBootFtsRecoveryIfNeeded() {
       import('./services/system-events.js').then((m) => {
         m.logSystemEvent('error', 'database', 'FTS boot recovery failed', { error: err.message });
       }).catch(() => {});
+    } finally {
+      _ftsRebuildScheduled = false;
+      invalidateBooksFtsHealthCache();
     }
   });
 }

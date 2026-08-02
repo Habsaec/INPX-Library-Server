@@ -2269,12 +2269,22 @@ async function pollOperationsDashboard() {
       const lastIndexText = (lastImported > 0 || lastUnique > 0)
         ? uiTp('admin.statsLastIndex', { imported: lastImported.toLocaleString(loc), unique: lastUnique.toLocaleString(loc) })
         : uiT('admin.statsLastIndexEmpty');
+      const ftsSt = (operations.ftsStatus && operations.ftsStatus.status)
+        || (indexStatus && indexStatus.ftsStatus && indexStatus.ftsStatus.status)
+        || '';
+      const ftsStatusText = ftsSt === 'ok' ? uiT('admin.ftsStatusOk')
+        : ftsSt === 'dirty' ? uiT('admin.ftsStatusDirty')
+          : ftsSt === 'rebuilding' ? uiT('admin.ftsStatusRebuilding')
+            : ftsSt === 'desynced' ? uiT('admin.ftsStatusDesynced')
+              : ftsSt === 'empty' ? uiT('admin.ftsStatusEmpty')
+                : uiT('admin.ftsStatusUnknown');
       const operationsFields = {
         statsBooks: uiCountLabel('book', Number(operations.totalBooks) || 0),
         statsAuthors: uiCountLabel('author', Number(operations.totalAuthors) || 0),
         statsSeries: uiCountLabel('series', Number(operations.totalSeries) || 0),
         statsSuppressed: uiTp('admin.statsSuppressed', { n: (Number(operations.suppressedCount) || 0).toLocaleString(loc) }),
         statsLastIndex: lastIndexText,
+        ftsStatus: ftsStatusText,
         appVersion: 'v' + (operations.appVersion || '?'),
         lastRepairAt: `${uiT('app.lastRepair')} ${operations.lastRepairAt || uiT('common.dash')}`,
         lastRepairError: operations.lastRepairError || '',

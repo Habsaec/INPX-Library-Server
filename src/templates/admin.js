@@ -196,6 +196,15 @@ export function renderOperations({ user, stats = {}, indexStatus = {}, operation
         <span class="admin-chip" title="${escapeHtml(t('admin.duplicates.suppressedTitle'))}"><strong data-operations-field="statsSuppressed">${escapeHtml(tp('admin.statsSuppressed', { n: (Number(operations.suppressedCount) || 0).toLocaleString(loc) }))}</strong></span>
         <span class="admin-sep"></span>
         <span class="admin-chip" data-index-field="active">${indexStatus.active ? escapeHtml(t('admin.indexUpdating')) : escapeHtml(t('admin.indexReady'))}</span>
+        <span class="admin-chip" title="${escapeHtml(t('admin.ftsStatusTitle'))}" data-operations-field="ftsStatus">${escapeHtml((() => {
+          const st = indexStatus?.ftsStatus?.status || operations?.ftsStatus?.status || '';
+          if (st === 'ok') return t('admin.ftsStatusOk');
+          if (st === 'dirty') return t('admin.ftsStatusDirty');
+          if (st === 'rebuilding') return t('admin.ftsStatusRebuilding');
+          if (st === 'desynced') return t('admin.ftsStatusDesynced');
+          if (st === 'empty') return t('admin.ftsStatusEmpty');
+          return t('admin.ftsStatusUnknown');
+        })())}</span>
         <span class="admin-chip" title="${escapeHtml(t('admin.statsLastIndexTitle'))}"><span data-operations-field="statsLastIndex">${escapeHtml(lastIndexSummary)}</span></span>
         <span class="admin-sep"></span>
         <span class="admin-chip">${escapeHtml(tp('admin.uptime', { s: uptimeStr }))}</span>

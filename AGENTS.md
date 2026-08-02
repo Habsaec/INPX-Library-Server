@@ -26,7 +26,9 @@ Key endpoints for reader:
 - Cross-device reading position uses server revisions/CAS; web reader and Android prompt when both the local position and a newer server revision changed
 - `GET /api/search?q=` — unified search hub: `{ query, books:{total, capped?}, authors:{total}, series:{total} }`; book totals are capped (≤10k) for speed; drilldown via `GET /api/catalog?q=&field=books|authors|series`
 - `GET /api/search/genres?q=` — genres present in matching books (optional `format` / `year` / `minRate` / `hasSeries`); used by filter sheet facets
-- `GET /api/catalog` — additive filters (AND across dimensions): `genre` (single, CSV, or repeated; multiple genres = OR — at least one), `lang`, `format`, `year`, `minRate` (1–5), `hasSeries` (`1` = in a series, `0` = standalone), plus existing `q` / `letter` / `field` / `sort`
+- `GET /api/catalog` — additive filters (AND across dimensions): `genre` (single, CSV, or repeated; multiple genres = OR — at least one), `lang`, `format`, `year`, `minRate` (1–5), `hasSeries` (`1` = in a series, `0` = standalone), plus existing `q` / `letter` / `field` / `sort`; empty results may include additive `searchHints.tip` (`try_authors` / `try_series` / `try_books`)
+- Book search uses SQLite FTS5 with query-time Russian stem expand + title boost; multi-token LIKE fallback when FTS is dirty/desynced. Admin/ops expose additive `ftsStatus` (`ok` / `dirty` / `rebuilding` / `desynced` / `empty`) on `/api/index-status` and `/api/operations`
+- Details: `docs/architecture/search.md`
 - `POST /api/auth/pairing` — authenticated; creates a one-time 10-minute QR pairing code (`payload` JSON + `svg`) for Android app sign-in; does not include the password
 - `POST /api/auth/pairing/redeem` — public + rate-limited; exchanges pairing `code` for a device Bearer token (`deviceToken`, `deviceTokenId`, `username`, `serverUrl`)
 

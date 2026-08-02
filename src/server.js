@@ -52,7 +52,7 @@ import { startTelegramBot, stopTelegramBot, restartTelegramBot, isTelegramBotRun
 import {
   STATS_CACHE_TTL_MS, HOME_SECTIONS_CACHE_TTL_MS
 } from './constants.js';
-import { db, getUserByUsername, hasAdminUser, initDb, ensureSchemaIndexes, analyzeDatabaseYielding, getSmtpSettings, getUserStats, getSetting, setSetting, getSources, decryptValue, getMeta, setMeta, rebuildBooksFtsFromContent, ensureBooksFtsTriggers, rebuildActiveBooksView, refreshCatalogBookCounts, countSuppressedBooks, getDbBreakdown, getTelegramSettings } from './db.js';
+import { db, getUserByUsername, hasAdminUser, initDb, ensureSchemaIndexes, analyzeDatabaseYielding, getSmtpSettings, getUserStats, getSetting, setSetting, getSources, decryptValue, getMeta, setMeta, rebuildBooksFtsFromContent, ensureBooksFtsTriggers, rebuildActiveBooksView, refreshCatalogBookCounts, countSuppressedBooks, getDbBreakdown, getTelegramSettings, invalidateBooksFtsHealthCache, getBooksFtsStatus } from './db.js';
 import {
   backfillCatalogSearchFields,
   getConfiguredInpxFile,
@@ -512,7 +512,10 @@ function getOperationsSnapshot() {
        indexing-сессии и доступна на дашборде до следующего запуска. */
     lastIndexImported: Math.max(0, Math.floor(Number(idx?.importedBooks) || 0)),
     lastIndexUnique: Math.max(0, Math.floor(Number(idx?.uniqueBooks) || 0)),
-    lastIndexArchives: Number(idx?.totalArchives) || 0
+    lastIndexArchives: Number(idx?.totalArchives) || 0,
+    ftsStatus: idx?.ftsStatus || (() => {
+      try { return getBooksFtsStatus({ recover: false }); } catch { return null; }
+    })()
   };
 }
 
@@ -1202,6 +1205,7 @@ async function bootstrap() {
         ensureBooksFtsTriggers();
         await rebuildBooksFtsFromContent();
         setMeta('books_fts_dirty', '0');
+        invalidateBooksFtsHealthCache();
         console.log('[startup] FTS rebuild complete.');
         logSystemEvent('info', 'server', 'FTS rebuilt after dirty startup');
       } catch (err) {

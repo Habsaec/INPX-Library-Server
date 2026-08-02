@@ -106,7 +106,14 @@ function renderCatalogSearchHints(searchHints, query = '') {
   if (!hints) return '';
   const modes = Array.isArray(hints.alternateModes) ? hints.alternateModes : [];
   const typos = Array.isArray(hints.didYouMean) ? hints.didYouMean : [];
-  if (!modes.length && !typos.length) return '';
+  const tipKey = hints.tip === 'try_authors'
+    ? 'catalog.searchTipTryAuthors'
+    : hints.tip === 'try_series'
+      ? 'catalog.searchTipTrySeries'
+      : hints.tip === 'try_books'
+        ? 'catalog.searchTipTryBooks'
+        : '';
+  if (!modes.length && !typos.length && !tipKey) return '';
 
   const fieldLabels = {
     books: t('search.books'),
@@ -138,6 +145,10 @@ function renderCatalogSearchHints(searchHints, query = '') {
 
   return `
     <div class="catalog-search-hints" data-catalog-search-hints>
+      ${tipKey ? `
+        <div class="catalog-search-hints-block">
+          <strong>${escapeHtml(t(tipKey))}</strong>
+        </div>` : ''}
       ${modeBlocks ? `
         <div class="catalog-search-hints-block">
           <strong>${escapeHtml(t('catalog.searchHintsTitle'))}</strong>

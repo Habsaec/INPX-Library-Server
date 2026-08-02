@@ -32,7 +32,11 @@ import {
   onViewRebuild,
   deleteReadingHistoryEntry,
   touchUserReaderRevision,
+  isBooksFtsUsable,
+  getBooksFtsStatus,
+  invalidateBooksFtsHealthCache,
 } from './db.js';
+import { expandSearchTokenVariants } from './search-stem.js';
 import { config } from './config.js';
 import { formatGenreLabel, formatGenreList } from './genre-map.js';
 import { getAvailableDownloadFormats, FORMAT_LABELS } from './download-formats.js';
@@ -1560,10 +1564,16 @@ export function parseLine(line, archiveName, sourceId = null, fieldMap = null) {
 
 export function getIndexStatus() {
   const indexedAt = getMeta('indexed_at');
+  let ftsStatus = null;
+  try {
+    ftsStatus = getBooksFtsStatus({ recover: false });
+  } catch {
+    ftsStatus = null;
+  }
 
   /* Локальная индексация — полный прогресс */
   if (indexState.active) {
-    return { ...indexState, ready: indexState.ready, indexedAt };
+    return { ...indexState, ready: indexState.ready, indexedAt, ftsStatus };
   }
 
   /* Другой воркер кластера индексирует — прогресс из meta */
@@ -1587,7 +1597,8 @@ export function getIndexStatus() {
         cancelRequested: getMeta('index_cancel_requested') === '1',
         mode: p.mode || '',
         sourceId: p.sourceId ?? null,
-        indexedAt
+        indexedAt,
+        ftsStatus
       };
 
   }
@@ -1596,7 +1607,7 @@ export function getIndexStatus() {
   const catalogIndexedOnce = Boolean(indexedAt) && !indexState.error;
   const ready = indexState.ready || catalogIndexedOnce;
 
-  const out = { ...indexState, ready, indexedAt };
+  const out = { ...indexState, ready, indexedAt, ftsStatus };
 
   /* Парсим потенциально крупный inp_sizes только в legacy-ветке (нет прогресса
      из indexState), а не на каждом рендере страницы. */
@@ -2185,6 +2196,7 @@ export async function rebuildIndex(inpxPath, incremental = false, sourceId = nul
   }
   if (ftsBulkMode) {
     setMeta(BOOKS_FTS_DIRTY_META_KEY, '1');
+    invalidateBooksFtsHealthCache();
     dropBooksFtsTriggers();
     dropBulkImportIndexes();
   }
@@ -2763,6 +2775,7 @@ export async function rebuildIndex(inpxPath, incremental = false, sourceId = nul
       }
       ensureBooksFtsTriggers();
       setMeta(BOOKS_FTS_DIRTY_META_KEY, '0');
+      invalidateBooksFtsHealthCache();
       clearIndexStageDisplay();
     } else if (ftsBulkMode) {
       // Indexing was interrupted (cancelled / error). FTS is out of sync with books table.
@@ -2775,10 +2788,12 @@ export async function rebuildIndex(inpxPath, incremental = false, sourceId = nul
         console.log('[index] FTS: rebuild after interruption completed');
         ensureBooksFtsTriggers();
         setMeta(BOOKS_FTS_DIRTY_META_KEY, '0');
+        invalidateBooksFtsHealthCache();
       } catch (ftsErr) {
         console.error('[index] FTS rebuild after interruption failed:', ftsErr.message);
         // Leave triggers dropped and dirty flag set — boot will rebuild
         setMeta(BOOKS_FTS_DIRTY_META_KEY, '1');
+        invalidateBooksFtsHealthCache();
       }
     }
     if (ftsBulkMode) {
@@ -2988,8 +3003,14 @@ function buildBookSearchSql(field, query) {
       return { sql: `LOWER(COALESCE(${column}, '')) LIKE ?`, param: `%${value}%` };
     }
 
-    /* Default = prefix (aligned with OPDS help), not mid-string contains. */
-    return { sql: `LOWER(COALESCE(${column}, '')) LIKE ?`, param: `${value}%` };
+    /*
+     * Default = prefix for a single token (index-friendly, matches OPDS help).
+     * Multi-token queries must use contains: prefix-per-token cannot match
+     * mid-title words ("Пешком над облаками" → "над%" never hits title_search),
+     * and that breaks the FTS-empty → LIKE fallback path.
+     */
+    const param = tokens.length === 1 ? `${value}%` : `%${value}%`;
+    return { sql: `LOWER(COALESCE(${column}, '')) LIKE ?`, param };
   };
 
   const tokenClauses = [];
@@ -3220,10 +3241,6 @@ function buildCatalogSearchSql(column, query, { startsWith = false } = {}) {
   };
 }
 
-function isBooksFtsUsable() {
-  return getMeta(BOOKS_FTS_DIRTY_META_KEY) !== '1';
-}
-
 /** Escape a token for FTS5 quoted phrase / prefix query. */
 function escapeFts5Token(token = '') {
   return String(token || '').replace(/"/g, '').trim();
@@ -3231,7 +3248,8 @@ function escapeFts5Token(token = '') {
 
 /**
  * Build books_fts MATCH string.
- * Default operator → prefix (`token*`); `=` → exact token; `*` → signal LIKE fallback.
+ * Default operator → prefix (`token*`) with light Russian stem OR-expand;
+ * `=` → exact token; `*` → signal LIKE fallback.
  * @returns {{ mode: 'fts', match: string } | { mode: 'like' } | null}
  */
 function buildBooksFtsMatchQuery(field, query) {
@@ -3256,15 +3274,32 @@ function buildBooksFtsMatchQuery(field, query) {
   if (!(field in columnMap)) return null;
   const col = columnMap[field];
 
+  const prefixCol = (body) => (col ? `${col}:${body}` : body);
   const parts = [];
-  for (const token of tokens) {
-    const safe = escapeFts5Token(token);
-    if (!safe) continue;
-    const body = parsed.operator === '=' ? `"${safe}"` : `"${safe}"*`;
-    parts.push(col ? `${col}:${body}` : body);
+
+  if (parsed.operator === '=') {
+    for (const token of tokens) {
+      const safe = escapeFts5Token(token);
+      if (!safe) continue;
+      parts.push(prefixCol(`"${safe}"`));
+    }
+  } else {
+    const groups = expandSearchTokenVariants(tokens);
+    for (const variants of groups) {
+      const bodies = [];
+      for (const variant of variants) {
+        const safe = escapeFts5Token(variant);
+        if (!safe) continue;
+        bodies.push(prefixCol(`"${safe}"*`));
+      }
+      if (!bodies.length) continue;
+      parts.push(bodies.length === 1 ? bodies[0] : `(${bodies.join(' OR ')})`);
+    }
   }
+
   if (!parts.length) return null;
-  return { mode: 'fts', match: parts.join(' ') };
+  /* FTS5 requires explicit AND between parenthesized OR-groups; bare space fails. */
+  return { mode: 'fts', match: parts.join(' AND ') };
 }
 
 function appendBookFilterSql(whereParts, whereParams, genreFilter, extraFilters, { alias = 'active_books' } = {}) {
@@ -3431,16 +3466,17 @@ export function searchBooks({
     if (ftsHit) {
       const titleBoost = needleKey
         ? `CASE
-            WHEN LOWER(COALESCE(b.title_search, '')) = ? THEN -1000
-            WHEN LOWER(COALESCE(b.title_search, '')) LIKE ? THEN -500
+            WHEN LOWER(COALESCE(b.title_search, '')) = ? THEN -2000
+            WHEN LOWER(COALESCE(b.title_search, '')) LIKE ? THEN -1000
             ELSE 0
           END`
         : '0';
       const titleBoostParams = needleKey ? [needleKey, `${needleKey}%`] : [];
       const listOrderBy = resolveBookAliasSort(sort, 'b', order);
+      /* Exact/phrase title beat bm25 so multi-word titles land on page 1. */
       const rankedOrderBy = sort === 'series'
-        ? `${listOrderBy}, bm25(books_fts) ASC, ${titleBoost} ASC`
-        : `bm25(books_fts) ASC, ${titleBoost} ASC, ${listOrderBy}`;
+        ? `${listOrderBy}, ${titleBoost} ASC, bm25(books_fts) ASC`
+        : `${titleBoost} ASC, bm25(books_fts) ASC, ${listOrderBy}`;
 
       const items = pageSize > 0
         ? db.prepare(`
@@ -3523,6 +3559,7 @@ export function searchBooks({
       rankSQL = '0';
     }
 
+    /* Title/author rank first (same priority as FTS titleBoost over bm25). */
     const rankedOrderBy = sort === 'series'
       ? `${orderBy}, ${rankSQL} ASC`
       : `${rankSQL} ASC, ${orderBy}`;
@@ -3835,7 +3872,7 @@ export function searchOverview({ query = '' } = {}) {
  */
 export function buildSearchRecoveryHints({ query = '', field = 'books' } = {}) {
   const q = String(query || '').trim();
-  const hints = { alternateModes: [], didYouMean: [] };
+  const hints = { alternateModes: [], didYouMean: [], tip: null };
   if (!q) return hints;
 
   const normalizedField = ['books', 'authors', 'series'].includes(field) ? field : 'books';
@@ -3852,6 +3889,9 @@ export function buildSearchRecoveryHints({ query = '', field = 'books' } = {}) {
           bookCount: row.bookCount
         }))
       });
+      if (normalizedField === 'books') {
+        hints.tip = 'try_authors';
+      }
     }
   }
 
@@ -3867,6 +3907,9 @@ export function buildSearchRecoveryHints({ query = '', field = 'books' } = {}) {
           bookCount: row.bookCount
         }))
       });
+      if (normalizedField === 'books' && !hints.tip) {
+        hints.tip = 'try_series';
+      }
     }
   }
 
@@ -3882,6 +3925,7 @@ export function buildSearchRecoveryHints({ query = '', field = 'books' } = {}) {
           authors: row.authors
         }))
       });
+      if (!hints.tip) hints.tip = 'try_books';
     }
   }
 
@@ -5964,58 +6008,23 @@ function opdsTitleSearch(prefix, genre = '') {
   return books;
 }
 
+/** OPDS author search — same matcher as web/API `listAuthors`. */
 export function opdsSearchAuthors(term, { page = 1, pageSize = 100 } = {}) {
   if (!term || !term.trim()) return { total: 0, items: [] };
-  const words = createSortKey(term.trim()).split(/\s+/).filter(Boolean);
-  if (!words.length) return { total: 0, items: [] };
-  const offset = (page - 1) * pageSize;
-
-  const whereClauses = words.map(() => `(' ' || COALESCE(a.search_name, '') || ' ') LIKE ?`);
-  const whereSQL = whereClauses.join(' AND ');
-  const whereParams = words.map(w => `% ${w}%`);
-
-  const surnameExpr = `SUBSTR(a.search_name, 1, INSTR(a.search_name || ' ', ' ') - 1)`;
-  const fullKey = words.join(' ');
-  const rankCases = [];
-  const rankParams = [];
-
-  rankCases.push(`WHEN COALESCE(a.search_name, '') = ? THEN 0`);
-  rankParams.push(fullKey);
-
-  if (words.length > 1) {
-    const reversedKey = [...words].reverse().join(' ');
-    rankCases.push(`WHEN COALESCE(a.search_name, '') = ? THEN 0`);
-    rankParams.push(reversedKey);
-  }
-
-  for (const w of words) {
-    rankCases.push(`WHEN ${surnameExpr} = ? THEN 1`);
-    rankParams.push(w);
-  }
-
-  const rankSQL = `CASE ${rankCases.join(' ')} ELSE 2 END`;
-
-  const items = db.prepare(`
-    SELECT a.name AS name,
-           COALESCE(a.display_name, a.name) AS displayName,
-           COUNT(ab.id) AS bookCount,
-           ${rankSQL} AS rank
-    FROM authors a
-    JOIN book_authors ba ON ba.author_id = a.id
-    JOIN active_books ab ON ab.id = ba.book_id
-    WHERE ${whereSQL}
-    GROUP BY a.id, a.name, a.display_name
-    ORDER BY rank ASC, bookCount DESC, a.name ASC
-    LIMIT ? OFFSET ?
-  `).all(...rankParams, ...whereParams, pageSize, offset);
-
-  const totalRow = db.prepare(`
-    SELECT COUNT(*) AS cnt FROM authors a
-    WHERE ${whereSQL}
-      AND EXISTS (SELECT 1 FROM book_authors ba2 JOIN active_books ab2 ON ab2.id = ba2.book_id WHERE ba2.author_id = a.id)
-  `).get(...whereParams);
-
-  return { total: totalRow.cnt, items };
+  const result = listAuthors({
+    query: term,
+    page,
+    pageSize,
+    sort: 'count'
+  });
+  return {
+    total: result.total,
+    items: result.items.map((row) => ({
+      name: row.name,
+      displayName: row.displayName || row.name,
+      bookCount: row.bookCount
+    }))
+  };
 }
 
 export function getAuthorBooksOpds(authorName, genre = '') {
