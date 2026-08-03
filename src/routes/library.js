@@ -255,7 +255,7 @@ export function registerLibraryRoutes(app, deps) {
   const {
     getCachedStats,
     templates: {
-      renderHome, renderCatalog, renderSearchOverview, renderLibraryView, renderBrowsePage,
+      renderHome, renderCatalog, renderLibraryView, renderBrowsePage,
       renderFacetBooks, renderAuthorFacetPage, renderAuthorOutsideSeriesPage,
       renderBook, renderFavorites, renderShelves, renderShelfDetail, renderReader
     }
@@ -308,45 +308,11 @@ export function registerLibraryRoutes(app, deps) {
     const hasSeries = parseHasSeries(req.query.hasSeries);
     const fieldRaw = String(req.query.field || '').trim();
     const hasExplicitField = ['books', 'authors', 'series'].includes(fieldRaw);
-    const hasFilterDims = Boolean(
-      genres.length || lang || format || year || minRate >= 1 || hasSeries === 0 || hasSeries === 1 || letter
-    );
     const stats = getCachedStats();
     const user = req.user || null;
     const readBookIds = user ? getReadBookIdSet(user.username) : null;
 
-    const forceHub = String(req.query.hub || '') === '1';
-    const autoRouted = String(req.query.fromHub || '') === '1';
-
-    // Main search (q without field) → smart route or hub with books/authors/series counts.
-    if (query.trim() && !hasExplicitField && !hasFilterDims) {
-      const overview = getCachedPageData(
-        `catalog:search-overview:${query.trim()}`,
-        () => searchOverview({ query }),
-        PAGE_CACHE_TTL_MS
-      );
-      const routeField = ['books', 'authors', 'series'].includes(overview?.routeField)
-        ? overview.routeField
-        : null;
-      if (!forceHub && routeField) {
-        const params = new URLSearchParams({
-          q: query.trim(),
-          field: routeField,
-          fromHub: '1'
-        });
-        return res.redirect(302, `/catalog?${params.toString()}`);
-      }
-      return res.send(renderSearchOverview({
-        overview,
-        query: query.trim(),
-        user,
-        stats,
-        indexStatus: getIndexStatus(),
-        csrfToken: req.csrfToken || '',
-        readBookIds
-      }));
-    }
-
+    // Enter / free-text search → books immediately (authors & series via chips).
     const field = hasExplicitField ? fieldRaw : 'books';
     const isBookField = field === 'books';
     const bookSorts = ['recent', 'title', 'author', 'series', 'rating'];
@@ -356,7 +322,7 @@ export function registerLibraryRoutes(app, deps) {
     const order = String(req.query.order || '');
     const page = safePage(req.query.page);
     const pageSize = 24;
-    const cacheKey = `catalog:${field}:${sort}:${order}:${genre}:${letter}:${lang}:${format}:${year}:${minRate}:${hasSeries}:${query}:p${page}`;
+    const cacheKey = `catalog:v2:${field}:${sort}:${order}:${genre}:${letter}:${lang}:${format}:${year}:${minRate}:${hasSeries}:${query}:p${page}`;
     const result = getCachedPageData(cacheKey, () => searchCatalog({ query, field, page, pageSize, sort, order, genre, letter, lang, format, year, minRate, hasSeries }));
     const langs = getDistinctLanguages();
     const formats = getDistinctFormats();
@@ -428,12 +394,31 @@ export function registerLibraryRoutes(app, deps) {
       if (items.length) genreOptions = items;
       else if (genreOptionsLazy) genreOptions = [];
     }
-    const hubBackHref = autoRouted && query.trim()
-      ? `/catalog?${new URLSearchParams({ q: query.trim(), hub: '1' }).toString()}`
-      : '';
+    const searchNav = query.trim()
+      ? getCachedPageData(
+        `catalog:search-nav:${query.trim()}`,
+        () => {
+          const overview = searchOverview({
+            query: query.trim(),
+            ...(field === 'books'
+              ? { booksTotal: result.total, booksCapped: Boolean(result.capped) }
+              : {})
+          });
+          return {
+            books: overview.books,
+            authors: overview.authors,
+            series: overview.series
+          };
+        },
+        PAGE_CACHE_TTL_MS
+      )
+      : null;
+    const listView = String(req.query.view || '') === 'list';
     res.send(renderCatalog({
       ...result, page, pageSize, query, field, sort, order, genre, genres, letter, lang, format, year,
-      minRate, hasSeries, langs, formats, genreOptions, genreOptionsLazy, hubBackHref, user, stats,
+      minRate, hasSeries, langs, formats, genreOptions, genreOptionsLazy, searchNav,
+      view: listView ? 'list' : '',
+      user, stats,
       indexStatus: getIndexStatus(), csrfToken: req.csrfToken || '', readBookIds
     }));
   });
@@ -448,6 +433,7 @@ export function registerLibraryRoutes(app, deps) {
     const defaultSort = view === 'recent' ? 'recent' : 'title';
     const sort = ['recent', 'title', 'author', 'series', 'rating'].includes(requestedSort) ? requestedSort : defaultSort;
     const order = String(req.query.order || '');
+    const listView = String(req.query.view || '') === 'list';
     const user = req.user || null;
     const stats = getCachedStats();
     const titles = {
@@ -464,7 +450,7 @@ export function registerLibraryRoutes(app, deps) {
     };
     const canUseSharedCache = view === 'recent';
     const result = canUseSharedCache
-      ? getStaleOrSchedule(`library:${view}:sort:${sort}:${order}:page:${page}:size:${pageSize}`, () => getLibraryView(view, { page, pageSize, sort, order }), PAGE_CACHE_TTL_MS, { total: 0, items: [] })
+      ? getStaleOrSchedule(`library:${view}:v4:sort:${sort}:${order}:page:${page}:size:${pageSize}`, () => getLibraryView(view, { page, pageSize, sort, order }), PAGE_CACHE_TTL_MS, { total: 0, items: [] })
       : view === 'recommended'
         ? getRecommendedLibraryView({ page, pageSize, username: user?.username || '' })
         : getStaleOrSchedule(`library:${view}:${user?.username || ''}:sort:${sort}:${order}:p${page}:s${pageSize}`, () => getLibraryView(view, { page, pageSize, username: user?.username || '', type, sort, order }), PAGE_CACHE_TTL_MS, { total: 0, items: [] });
@@ -482,6 +468,7 @@ export function registerLibraryRoutes(app, deps) {
       type,
       sort,
       order,
+      listView,
       user,
       stats,
       indexStatus: getIndexStatus(),
@@ -704,6 +691,7 @@ export function registerLibraryRoutes(app, deps) {
         const facetRoot = flibSourceId != null ? getSourceRoot(flibSourceId) : '';
         const p = safePage(req.query.page, 1);
         const pageSize = 48;
+        const authorView = String(req.query.view || '') === 'list' ? 'list' : 'series';
 
         const [grouped, fullSummary, authorPortraitUrl, authorBioHtml] = await Promise.all([
           getAuthorBooksGroupedCoalesced(value, sort, order, { page: p, pageSize }),
@@ -727,7 +715,7 @@ export function registerLibraryRoutes(app, deps) {
             standaloneBooks: grouped.standaloneBooks,
             total: grouped.total,
             user: req.user || null, stats, facetPath,
-            indexStatus: getIndexStatus(), sort, order, breadcrumbs, summary,
+            indexStatus: getIndexStatus(), sort, order, view: authorView, breadcrumbs, summary,
             facetValue: value, favorite, authorPortraitUrl, authorBioHtml,
             csrfToken: req.csrfToken || '',
             page: p, pageSize, hasMore: grouped.standaloneBooks.length >= pageSize,

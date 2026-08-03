@@ -46,7 +46,7 @@ export function registerBrowseApiRoutes(app) {
     res.json(getSuggestions(q, 5, field));
   });
 
-  /** Unified search hub: totals for books / authors / series before field drilldown. */
+  /** Search section totals (books / authors / series). `routeField` is always null. */
   app.get('/api/search', requireBrowseAuth, (req, res) => {
     const q = String(req.query.q || '').trim();
     if (!q) {
@@ -97,7 +97,7 @@ export function registerBrowseApiRoutes(app) {
     const canUseSharedCache = view === 'recent';
     const username = user?.username || '';
     const result = canUseSharedCache
-      ? getStaleOrSchedule(`library:${view}:sort:${sort}:${order}:page:${page}:size:${pageSize}`, () => getLibraryView(view, { page, pageSize, sort, order }), PAGE_CACHE_TTL_MS, { total: 0, items: [] })
+      ? getStaleOrSchedule(`library:${view}:v4:sort:${sort}:${order}:page:${page}:size:${pageSize}`, () => getLibraryView(view, { page, pageSize, sort, order }), PAGE_CACHE_TTL_MS, { total: 0, items: [] })
       : view === 'recommended'
         ? getRecommendedLibraryView({ page, pageSize, username })
         : view === 'continue' || view === 'read'
@@ -127,7 +127,7 @@ export function registerBrowseApiRoutes(app) {
     const hasSeries = parseHasSeries(req.query.hasSeries);
     const page = safePage(req.query.page);
     const pageSize = 24;
-    const cacheKey = `api:catalog:${field}:${sort}:${order}:${genre}:${letter}:${lang}:${format}:${year}:${minRate}:${hasSeries}:${query}:p${page}:s${pageSize}`;
+    const cacheKey = `api:catalog:v2:${field}:${sort}:${order}:${genre}:${letter}:${lang}:${format}:${year}:${minRate}:${hasSeries}:${query}:p${page}:s${pageSize}`;
     const result = getCachedPageData(
       cacheKey,
       () => searchCatalog({ query, page, pageSize, field, sort, order, genre, letter, lang, format, year, minRate, hasSeries }),
@@ -199,8 +199,13 @@ export function registerBrowseApiRoutes(app) {
           ? readFlibustaAuthorPortraitForAuthorName(value, facetRoot).catch(() => null)
           : Promise.resolve(null),
       ]);
+      /* Keep series summaries lean for Android; full book rows stay on web list view. */
       res.json({
-        series: grouped.series,
+        series: (grouped.series || []).map((s) => ({
+          name: s.name,
+          displayName: s.displayName || s.name,
+          bookCount: s.bookCount
+        })),
         standaloneBooks: grouped.standaloneBooks,
         total: grouped.total,
         bioHtml: bioHtml || '',

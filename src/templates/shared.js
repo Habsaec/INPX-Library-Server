@@ -25,6 +25,7 @@ import {
 } from '../i18n.js';
 import { resolveIndexStageLine } from '../index-stage-i18n.js';
 import { getUiCustomization, getThemeCssVars, hasUiThemeColorsConfigured, usesPanelGlass, hasUiThemeShapeConfigured, hasUiThemeTypographyConfigured, FONT_FAMILY_WEBFONT } from '../services/ui-customization.js';
+import { balanceHtmlFragment, stripFlibustaMediaPlaceholders } from '../html-sanitize.js';
 
 export { t, tp, getLocale, plural, countLabel, formatLocaleInt, formatLocaleDateShort, formatLocaleDateTimeShort, formatLocaleDateLong, serializeClientI18n };
 export { formatAuthorLabel, formatGenreLabel, formatLanguageLabel, parseGenreCodes };
@@ -238,7 +239,7 @@ export function escapeHtml(value = '') {
 const ALLOWED_HTML_TAG_RE = /^(b|i|em|strong|p|br|span|div|ul|ol|li|h[1-6]|blockquote|sup|sub|a|img|table|thead|tbody|tr|td|th)$/i;
 
 export function sanitizeHtml(html) {
-  return stripXmlInvalidControls(String(html || ''))
+  const cleaned = stripXmlInvalidControls(stripFlibustaMediaPlaceholders(html))
     .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '')
     .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, '')
     .replace(/javascript:/gi, 'blocked:')
@@ -246,11 +247,12 @@ export function sanitizeHtml(html) {
     .replace(/<(\/?)(\w+)([^>]*)>/g, (match, slash, tag, attrs) => {
       const lowerTag = tag.toLowerCase();
       if (!ALLOWED_HTML_TAG_RE.test(lowerTag)) return '';
+      if (slash) return `</${lowerTag}>`;
       if (lowerTag === 'a') {
         const hrefMatch = attrs.match(/\shref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i);
         const href = (hrefMatch?.[1] || hrefMatch?.[2] || hrefMatch?.[3] || '').trim();
         if (!href || !/^(https?:\/\/|mailto:|tel:|#)/i.test(href)) return '';
-        return `<${slash}a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">`;
+        return `<a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">`;
       }
       if (lowerTag === 'img') {
         const srcMatch = attrs.match(/\ssrc\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i);
@@ -260,8 +262,9 @@ export function sanitizeHtml(html) {
         const alt = escapeHtml(altMatch?.[1] || altMatch?.[2] || altMatch?.[3] || '');
         return `<img src="${escapeHtml(src)}" alt="${alt}">`;
       }
-      return `<${slash}${lowerTag}>`;
+      return `<${lowerTag}>`;
     });
+  return balanceHtmlFragment(stripFlibustaMediaPlaceholders(cleaned));
 }
 
 /** Фрагмент для HTML id/name (аудит DevTools: у полей формы должен быть id или name). */
@@ -667,27 +670,27 @@ export function renderBatchDownloadToolbar(batchContext, { extraActions = '', us
         `<button type="button" class="download-format-link batch-selected-format-btn" data-batch-download-selected-format="${escapeHtml(format)}">${escapeHtml(label)}</button>`
     )
     .join('');
-  const toolbar = `
-    <div class="batch-download-toolbar" data-batch-download-toolbar data-batch-context="${ctxJson}">
-      <span class="muted batch-selected-count" data-batch-selected-count hidden></span>
-      <button type="button" class="button" data-batch-toggle-select aria-pressed="false">${escapeHtml(t('batch.selectAll'))}</button>
-      <details class="download-menu">
-        <summary class="button download-menu-trigger">${escapeHtml(t('download.label'))}</summary>
-        <div class="download-menu-popover download-menu-popover--batch">
-          <label class="batch-per-book-zip-option">
-            <input type="checkbox" id="batch-per-book-zip" name="perBookZip" value="1" data-batch-per-book-zip>
-            <span>${escapeHtml(t('batch.perBookZip'))}</span>
-          </label>
-          <div class="batch-download-format-list" role="group" aria-label="${escapeHtml(t('batch.formatAria'))}">
-            ${selectedLinks}
-          </div>
-        </div>
-      </details>
-    </div>`;
   const emailHtml = user && canSendToEmailInUi(user) ? renderBatchEmailMenu(batchContext) : '';
+  /* Floating dock — shown via JS when at least one book is checked. */
   return `
-    <div class="batch-download-bar">
-      <div class="batch-download-cluster">${toolbar}${extraActions}${emailHtml}</div>
+    <div class="batch-fab" data-batch-fab hidden>
+      <div class="batch-fab-inner batch-download-toolbar" data-batch-download-toolbar data-batch-context="${ctxJson}">
+        <span class="batch-fab-count" data-batch-selected-count hidden></span>
+        <button type="button" class="button batch-fab-clear" data-batch-clear-select>${escapeHtml(t('app.batchDeselectAll'))}</button>
+        <details class="download-menu batch-fab-menu">
+          <summary class="button batch-fab-download download-menu-trigger">${escapeHtml(t('download.label'))}</summary>
+          <div class="download-menu-popover download-menu-popover--batch">
+            <label class="batch-per-book-zip-option">
+              <input type="checkbox" name="perBookZip" value="1" data-batch-per-book-zip>
+              <span>${escapeHtml(t('batch.perBookZip'))}</span>
+            </label>
+            <div class="batch-download-format-list" role="group" aria-label="${escapeHtml(t('batch.formatAria'))}">
+              ${selectedLinks}
+            </div>
+          </div>
+        </details>
+        ${extraActions}${emailHtml}
+      </div>
     </div>`;
 }
 
@@ -980,6 +983,139 @@ export function renderAuthorFacetStandaloneBookRows(books = [], batchSelect = fa
         })
         .join('')}
     </div>`;
+}
+
+function formatAuthorListSeriesNo(book) {
+  const raw = book?.seriesNo ?? book?.seriesIndex ?? '';
+  const s = String(raw || '').trim();
+  if (!s || s === '0') return '';
+  const num = parseFloat(s.replace(/[^\d.]/g, ''));
+  if (Number.isFinite(num) && num > 0) return `${Number.isInteger(num) ? String(num) : String(num)}.`;
+  return `${s}.`;
+}
+
+function renderAuthorListRating(book) {
+  const r = Math.max(0, Math.min(5, Math.floor(Number(book?.libRate) || 0)));
+  if (!r) return '';
+  return `<span class="author-flibusta-rating" title="${escapeHtml(String(r))}">${'★'.repeat(r)}</span>`;
+}
+
+function renderAuthorFlibustaBookRow(book, {
+  user = null, showSeriesNo = true, batchSelect = false, showAuthor = false
+} = {}) {
+  const no = showSeriesNo ? formatAuthorListSeriesNo(book) : '';
+  const noHtml = no ? `<span class="author-flibusta-no">${escapeHtml(no)}</span>` : '';
+  const ext = String(book.ext || 'fb2').toUpperCase();
+  const meta = `<span class="muted author-flibusta-meta">${escapeHtml(ext)}</span>`;
+  const rating = renderAuthorListRating(book);
+  const authorHtml = showAuthor
+    ? `<span class="author-flibusta-author muted">${book.authors
+      ? renderAuthorLinks(book.authorsList, { limit: 1, bookAuthors: book.authors, popoverId: `list-a-${book.id}` })
+      : escapeHtml(t('book.authorUnknown'))}</span>`
+    : '';
+  const batchCb = batchSelect
+    ? `<label class="author-flibusta-batch" title="${escapeHtml(t('batch.selectTitle'))}"><input type="checkbox" class="batch-select-cb" ${batchSelectInputAttrs(book.id)} ${batchBookIdDataAttr(book.id)} aria-label="${escapeHtml(t('batch.selectAria'))}"></label>`
+    : '';
+  const dl = canDownloadInUi(user)
+    ? `<span class="author-flibusta-dl">${renderDownloadMenu(book, { compact: true, user })}</span>`
+    : '';
+  const emailBtn = canSendToEmailInUi(user)
+    ? `<button class="button author-flibusta-email" type="button" ${bookIdDataAttr(book.id)} data-send-to-ereader="1">${escapeHtml(t('book.toEmail'))}</button>`
+    : '';
+  const actions = (dl || emailBtn)
+    ? `<span class="author-flibusta-actions">${dl}${emailBtn}</span>`
+    : '';
+  return `<li class="author-flibusta-book" ${bookCardDataAttrs(book.id)}>
+    ${batchCb}${noHtml}<a class="author-flibusta-title" href="${bookPagePath(book.id)}">${escapeHtml(book.title || '')}</a>
+    ${authorHtml}${rating}${meta}${actions}
+  </li>`;
+}
+
+function seriesNoSortKey(book) {
+  const raw = String(book?.seriesNo ?? book?.seriesIndex ?? '').trim();
+  const num = parseFloat(raw.replace(/[^\d.]/g, ''));
+  return Number.isFinite(num) ? num : Number.POSITIVE_INFINITY;
+}
+
+/**
+ * Flibusta-style author bibliography: series headings + numbered book rows.
+ */
+export function renderAuthorFlibustaList({
+  series = [],
+  standaloneBooks = [],
+  authorName = '',
+  user = null,
+  batchSelect = false
+} = {}) {
+  const authorParam = authorName ? `?author=${encodeURIComponent(authorName)}` : '';
+  const rowOpts = { user, batchSelect };
+  const groupSelect = (ariaLabel) => (batchSelect
+    ? `<label class="author-flibusta-series-batch" title="${escapeHtml(ariaLabel)}"><input type="checkbox" class="author-flibusta-series-cb" aria-label="${escapeHtml(ariaLabel)}"></label>`
+    : '');
+  const seriesBlocks = (series || [])
+    .filter((s) => Array.isArray(s.books) && s.books.length)
+    .map((s) => {
+      const href = `/facet/series/${encodeURIComponent(s.name)}${authorParam}`;
+      const ordered = [...s.books].sort((a, b) =>
+        seriesNoSortKey(a) - seriesNoSortKey(b)
+        || String(a.title || '').localeCompare(String(b.title || ''), undefined, { numeric: true, sensitivity: 'base' })
+      );
+      const books = ordered.map((book) => renderAuthorFlibustaBookRow(book, { ...rowOpts, showSeriesNo: true })).join('');
+      const selectLabel = tp('authorPage.selectSeries', { name: s.displayName || s.name });
+      return `<section class="author-flibusta-group">
+        <h3 class="author-flibusta-series-title">${groupSelect(selectLabel)}<a href="${escapeHtml(href)}">${escapeHtml(s.displayName || s.name)}</a></h3>
+        <ul class="author-flibusta-books">${books}</ul>
+      </section>`;
+    })
+    .join('');
+  const standaloneBlock = standaloneBooks.length
+    ? `<section class="author-flibusta-group">
+        <h3 class="author-flibusta-series-title">${groupSelect(t('authorPage.selectOutsideSeries'))}<span>${escapeHtml(t('authorPage.outsideSeries'))}</span></h3>
+        <ul class="author-flibusta-books">${standaloneBooks.map((book) => renderAuthorFlibustaBookRow(book, { ...rowOpts, showSeriesNo: false })).join('')}</ul>
+      </section>`
+    : '';
+  if (!seriesBlocks && !standaloneBlock) return '';
+  return `<div class="author-flibusta-list">${seriesBlocks}${standaloneBlock}</div>`;
+}
+
+/**
+ * Flat Flibusta-style book list for catalog / search / novinki (title + author rows).
+ */
+export function renderBookFlibustaList(books = [], { user = null, batchSelect = false } = {}) {
+  const uniqueItems = uniqueBooksById(books);
+  if (!uniqueItems.length) return '';
+  const rows = uniqueItems
+    .map((book) => renderAuthorFlibustaBookRow(book, {
+      user,
+      showSeriesNo: false,
+      batchSelect,
+      showAuthor: true
+    }))
+    .join('');
+  return `<div class="author-flibusta-list catalog-book-list">
+    <section class="author-flibusta-group catalog-book-list-group">
+      <ul class="author-flibusta-books catalog-book-list-ul">${rows}</ul>
+    </section>
+  </div>`;
+}
+
+/** Grid / List toggle for catalog, search results, and library shelves. */
+export function renderBrowseViewTabs({ basePath = '/catalog', params = null, viewMode = 'grid' } = {}) {
+  const isList = viewMode === 'list';
+  const tab = (mode, label) => {
+    const p = params instanceof URLSearchParams
+      ? new URLSearchParams(params.toString())
+      : new URLSearchParams(params || {});
+    p.delete('page');
+    if (mode === 'list') p.set('view', 'list');
+    else p.delete('view');
+    const qs = p.toString();
+    const href = qs ? `${basePath}?${qs}` : basePath;
+    const active = (isList ? 'list' : 'grid') === mode ? ' is-active' : '';
+    const ariaCurrent = (isList ? 'list' : 'grid') === mode ? ' aria-current="page"' : '';
+    return `<a class="browse-view-tab${active}" href="${escapeHtml(href)}"${ariaCurrent}>${escapeHtml(label)}</a>`;
+  };
+  return `<nav class="browse-view-tabs" aria-label="${escapeHtml(t('browse.viewTabsLabel'))}">${tab('grid', t('browse.viewGrid'))}${tab('list', t('browse.viewList'))}</nav>`;
 }
 
 export function renderFacetSummaryBlock(title, items = [], path = '') {

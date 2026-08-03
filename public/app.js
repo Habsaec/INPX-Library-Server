@@ -3125,6 +3125,12 @@ function isPageDownloadAllowed() {
   return document.body?.dataset?.downloadAllowed === '1';
 }
 
+function isPageEmailSendAllowed() {
+  if (typeof document === 'undefined') return false;
+  // SSR rows / batch email toolbar prove the current user may send by email.
+  return Boolean(document.querySelector('[data-send-to-ereader], [data-batch-email-format]'));
+}
+
 const READ_BADGE_SVG = '<svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>';
 let _readBookIdSet = null;
 function getReadBookIdSet() {
@@ -3270,6 +3276,52 @@ function renderCardHtml(book, { batchSelect = false, seriesContext = null } = {}
   </article>`;
 }
 
+function renderListRowHtml(book, { batchSelect = false } = {}) {
+  const id = escapeHtml(book.id);
+  const title = escapeHtml(book.title || '');
+  const ext = escapeHtml(String(book.ext || 'fb2').toUpperCase());
+  const rate = Math.max(0, Math.min(5, Math.floor(Number(book.libRate) || 0)));
+  const rating = rate ? `<span class="author-flibusta-rating" title="${rate}">${'★'.repeat(rate)}</span>` : '';
+  const authorHtml = book.authors
+    ? `<span class="author-flibusta-author muted">${uiRenderAuthorLinks(book.authorsList, book.authors, `ajax-list-a-${book.id}`)}</span>`
+    : `<span class="author-flibusta-author muted">${escapeHtml(uiT('book.authorUnknown'))}</span>`;
+  const batchCb = batchSelect
+    ? `<label class="author-flibusta-batch" title="${escapeHtml(uiT('batch.selectTitle'))}"><input type="checkbox" class="batch-select-cb" id="batch-select-${safeDomIdPart(book.id)}" name="batch-select-${safeDomIdPart(book.id)}" ${bookIdNeedsSafeUrl(book.id) ? `data-batch-book-id-ref="${escapeHtml(encodeBookRef(book.id))}"` : `data-batch-book-id="${id}"`} aria-label="${escapeHtml(uiT('batch.selectAria'))}"></label>`
+    : '';
+  const sourceFormat = String(book.ext || 'fb2').toLowerCase();
+  const formats =
+    Array.isArray(book.downloadFormats) && book.downloadFormats.length
+      ? book.downloadFormats.map((x) => [x.format, x.label])
+      : sourceFormat === 'fb2'
+        ? [['fb2', 'FB2'], ['epub2', 'EPUB']]
+        : [[sourceFormat, sourceFormat.toUpperCase()]];
+  const downloadMenu =
+    isPageDownloadAllowed() && formats.length
+      ? formats.length === 1
+        ? `<a class="button download-menu-trigger download-menu-trigger-compact download-direct-link" href="${downloadBookPath(book.id, `format=${encodeURIComponent(formats[0][0])}`)}">${escapeHtml(uiT('download.label'))}</a>`
+        : `<details class="download-menu download-menu-compact">
+      <summary class="button download-menu-trigger download-menu-trigger-compact">${escapeHtml(uiT('download.label'))}</summary>
+      <div class="download-menu-popover">${formats.map(([f, l]) => `<a class="download-format-link" href="${downloadBookPath(book.id, `format=${encodeURIComponent(f)}`)}">${escapeHtml(l)}</a>`).join('')}</div>
+    </details>`
+      : '';
+  const dl = downloadMenu ? `<span class="author-flibusta-dl">${downloadMenu}</span>` : '';
+  const cardRef = encodeBookRef(book.id);
+  const bookRefAttr = bookIdNeedsSafeUrl(book.id)
+    ? `data-book-id-ref="${escapeHtml(cardRef)}"`
+    : `data-book-id-ref="${escapeHtml(cardRef)}" data-book-id="${id}"`;
+  const emailBtn = isPageEmailSendAllowed()
+    ? `<button class="button author-flibusta-email" type="button" ${bookRefAttr} data-send-to-ereader="1">${escapeHtml(uiT('book.toEmail'))}</button>`
+    : '';
+  const actions = (dl || emailBtn)
+    ? `<span class="author-flibusta-actions">${dl}${emailBtn}</span>`
+    : '';
+  const cardAttrs = bookRefAttr;
+  return `<li class="author-flibusta-book" ${cardAttrs}>
+    ${batchCb}<a class="author-flibusta-title" href="${bookPagePath(book.id)}">${title}</a>
+    ${authorHtml}${rating}<span class="muted author-flibusta-meta">${ext}</span>${actions}
+  </li>`;
+}
+
 function attachLoadMore() {
   const trigger = document.querySelector('[data-load-more-trigger]');
   const container = document.querySelector('[data-load-more-grid]');
@@ -3285,6 +3337,7 @@ function attachLoadMore() {
   const total = Number(container.dataset.loadMoreTotal) || 0;
   const pageSize = Number(container.dataset.loadMorePageSize) || 24;
   const batchSelect = Boolean(container.dataset.batchContext);
+  const listMode = container.dataset.loadMoreMode === 'list';
   // Определяем контекст серии из URL API для корректного рендеринга карточек
   let seriesContext = null;
   try {
@@ -3311,7 +3364,8 @@ function attachLoadMore() {
     page++;
     trigger.disabled = true;
     trigger.textContent = `${uiT('catalog.loadMore')}...`;
-    const grid = container.querySelector('.grid');
+    const grid = listMode ? null : container.querySelector('.grid');
+    const list = listMode ? container.querySelector('.author-flibusta-books') : null;
     const skeletons = [];
     if (grid) {
       const tmp = document.createElement('div');
@@ -3325,7 +3379,29 @@ function attachLoadMore() {
       if (!r.ok) throw new Error('fetch failed');
       const data = await r.json();
       for (const s of skeletons) s.remove();
-      if (grid && data.items?.length) {
+      if (listMode && list && data.items?.length) {
+        const existingIds = new Set(
+          [...list.querySelectorAll('.author-flibusta-book[data-book-id-ref], .author-flibusta-book[data-book-id]')]
+            .map((row) => (typeof resolveBookIdFromElement === 'function' ? resolveBookIdFromElement(row) : row.getAttribute('data-book-id')))
+            .filter(Boolean)
+        );
+        const nextItems = [];
+        for (const item of data.items) {
+          const id = String(item?.id || '');
+          if (!id || existingIds.has(id)) continue;
+          existingIds.add(id);
+          nextItems.push(item);
+        }
+        const tmp = document.createElement('div');
+        tmp.innerHTML = nextItems.map((b) => renderListRowHtml(b, { batchSelect })).join('');
+        const newRows = [...tmp.children];
+        for (const row of newRows) list.appendChild(row);
+        for (const row of newRows) attachDownloadMenus(row);
+        if (batchSelect) {
+          const scope = container.closest('.batch-select-scope');
+          updateBatchCountForScope(scope);
+        }
+      } else if (grid && data.items?.length) {
         const existingIds = new Set(
           [...grid.querySelectorAll('.card[data-book-id-ref], .card[data-book-id]')]
             .map((card) => (typeof resolveBookIdFromElement === 'function' ? resolveBookIdFromElement(card) : card.getAttribute('data-book-id')))
@@ -3396,9 +3472,35 @@ function collectCheckedBatchBookIds(scope) {
   ];
 }
 
+function findBatchFabForScope(scopeEl) {
+  if (!scopeEl) return null;
+  const scopeId = scopeEl.dataset.batchScopeId;
+  if (scopeId) {
+    const moved = document.querySelector(`[data-batch-fab][data-batch-scope-id="${scopeId}"]`);
+    if (moved) return moved;
+  }
+  return scopeEl.querySelector('[data-batch-fab]');
+}
+
+function ensureBatchFabOnBody(scopeEl) {
+  if (!scopeEl) return null;
+  let fab = scopeEl.querySelector('[data-batch-fab]');
+  if (!fab) return findBatchFabForScope(scopeEl);
+  if (!scopeEl.dataset.batchScopeId) {
+    scopeEl.dataset.batchScopeId = `bs${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
+  }
+  const scopeId = scopeEl.dataset.batchScopeId;
+  fab.dataset.batchScopeId = scopeId;
+  if (fab.parentElement !== document.body) {
+    document.body.appendChild(fab);
+  }
+  return fab;
+}
+
 function updateBatchCountForScope(scopeEl) {
   if (!scopeEl) return;
-  const countEl = scopeEl.querySelector('[data-batch-selected-count]');
+  const fab = ensureBatchFabOnBody(scopeEl) || findBatchFabForScope(scopeEl);
+  const countEl = (fab || scopeEl).querySelector('[data-batch-selected-count]');
   const cbs = [...scopeEl.querySelectorAll('input.batch-select-cb')];
   const n = cbs.filter((c) => c.checked).length;
   if (countEl) {
@@ -3410,6 +3512,18 @@ function updateBatchCountForScope(scopeEl) {
       countEl.textContent =
         n >= BATCH_DOWNLOAD_MAX ? uiTp('app.batchSelectedMax', { n }) : uiTp('app.batchSelected', { n });
     }
+  }
+  if (fab) {
+    const show = n > 0;
+    if (show) {
+      fab.hidden = false;
+      fab.classList.add('is-visible');
+    } else {
+      fab.classList.remove('is-visible');
+      fab.hidden = true;
+      for (const details of fab.querySelectorAll('details[open]')) details.removeAttribute('open');
+    }
+    fab.setAttribute('aria-hidden', show ? 'false' : 'true');
   }
   const toggleBtn = scopeEl.querySelector('[data-batch-toggle-select]');
   if (toggleBtn) {
@@ -3426,10 +3540,27 @@ function updateBatchCountForScope(scopeEl) {
 function getVisibleBatchCheckboxesInScope(scopeEl) {
   const cbs = scopeEl ? [...scopeEl.querySelectorAll('input.batch-select-cb')] : [];
   return cbs.filter((cb) => {
-    const card = cb.closest('.card');
-    if (!card) return false;
-    return card.offsetParent !== null && card.style.display !== 'none';
+    const row = cb.closest('.card, .author-flibusta-book, .author-facet-standalone-row');
+    const host = row || cb;
+    return host.offsetParent !== null && host.style.display !== 'none';
   });
+}
+
+function syncAuthorFlibustaSeriesCheckboxes(scopeEl) {
+  if (!scopeEl) return;
+  for (const group of scopeEl.querySelectorAll('.author-flibusta-group')) {
+    const seriesCb = group.querySelector('input.author-flibusta-series-cb');
+    if (!seriesCb) continue;
+    const bookCbs = [...group.querySelectorAll('input.batch-select-cb')];
+    if (!bookCbs.length) {
+      seriesCb.checked = false;
+      seriesCb.indeterminate = false;
+      continue;
+    }
+    const checked = bookCbs.filter((c) => c.checked).length;
+    seriesCb.checked = checked > 0 && checked === bookCbs.length;
+    seriesCb.indeterminate = checked > 0 && checked < bookCbs.length;
+  }
 }
 
 function parseFilenameFromContentDisposition(header) {
@@ -3464,7 +3595,11 @@ function attachBatchDownloadSelection() {
       return;
     }
 
-    const scope = toolbar.closest('.batch-select-scope');
+    const scope = toolbar.closest('.batch-select-scope')
+      || (toolbar.closest('[data-batch-fab]') && document.querySelector(
+        `.batch-select-scope[data-batch-scope-id="${toolbar.closest('[data-batch-fab]').dataset.batchScopeId || ''}"]`
+      ));
+    if (scope) ensureBatchFabOnBody(scope);
 
     toolbar.querySelector('[data-batch-toggle-select]')?.addEventListener('click', () => {
       if (!scope) return;
@@ -3484,6 +3619,14 @@ function attachBatchDownloadSelection() {
           showToast(uiTp('app.batchMarkMax', { n: BATCH_DOWNLOAD_MAX }), 'info');
         }
       }
+      syncAuthorFlibustaSeriesCheckboxes(scope);
+      updateBatchCountForScope(scope);
+    });
+
+    toolbar.querySelector('[data-batch-clear-select]')?.addEventListener('click', () => {
+      if (!scope) return;
+      for (const cb of scope.querySelectorAll('input.batch-select-cb')) cb.checked = false;
+      syncAuthorFlibustaSeriesCheckboxes(scope);
       updateBatchCountForScope(scope);
     });
 
@@ -3555,8 +3698,48 @@ function attachBatchDownloadSelection() {
   });
 
   document.addEventListener('change', (e) => {
-    if (!e.target || !e.target.classList || !e.target.classList.contains('batch-select-cb')) return;
+    if (!e.target || !e.target.classList) return;
     const scope = e.target.closest('.batch-select-scope');
+
+    if (e.target.classList.contains('author-flibusta-series-cb')) {
+      const group = e.target.closest('.author-flibusta-group');
+      if (!group || !scope) return;
+      const bookCbs = [...group.querySelectorAll('input.batch-select-cb')];
+      const selectedInGroup = bookCbs.filter((c) => c.checked).length;
+      /*
+       * Partial select (e.g. series > 20 books) leaves the series box indeterminate.
+       * A click then becomes checked=true, which used to try selecting again and
+       * made it impossible to clear. Any selection in the group → clear; none → select.
+       */
+      const clearGroup = selectedInGroup > 0;
+      e.target.indeterminate = false;
+      if (clearGroup) {
+        for (const cb of bookCbs) cb.checked = false;
+      } else {
+        let checkedInScope = [...scope.querySelectorAll('input.batch-select-cb')]
+          .filter((c) => c.checked).length;
+        let marked = 0;
+        for (const cb of bookCbs) {
+          if (cb.checked) continue;
+          if (checkedInScope >= BATCH_DOWNLOAD_MAX) {
+            if (marked === 0) {
+              showToast(uiTp('app.batchDownloadMaxShort', { n: BATCH_DOWNLOAD_MAX }), 'error');
+            } else {
+              showToast(uiTp('app.batchMarkMax', { n: BATCH_DOWNLOAD_MAX }), 'info');
+            }
+            break;
+          }
+          cb.checked = true;
+          checkedInScope += 1;
+          marked += 1;
+        }
+      }
+      syncAuthorFlibustaSeriesCheckboxes(scope);
+      updateBatchCountForScope(scope);
+      return;
+    }
+
+    if (!e.target.classList.contains('batch-select-cb')) return;
     if (e.target.checked && scope) {
       const checked = [...scope.querySelectorAll('input.batch-select-cb')].filter((c) => c.checked).length;
       if (checked > BATCH_DOWNLOAD_MAX) {
@@ -3564,6 +3747,7 @@ function attachBatchDownloadSelection() {
         showToast(uiTp('app.batchDownloadMaxShort', { n: BATCH_DOWNLOAD_MAX }), 'error');
       }
     }
+    syncAuthorFlibustaSeriesCheckboxes(scope);
     updateBatchCountForScope(scope);
   });
 }
@@ -4257,79 +4441,89 @@ function attachAddToShelfButtons() {
 }
 
 function attachSendToEreader() {
-  for (const btn of document.querySelectorAll('[data-send-to-ereader]')) {
-    btn.addEventListener('click', async () => {
-      const bookId = typeof resolveBookIdFromElement === 'function' ? resolveBookIdFromElement(btn) : (btn.dataset.sendToEreader ? decodeURIComponent(btn.dataset.sendToEreader).replace(/\uFFFD/g, '\0') : null);
-      try {
-        const emailRes = await fetch('/api/ereader-email', { credentials: 'same-origin' });
-        if (!emailRes.ok) throw new Error('HTTP ' + emailRes.status);
-        const emailData = await emailRes.json();
-        const ereaderEmail = emailData.email || '';
+  if (attachSendToEreader._bound) return;
+  attachSendToEreader._bound = true;
 
-        if (!ereaderEmail) {
-          openModal(`
-            <div class="modal-header">
-              <span>${escapeHtml(uiT('app.emailSendTitle'))}</span>
-              <button type="button" class="modal-close">&times;</button>
-            </div>
-            <div class="modal-form">
-              <p>${escapeHtml(uiT('app.emailNotConfigured'))}</p>
-              <p style="margin-top:8px;"><a href="/profile#settings" style="color:var(--accent);">${escapeHtml(uiT('app.emailProfileHint'))}</a>${escapeHtml(uiT('app.emailProfileHintSuffix'))}</p>
-            </div>
-          `);
-          return;
-        }
+  document.addEventListener('click', async (e) => {
+    const btn = e.target instanceof Element ? e.target.closest('[data-send-to-ereader]') : null;
+    if (!btn) return;
+    // Batch format buttons use a different handler.
+    if (btn.hasAttribute('data-batch-email-format')) return;
 
-        const { overlay, forceClose } = openModal(`
+    const bookId = typeof resolveBookIdFromElement === 'function'
+      ? resolveBookIdFromElement(btn)
+      : (btn.dataset.sendToEreader ? decodeURIComponent(btn.dataset.sendToEreader).replace(/\uFFFD/g, '\0') : null);
+    if (!bookId) return;
+
+    try {
+      const emailRes = await fetch('/api/ereader-email', { credentials: 'same-origin' });
+      if (!emailRes.ok) throw new Error('HTTP ' + emailRes.status);
+      const emailData = await emailRes.json();
+      const ereaderEmail = emailData.email || '';
+
+      if (!ereaderEmail) {
+        openModal(`
           <div class="modal-header">
             <span>${escapeHtml(uiT('app.emailSendTitle'))}</span>
             <button type="button" class="modal-close">&times;</button>
           </div>
-          <form class="modal-form" data-ereader-form>
-            <div>
-              <div class="modal-form-hint" style="margin-bottom:8px;">${escapeHtml(uiT('app.emailSendTo'))} <strong>${escapeHtml(ereaderEmail)}</strong></div>
-            </div>
-            <div>
-              <label>${escapeHtml(uiT('app.emailBookFormat'))}</label>
-              <select name="format">
-                <option value="epub2">EPUB</option>
-                <option value="epub3">EPUB3</option>
-                <option value="kepub">KEPUB (Kobo)</option>
-                <option value="kfx">KFX (Kindle)</option>
-                <option value="azw8">AZW8 (Kindle)</option>
-                <option value="fb2">FB2</option>
-              </select>
-            </div>
-            <button type="submit" class="modal-form-submit">${escapeHtml(uiT('app.emailSendBtn'))}</button>
-          </form>
+          <div class="modal-form">
+            <p>${escapeHtml(uiT('app.emailNotConfigured'))}</p>
+            <p style="margin-top:8px;"><a href="/profile#settings" style="color:var(--accent);">${escapeHtml(uiT('app.emailProfileHint'))}</a>${escapeHtml(uiT('app.emailProfileHintSuffix'))}</p>
+          </div>
         `);
+        return;
+      }
 
-        overlay.querySelector('[data-ereader-form]').addEventListener('submit', async (e) => {
-          e.preventDefault();
-          const format = overlay.querySelector('select[name="format"]').value;
-          const submitBtn = overlay.querySelector('.modal-form-submit');
-          submitBtn.disabled = true;
-          submitBtn.textContent = uiT('app.emailSending');
-          try {
-            const res = await fetch(apiSendToEreaderPath(bookId), { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ format }) });
-            const data = await res.json();
-            if (res.ok) {
-              showToast(data.message || uiT('app.emailSent'), 'success');
-              forceClose();
-            } else {
-              showToast(data.error || uiT('app.emailSendError'), 'error');
-              submitBtn.disabled = false;
-              submitBtn.textContent = uiT('app.emailSendBtn');
-            }
-          } catch {
-            showToast(uiT('app.networkError'), 'error');
+      const { overlay, forceClose } = openModal(`
+        <div class="modal-header">
+          <span>${escapeHtml(uiT('app.emailSendTitle'))}</span>
+          <button type="button" class="modal-close">&times;</button>
+        </div>
+        <form class="modal-form" data-ereader-form>
+          <div>
+            <div class="modal-form-hint" style="margin-bottom:8px;">${escapeHtml(uiT('app.emailSendTo'))} <strong>${escapeHtml(ereaderEmail)}</strong></div>
+          </div>
+          <div>
+            <label>${escapeHtml(uiT('app.emailBookFormat'))}</label>
+            <select name="format">
+              <option value="epub2">EPUB</option>
+              <option value="epub3">EPUB3</option>
+              <option value="kepub">KEPUB (Kobo)</option>
+              <option value="kfx">KFX (Kindle)</option>
+              <option value="azw8">AZW8 (Kindle)</option>
+              <option value="fb2">FB2</option>
+            </select>
+          </div>
+          <button type="submit" class="modal-form-submit">${escapeHtml(uiT('app.emailSendBtn'))}</button>
+        </form>
+      `);
+
+      overlay.querySelector('[data-ereader-form]').addEventListener('submit', async (ev) => {
+        ev.preventDefault();
+        const format = overlay.querySelector('select[name="format"]').value;
+        const submitBtn = overlay.querySelector('.modal-form-submit');
+        submitBtn.disabled = true;
+        submitBtn.textContent = uiT('app.emailSending');
+        try {
+          const res = await fetch(apiSendToEreaderPath(bookId), { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ format }) });
+          const data = await res.json();
+          if (res.ok) {
+            showToast(data.message || uiT('app.emailSent'), 'success');
+            forceClose();
+          } else {
+            showToast(data.error || uiT('app.emailSendError'), 'error');
             submitBtn.disabled = false;
             submitBtn.textContent = uiT('app.emailSendBtn');
           }
-        });
-      } catch { showToast(uiT('app.networkError'), 'error'); }
-    });
-  }
+        } catch {
+          showToast(uiT('app.networkError'), 'error');
+          submitBtn.disabled = false;
+          submitBtn.textContent = uiT('app.emailSendBtn');
+        }
+      });
+    } catch { showToast(uiT('app.networkError'), 'error'); }
+  });
 }
 
 function attachSendBatchToEreader() {
@@ -4345,7 +4539,11 @@ function attachSendBatchToEreader() {
     const format = fmtBtn.getAttribute('data-batch-email-format') || 'epub2';
     e.preventDefault();
 
-    const scope = menu.closest('.batch-select-scope');
+    const fab = menu.closest('[data-batch-fab]');
+    const scope = menu.closest('.batch-select-scope')
+      || (fab?.dataset.batchScopeId
+        ? document.querySelector(`.batch-select-scope[data-batch-scope-id="${fab.dataset.batchScopeId}"]`)
+        : null);
     if (!scope) return;
 
     let ctx;

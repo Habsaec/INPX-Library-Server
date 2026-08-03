@@ -50,7 +50,7 @@ test('applyDidYouMeanToQuery rewrites mistyped token', () => {
   );
 });
 
-test('detectPreferredSearchField boosts close series match', () => {
+test('detectPreferredSearchField: series only without authors', () => {
   assert.equal(detectPreferredSearchField({
     query: 'Гарри Поттер',
     booksTotal: 2,
@@ -60,42 +60,48 @@ test('detectPreferredSearchField boosts close series match', () => {
   }), 'series');
 });
 
-test('resolveSearchRouteField: books-only and title-like go to books', () => {
+test('detectPreferredSearchField: author surname never prefers series', () => {
+  assert.equal(detectPreferredSearchField({
+    query: 'Лукьяненко',
+    booksTotal: 200,
+    authorsTotal: 1,
+    seriesTotal: 3,
+    seriesSamples: [{ name: 'лукьяненко', displayName: 'Лукьяненко' }]
+  }), null);
+  assert.equal(detectPreferredSearchField({
+    query: 'Садовников',
+    booksTotal: 10,
+    authorsTotal: 1,
+    seriesTotal: 2,
+    seriesSamples: [{ name: 'садовников', displayName: 'Садовников' }]
+  }), null);
+});
+
+test('resolveSearchRouteField always null (Enter opens books)', () => {
   assert.equal(resolveSearchRouteField({
     query: 'пешком над облаками',
     booksTotal: 1,
     authorsTotal: 0,
     seriesTotal: 0
-  }), 'books');
-  assert.equal(resolveSearchRouteField({
-    query: 'пешком над облаками',
-    booksTotal: 5,
-    authorsTotal: 1,
-    seriesTotal: 0
-  }), 'books');
-});
-
-test('resolveSearchRouteField: series preferred and author-like', () => {
+  }), null);
   assert.equal(resolveSearchRouteField({
     query: 'Гарри Поттер',
     booksTotal: 2,
     authorsTotal: 0,
     seriesTotal: 1,
     preferredField: 'series'
-  }), 'series');
+  }), null);
   assert.equal(resolveSearchRouteField({
     query: 'Садовников',
     booksTotal: 0,
     authorsTotal: 3,
     seriesTotal: 0
-  }), 'authors');
-});
-
-test('resolveSearchRouteField: mixed stays on hub', () => {
+  }), null);
   assert.equal(resolveSearchRouteField({
-    query: 'ник',
-    booksTotal: 10,
-    authorsTotal: 8,
-    seriesTotal: 4
+    query: 'Лукьяненко',
+    booksTotal: 200,
+    authorsTotal: 1,
+    seriesTotal: 5,
+    preferredField: 'series'
   }), null);
 });

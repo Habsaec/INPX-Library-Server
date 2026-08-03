@@ -62,4 +62,8 @@ test('getAuthorBooksGrouped counts all books when author rows expand via multi-s
   const seriesBEntry = grouped.series.find((s) => s.name === 'series b');
   assert.equal(seriesAEntry?.bookCount, 2, 'Series A should list both linked books');
   assert.equal(seriesBEntry?.bookCount, 2, 'Series B should list both linked books');
+  assert.ok(Array.isArray(seriesAEntry?.books), 'Series entries include books for list view');
+  assert.equal(seriesAEntry.books.length, 2);
+  assert.ok(seriesAEntry.books.some((b) => b.id === 'b1'));
+  assert.ok(seriesAEntry.books.some((b) => b.id === 'b2'));
 });

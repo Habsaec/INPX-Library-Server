@@ -159,6 +159,18 @@ test('searchOverview returns totals for all modes', () => {
   assert.ok(overview.authors.total >= 1);
   assert.equal(typeof overview.books.total, 'number');
   assert.equal(typeof overview.series.total, 'number');
+  assert.equal(overview.routeField, null);
+});
+
+test('searchOverview reuses precomputed books total', () => {
+  const overview = searchOverview({
+    query: 'Булычев',
+    booksTotal: 42,
+    booksCapped: false
+  });
+  assert.equal(overview.books.total, 42);
+  assert.equal(overview.books.capped, false);
+  assert.equal(overview.routeField, null);
 });
 
 test('listSearchGenres returns scoped genres for a book query', () => {

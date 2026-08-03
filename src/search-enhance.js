@@ -3,8 +3,6 @@
  * weak-result hints, typo query rewrite, series preference, FTS probe warmup.
  */
 import { db, isBooksFtsUsable } from './db.js';
-import { filterSearchContentTokens } from './search-normalize.js';
-
 const WARM_TTL_MS = 60_000;
 const WARM_MAX = 40;
 /** @type {Map<string, { at: number, payload: any }>} */
@@ -207,7 +205,8 @@ function levenshteinLite(a, b) {
 }
 
 /**
- * Prefer series drilldown when query closely matches a series name.
+ * Soft hint for API clients: series only when name is a close match and no authors hit.
+ * Web catalog no longer auto-routes on this — Enter always opens books.
  */
 export function detectPreferredSearchField({
   query = '',
@@ -222,6 +221,8 @@ export function detectPreferredSearchField({
     .replace(/\s+/g, ' ')
     .trim();
   if (!q || seriesTotal <= 0) return null;
+  /* Author surnames must not lose to a loose series prefix match. */
+  if (authorsTotal > 0) return null;
   for (const row of seriesSamples || []) {
     const name = String(row.displayName || row.name || '')
       .toLowerCase()
@@ -229,54 +230,19 @@ export function detectPreferredSearchField({
       .replace(/\s+/g, ' ')
       .trim();
     if (!name) continue;
-    if (name === q || name.startsWith(q) || q.startsWith(name)) {
-      if (seriesTotal >= booksTotal || seriesTotal >= 1) return 'series';
+    if (name === q || name.startsWith(`${q} `) || q.startsWith(`${name} `) || name.startsWith(q)) {
+      return 'series';
     }
   }
   if (seriesTotal > 0 && booksTotal === 0 && authorsTotal === 0) return 'series';
-  if (seriesTotal > booksTotal && seriesTotal >= authorsTotal) return 'series';
   return null;
 }
 
 /**
- * Decide whether Enter can skip the 3-row hub.
- * Conservative: return null when ambiguous.
- * @returns {'books'|'authors'|'series'|null}
+ * Web Enter always opens books; keep export for API compatibility.
+ * @returns {null}
  */
-export function resolveSearchRouteField({
-  query = '',
-  booksTotal = 0,
-  authorsTotal = 0,
-  seriesTotal = 0,
-  preferredField = null
-} = {}) {
-  const books = Math.max(0, Math.floor(Number(booksTotal) || 0));
-  const authors = Math.max(0, Math.floor(Number(authorsTotal) || 0));
-  const series = Math.max(0, Math.floor(Number(seriesTotal) || 0));
-  if (!books && !authors && !series) return null;
-
-  if (preferredField === 'series' && series > 0) return 'series';
-  if (series > 0 && books === 0 && authors === 0) return 'series';
-
-  const tokens = String(query || '').trim().split(/\s+/).filter(Boolean);
-  const content = filterSearchContentTokens(
-    tokens.map((tok) => tok.toLowerCase().replace(/ё/g, 'е'))
-  );
-
-  if (books >= 1 && authors === 0 && series === 0) return 'books';
-  if (books >= 1 && content.length >= 2 && books > authors && books > series) return 'books';
-
-  if (
-    authors >= 1
-    && tokens.length >= 1
-    && tokens.length <= 3
-    && authors > books
-    && authors >= series
-    && !(content.length >= 2 && books >= 1)
-  ) {
-    return 'authors';
-  }
-
+export function resolveSearchRouteField() {
   return null;
 }
 

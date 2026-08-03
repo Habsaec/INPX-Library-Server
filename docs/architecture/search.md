@@ -20,31 +20,24 @@ User query
   → normalize (createSortKey + ё→е + mixed lookalike Latin/Cyrillic)
   → optional author+title split (content tokens; no FTS peek loop)
   → light Russian stem expand (query-time OR variants)
-  → GET /api/search or /catalog?q (no field): cheap overview totals (pageSize 0)
-       → routeField when confident → redirect /catalog?q&field=…&fromHub=1
-       → else hub (Книги / Авторы / Серии); hub=1 forces hub
-       → background warm of first books page only if routeField=books
+  → web `/catalog?q` (no field): always books page + section chips (Авторы / Серии)
+  → GET /api/search: totals for chips / Android (`routeField` always null)
   → typeahead: GET /api/search/suggest (web dropdown + Android)
-  → GET /api/catalog?field=… (reuses warm page when present)
+  → GET /api/catalog?field=authors|series from chips
   → empty: recovery hints + one typo retry; weak: ≤1 did-you-mean
   → paginated page (edition dedupe by title+author)
 ```
 
 | Mode | Matcher |
 |------|---------|
-| Overview | `searchOverview` — capped book COUNT (≤10k) + authors/series totals + `preferredField` + `routeField` |
+| Overview | `searchOverview` — capped book COUNT (≤10k) + authors/series totals + soft `preferredField`; `routeField` always null |
 | Books | FTS5 MATCH + title boost (exact/prefix/ordered-token) then `bm25`; author+title split when confident; phrase OR; stopwords skipped in AND; LIKE fallback when dirty/desynced/`*`/zero MATCH; free-text uses capped COUNT |
 | Authors | `listAuthors` (also OPDS) |
 | Series | series name + mixed author+series |
 
-## Smart routing (`routeField`)
+## Web navigation
 
-Conservative skip of the 3-row hub:
-
-- **books** — only books hit, or books dominate and query has ≥2 content tokens
-- **series** — `preferredField === 'series'` or series-only hits
-- **authors** — authors dominate, 1–3 tokens, not a multi-word title-like query
-- else hub; auto-routed pages link back via `/catalog?q=…&hub=1`
+Enter always opens **books** (Flibusta-like). Authors / series are chips above results — no hub screen and no smart 302 redirect. `preferredField` remains a soft API hint (series only when no author hits).
 
 ## Operators
 
@@ -92,7 +85,8 @@ Authors + series + `search_title_tokens` (≤50k). Empty catalog → full `searc
 
 - Web suggest dropdown → `/api/search/suggest` (+ history); debounce ≥300ms, min 3 chars
 - Genre facets for free-text load via `/api/search/genres` after HTML
-- Helpers: `src/search-enhance.js` (`resolveSearchRouteField`, warm cache, dedupe)
+- Section chips (Книги / Авторы / Серии) above catalog results for free-text `q`
+- Helpers: `src/search-enhance.js` (warm cache, dedupe; `routeField` unused)
 
 ## What we do not do
 

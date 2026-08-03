@@ -2391,8 +2391,8 @@ export async function rebuildIndex(inpxPath, incremental = false, sourceId = nul
       lang = excluded.lang,
       keywords = excluded.keywords,
       lib_rate = excluded.lib_rate,
-      source_id = excluded.source_id,
-      imported_at = CURRENT_TIMESTAMP
+      source_id = excluded.source_id
+      /* imported_at: only on INSERT (DEFAULT) — never refresh on reindex/update */
   `);
 
   const newSizes = incremental ? { ...previousSizes } : {};
@@ -4181,11 +4181,16 @@ export function listSearchGenres({
 }
 
 /**
- * Unified catalog search overview: totals for books / authors / series.
- * Used by main search hub (`GET /api/search`) before drilling into `/api/catalog?field=…`.
+ * Totals for books / authors / series (`GET /api/search`, web search chips).
  * Book totals use capped COUNT (≤10001) — full FTS COUNT on popular queries is too slow.
+ * `routeField` is always null (web Enter opens books; no smart redirect).
+ * Pass `booksTotal` when the books page was already loaded to skip a second COUNT.
  */
-export function searchOverview({ query = '' } = {}) {
+export function searchOverview({
+  query = '',
+  booksTotal: booksTotalIn = null,
+  booksCapped: booksCappedIn = null
+} = {}) {
   const q = String(query || '').trim();
   if (!q) {
     return {
@@ -4197,19 +4202,27 @@ export function searchOverview({ query = '' } = {}) {
       routeField: null
     };
   }
-  /* Counts only — do not materialize/rank a books page here (was multi-second on Flibusta). */
-  const books = searchBooks({
-    query: q,
-    page: 1,
-    pageSize: 0,
-    field: 'all',
-    sort: 'title',
-    totalMode: 'capped',
-    allowTypoRetry: false
-  });
+  let bookTotal;
+  let booksCapped;
+  if (booksTotalIn != null && Number.isFinite(Number(booksTotalIn))) {
+    bookTotal = Math.max(0, Math.floor(Number(booksTotalIn) || 0));
+    booksCapped = Boolean(booksCappedIn);
+  } else {
+    /* Counts only — do not materialize/rank a books page here. */
+    const books = searchBooks({
+      query: q,
+      page: 1,
+      pageSize: 0,
+      field: 'all',
+      sort: 'title',
+      totalMode: 'capped',
+      allowTypoRetry: false
+    });
+    bookTotal = Math.max(0, Math.floor(Number(books.total) || 0));
+    booksCapped = Boolean(books.capped);
+  }
   const authors = listAuthors({ query: q, page: 1, pageSize: 1, sort: 'count' });
   const series = listSeries({ query: q, page: 1, pageSize: 3, sort: 'count', nameOnly: true });
-  const bookTotal = Math.max(0, Math.floor(Number(books.total) || 0));
   const authorsTotal = Math.max(0, Math.floor(Number(authors.total) || 0));
   const seriesTotal = Math.max(0, Math.floor(Number(series.total) || 0));
   const preferredField = detectPreferredSearchField({
@@ -4219,46 +4232,33 @@ export function searchOverview({ query = '' } = {}) {
     seriesTotal,
     seriesSamples: series.items || []
   });
-  const routeField = resolveSearchRouteField({
-    query: q,
-    booksTotal: bookTotal,
-    authorsTotal,
-    seriesTotal,
-    preferredField
+  const warmQuery = q;
+  setImmediate(() => {
+    try {
+      const page = searchBooks({
+        query: warmQuery,
+        page: 1,
+        pageSize: 24,
+        field: 'all',
+        sort: 'title',
+        totalMode: 'capped',
+        allowTypoRetry: false
+      });
+      rememberWarmSearchBooksPage(warmQuery, 'title', { ...page, field: 'books' });
+    } catch {
+      /* warmup best-effort */
+    }
   });
-  /*
-   * Warm first «Книги» page only when we will (or likely will) open books —
-   * avoids wasting CPU when routing to authors/series/hub.
-   */
-  if (routeField === 'books') {
-    const warmQuery = q;
-    setImmediate(() => {
-      try {
-        const page = searchBooks({
-          query: warmQuery,
-          page: 1,
-          pageSize: 24,
-          field: 'all',
-          sort: 'title',
-          totalMode: 'capped',
-          allowTypoRetry: false
-        });
-        rememberWarmSearchBooksPage(warmQuery, 'title', { ...page, field: 'books' });
-      } catch {
-        /* warmup best-effort */
-      }
-    });
-  }
   return {
     query: q,
     books: {
-      total: books.capped ? Math.min(bookTotal, 10_000) : bookTotal,
-      capped: Boolean(books.capped)
+      total: booksCapped ? Math.min(bookTotal, 10_000) : bookTotal,
+      capped: booksCapped
     },
     authors: { total: authorsTotal },
     series: { total: seriesTotal },
     preferredField,
-    routeField
+    routeField: null
   };
 }
 
@@ -4341,10 +4341,6 @@ export function searchCatalog({
   const hasGenre = parseGenreList(genre).length > 0;
   const seriesFlag = parseHasSeries(hasSeries);
   const hasMinRate = Math.floor(Number(minRate) || 0) >= 1;
-  if (!String(query || '').trim() && !hasGenre && !String(letter || '').trim() && !lang && !format && !year && !hasMinRate && seriesFlag === null) {
-    return { total: 0, items: [], field: normalizedField };
-  }
-
   let result;
   if (normalizedField === 'authors') {
     result = { ...listAuthors({ page, pageSize, query, sort: sort === 'name' ? 'name' : 'count', order, letter }), field: normalizedField };
@@ -5564,6 +5560,7 @@ function mapAuthorPageBookRow(row) {
     seriesNo: row.seriesNo,
     ext: row.ext,
     lang: row.lang,
+    libRate: row.libRate,
     archiveName: row.archiveName
   };
   const book = mapBookListRow(bookRow);
@@ -5682,10 +5679,12 @@ export function getAuthorBooksGrouped(authorName, sort = 'title', order = '', { 
 
   const rows = db.prepare(`
     SELECT
-      b.id, b.title, b.authors, b.genres, b.series, b.series_no AS seriesNo, b.ext, b.lang, b.lib_rate AS libRate, b.archive_name AS archiveName,
+      b.id, b.title, b.authors, b.genres, b.series,
+      COALESCE(NULLIF(bs.series_no, ''), b.series_no) AS seriesNo,
+      b.ext, b.lang, b.lib_rate AS libRate, b.archive_name AS archiveName,
       s.name AS seriesCatalogName,
       COALESCE(s.display_name, s.name) AS seriesDisplayName,
-      b.series_index AS seriesIndex,
+      COALESCE(NULLIF(bs.series_no, ''), b.series_index) AS seriesIndex,
       b.imported_at AS importedAt,
       COALESCE(NULLIF(b.date, ''), b.imported_at) AS sortDate,
       b.series_sort AS seriesSort,
@@ -5752,14 +5751,17 @@ export function getAuthorBooksGrouped(authorName, sort = 'title', order = '', { 
   }
 
   series = orderAuthorSeriesGroups(series, sort);
-  const seriesSummaries = series.map(({ name, displayName, books, _latestMs: _m }) => ({
+  /* Additive `books` on each series — used by Flibusta-style list view; series cards use bookCount. */
+  const seriesOut = series.map(({ name, displayName, books, _latestMs: _m }) => ({
     name,
     displayName,
-    bookCount: books.length }));
+    bookCount: books.length,
+    books
+  }));
 
   attachSeriesListsToBooks(standalone);
   const standaloneBooks = applyAuthorPageBookSort(standalone, sort, order).map(stripAuthorPageBookMeta);
-  const result = { series: seriesSummaries, standaloneBooks, total: totalBooks };
+  const result = { series: seriesOut, standaloneBooks, total: totalBooks };
   writeTimedCache(authorGroupedCache, cacheKey, result, AUTHOR_GROUPED_CACHE_TTL_MS, 20);
   return result;
 }
@@ -6060,16 +6062,81 @@ export function getFacetSummary(facet, value) {
   return emptySummary;
 }
 
+/**
+ * Novinki window in days, relative to the newest INPX catalog `date` in the DB
+ * (not wall-clock — offline dumps stay meaningful after import).
+ */
+const RECENT_ARRIVAL_WINDOW_DAYS = 30;
+
+const ISO_DATE_PRED = (alias = '') => {
+  const col = alias ? `${alias}.date` : 'date';
+  return `${col} IS NOT NULL AND LENGTH(TRIM(${col})) >= 10 AND SUBSTR(${col}, 1, 10) GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'`;
+};
+
+function resolveRecentCatalogCutoff() {
+  const maxDate = db.prepare(`
+    SELECT MAX(SUBSTR(date, 1, 10)) AS d
+    FROM active_books
+    WHERE ${ISO_DATE_PRED()}
+  `).get()?.d;
+  if (!maxDate) return null;
+  const cutoff = db.prepare(`SELECT date(?, ?) AS d`).get(maxDate, `-${RECENT_ARRIVAL_WINDOW_DAYS} days`)?.d;
+  return cutoff ? { maxDate, cutoff } : null;
+}
+
+/**
+ * Books newly added to the catalog (INPX `date`), not the full library / reindex stamp.
+ */
+export function getRecentArrivals({ page = 1, pageSize = 24, sort = 'recent', order = '' } = {}) {
+  const offset = Math.max(0, (Math.max(1, page) - 1) * pageSize);
+  const limit = Math.max(1, Math.min(100, Math.floor(Number(pageSize) || 24)));
+  const bounds = resolveRecentCatalogCutoff();
+  if (!bounds) {
+    return { total: 0, items: [] };
+  }
+
+  const windowSql = `${ISO_DATE_PRED('b')} AND SUBSTR(b.date, 1, 10) >= ?`;
+  const total = Number(db.prepare(`
+    SELECT COUNT(*) AS count FROM active_books b WHERE ${windowSql}
+  `).get(bounds.cutoff).count) || 0;
+
+  if (total === 0 || offset >= total) {
+    return { total, items: [] };
+  }
+
+  const listOrderBy = sort === 'recent' || !sort
+    ? applyOrder('SUBSTR(b.date, 1, 10) DESC, b.id DESC', order)
+    : resolveBookAliasSort(sort, 'b', order);
+
+  const items = db.prepare(`
+    SELECT b.id, b.title, b.authors, b.genres, b.series, b.series_no AS seriesNo, b.ext, b.lang,
+           b.lib_rate AS libRate, b.archive_name AS archiveName
+    FROM active_books b
+    WHERE ${windowSql}
+    ORDER BY ${listOrderBy}
+    LIMIT ? OFFSET ?
+  `).all(bounds.cutoff, limit, offset).map(mapBookListRow);
+
+  attachSeriesListsToBooks(items);
+  attachCachedAnnotationsToBooks(items);
+  return { total, items };
+}
+
 let _stmtLibSections = null;
 export function getLibrarySections() {
   const POOL_SIZE = 200;
+  const bounds = resolveRecentCatalogCutoff();
+  if (!bounds) {
+    return { newest: [], titles: [], authors: [], series: [], genres: [], languages: [] };
+  }
   _stmtLibSections ??= db.prepare(`
     SELECT id, title, authors, genres, series, series_no AS seriesNo, ext, lang, lib_rate AS libRate, archive_name AS archiveName
     FROM active_books
-    ORDER BY COALESCE(NULLIF(date, ''), imported_at) DESC, imported_at DESC, id DESC
+    WHERE ${ISO_DATE_PRED()} AND SUBSTR(date, 1, 10) >= ?
+    ORDER BY SUBSTR(date, 1, 10) DESC, id DESC
     LIMIT ?
   `);
-  const pool = _stmtLibSections.all(POOL_SIZE).map(mapBookListRow);
+  const pool = _stmtLibSections.all(bounds.cutoff, POOL_SIZE).map(mapBookListRow);
   return {
     newest: pool,
     titles: [],
@@ -6212,7 +6279,8 @@ export function getLibraryView(view = 'recent', { page = 1, pageSize = 24, usern
     return { total, items };
   }
 
-  return searchBooks({ query: '', page, pageSize, field: 'all', sort, order });
+  // Новинки: только недавние поступления по imported_at (не весь каталог).
+  return getRecentArrivals({ page, pageSize, sort, order });
 }
 
 export function opdsQuery(facet, prefix = '', depth = 0, genre = '') {

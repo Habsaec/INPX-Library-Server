@@ -23,6 +23,7 @@ import {
 import { readArchiveEntryBuffer, listArchiveFiles } from './archives.js';
 import { parseEnvTimeoutMs } from './utils/async-timeout.js';
 import { readSevenZipEntry } from './seven-zip.js';
+import { balanceHtmlFragment, stripFlibustaMediaPlaceholders } from './html-sanitize.js';
 
 const ANNOTATIONS_REL = path.join('etc', 'annotations.7z');
 const _authorPortraitCache = new Map();
@@ -560,7 +561,7 @@ function escapeAttr(s) {
 
 /** Допускаем ограниченный HTML из sidecar (аннотации / био Флибусты; там часто div, span, списки). */
 export function sanitizeRichAnnotationHtml(html) {
-  let s = String(html || '');
+  let s = stripFlibustaMediaPlaceholders(html);
   s = s.replace(/<script[\s\S]*?<\/script>/gi, '');
   s = s.replace(/<\/?(?:iframe|object|embed|style|link|meta|svg|math|form|input|textarea|button|select|details|dialog|template|base|noscript|plaintext|xmp)\b[\s\S]*?>/gi, '');
   s = s.replace(/\son\w+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '');
@@ -588,7 +589,7 @@ export function sanitizeRichAnnotationHtml(html) {
     'blockquote',
     'hr'
   ]);
-  return s.replace(/<\/?([a-zA-Z][a-zA-Z0-9]*)\b([^>]*)>/g, (full, tag, attrs) => {
+  const cleaned = s.replace(/<\/?([a-zA-Z][a-zA-Z0-9]*)\b([^>]*)>/g, (full, tag, attrs) => {
     const t = String(tag).toLowerCase();
     if (!allowed.has(t)) return '';
     if (t === 'br') return '<br>';
@@ -602,6 +603,7 @@ export function sanitizeRichAnnotationHtml(html) {
     }
     return `<${t}>`;
   });
+  return balanceHtmlFragment(stripFlibustaMediaPlaceholders(cleaned));
 }
 
 function sniffImageMime(buf) {

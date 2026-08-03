@@ -153,7 +153,7 @@ export function registerLiteRoutes(app, { getCachedStats }) {
     const requestedSort = String(req.query.sort || '');
     const sort = ['recent', 'title', 'author', 'series', 'rating'].includes(requestedSort) ? requestedSort : 'recent';
     const user = req.user || null;
-    const result = getStaleOrSchedule(`library:recent:sort:${sort}:page:${page}:size:${pageSize}`, () => getLibraryView('recent', { page, pageSize, sort, order: '' }), PAGE_CACHE_TTL_MS, { total: 0, items: [] });
+    const result = getStaleOrSchedule(`library:recent:v4:sort:${sort}:page:${page}:size:${pageSize}`, () => getLibraryView('recent', { page, pageSize, sort, order: '' }), PAGE_CACHE_TTL_MS, { total: 0, items: [] });
     const readBookIds = user ? getReadBookIdSet(user.username) : null;
     res.send(renderLiteBookListPage({
       title: t('library.title.recent'),
