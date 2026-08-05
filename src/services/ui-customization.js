@@ -37,6 +37,8 @@ import {
   resolveFontFamilyStack,
   UI_FONT_FAMILY_PRESETS,
   FONT_FAMILY_WEBFONT,
+  DISPLAY_FONT_WEBFONT,
+  DISPLAY_FONT_STACK,
   THEME_PRESETS,
   getThemePresetById,
 } from './theme-engine.js';
@@ -73,6 +75,8 @@ export {
   resolveFontFamilyStack,
   UI_FONT_FAMILY_PRESETS,
   FONT_FAMILY_WEBFONT,
+  DISPLAY_FONT_WEBFONT,
+  DISPLAY_FONT_STACK,
   THEME_PRESETS,
   getThemePresetById,
 } from './theme-engine.js';

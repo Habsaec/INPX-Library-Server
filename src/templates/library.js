@@ -9,7 +9,7 @@ import {
   renderHomeShelf, renderMiniBookList, renderDiscoveryTiles,
   renderStatsRibbon, renderBookMetaList, renderSkeletonGrid,
   renderAuthorFacetSeriesList, renderAuthorFlibustaList, renderBookFlibustaList,
-  renderBrowseViewTabs, renderFacetSummaryBlock,
+  renderFacetSummaryBlock,
   renderSectionIntro, renderFacetHero, renderAlert, renderAccountNav, renderAppPairWidget,
   renderListRemoveBtn, bookIdDataAttr, bookCardDataAttrs, batchBookIdDataAttr,
   firstAuthorValue, uniqueBooksById, batchSelectInputAttrs, safeDomIdPart,
@@ -23,17 +23,18 @@ import {
 } from './shared.js';
 import { pickHomeWelcomeQuote } from '../home-welcome-quotes.js';
 
-export function renderHome({ user, stats, indexStatus, history = [], favoriteAuthors = [], favoriteSeries = [], sections = {}, recommendations = [], homeSubtitle = '', csrfToken = '', readBookIds = null, hasContinueData = false }) {
+export function renderHome({ user, stats, indexStatus, history = [], favoriteAuthors = [], favoriteSeries = [], sections = {}, recommendations = [], homeSubtitle = '', csrfToken = '', readBookIds = null, hasContinueData = false, listView = false }) {
   const isAuthenticated = Boolean(user);
   const loginHint = tp('home.loginHint', { login: `<a href="/login">${escapeHtml(t('nav.login'))}</a>` });
   const quoteInviting = !isAuthenticated || !hasContinueData;
   const welcomeQuote = pickHomeWelcomeQuote(getLocale(), { inviting: quoteInviting });
   const subtitleText = homeSubtitle === '-' ? '' : (homeSubtitle || t('home.subtitle'));
+  const homeViewAttr = listView ? 'list' : 'grid';
   const recommendationsShelf = isAuthenticated
     ? (recommendations.length
-        ? renderHomeShelf({ title: t('home.shelfRecommended'), href: '/library/recommended', items: recommendations, type: 'books', isAuthenticated, showBatch: true, user, readBookIds })
+        ? renderHomeShelf({ title: t('home.shelfRecommended'), href: '/library/recommended', items: recommendations, type: 'books', isAuthenticated, showBatch: true, user, readBookIds, listView })
         : `
-    <section class="library-shelf" data-home-recommendations data-loaded="0">
+    <section class="library-shelf" data-home-recommendations data-home-view="${homeViewAttr}" data-loaded="0">
       <div class="section-title">
         <h2>${escapeHtml(t('home.shelfRecommended'))}</h2>
         <div class="actions"><a class="shelf-link" href="/library/recommended">${escapeHtml(t('home.showAll'))}</a></div>
@@ -42,7 +43,7 @@ export function renderHome({ user, stats, indexStatus, history = [], favoriteAut
     </section>`)
     : '';
   const continueShelf = isAuthenticated && hasContinueData
-    ? `<section class="library-shelf" data-home-continue data-loaded="0">
+    ? `<section class="library-shelf" data-home-continue data-home-view="${homeViewAttr}" data-loaded="0">
       <div class="section-title">
         <h2>${escapeHtml(t('home.shelfContinue'))}</h2>
         <div class="actions"><a class="shelf-link" href="/library/continue">${escapeHtml(t('home.showAll'))}</a></div>
@@ -60,7 +61,7 @@ export function renderHome({ user, stats, indexStatus, history = [], favoriteAut
       </div>
     </section>
     ${!isAuthenticated ? `<div class="home-inline-note">${loginHint}</div>` : ''}
-    ${renderHomeShelf({ title: t('home.shelfNew'), href: '/library/recent', items: sections.newest || [], type: 'books', isAuthenticated, showBatch: false, user, readBookIds })}
+    ${renderHomeShelf({ title: t('home.shelfNew'), href: '/library/recent', items: sections.newest || [], type: 'books', isAuthenticated, showBatch: false, user, readBookIds, listView })}
     ${recommendationsShelf}
     ${continueShelf}
     `;
@@ -416,8 +417,7 @@ export function renderCatalog({
     query, field, sort, order, genres: genreList, letter, lang, format, year, minRate, hasSeries,
     view: isListView ? 'list' : ''
   });
-  const catalogApiParams = catalogParams.toString();
-  const catalogPageBase = `/catalog?${catalogApiParams}`;
+  const catalogPageBase = `/catalog?${catalogParams.toString()}`;
   const genreCsv = genreList.join(',');
   const filterSummary = [
     ...genreList.map((g) => formatGenreLabel(g)),
@@ -466,26 +466,17 @@ export function renderCatalog({
       ? `<div class="batch-select-scope">${renderBatchDownloadToolbar({ adhoc: true }, { user })}${renderBookFlibustaList(items, { user, batchSelect: true })}</div>`
       : renderBookFlibustaList(items, { user, batchSelect: false }))
     : renderBookGrid(items, { isAuthenticated: Boolean(user), batchSelect: false, user, readBookIds });
-  const loadMoreAttrs = `data-load-more-grid data-load-more-api="/api/catalog?${escapeHtml(catalogApiParams)}" data-load-more-page="${page}" data-load-more-total="${total}" data-load-more-page-size="${pageSize}"${isListView ? ' data-load-more-mode="list"' : ''}${listBatch ? ' data-batch-context="1"' : ''}`;
   const resultsMarkup = items.length
     ? isBookField
-      ? `${catalogHintBlock}${recoveryHints}<div ${loadMoreAttrs}>${booksMarkup}</div>`
+      ? `${catalogHintBlock}${recoveryHints}${booksMarkup}`
       : `${catalogHintBlock}${recoveryHints}${renderEntityGrid(items, field === 'authors' ? '/facet/authors' : '/facet/series', t('browse.empty'))}`
     : `${catalogHintBlock}${catalogEmpty}${recoveryHints}`;
-  const viewTabs = isBookField
-    ? renderBrowseViewTabs({
-      basePath: '/catalog',
-      params: catalogParams,
-      viewMode: isListView ? 'list' : 'grid'
-    })
-    : '';
   const pageHeading = hasQueryContext ? t('catalog.resultsTitle') : t('catalog.title');
   const content = `
     <section class="hero">
       <div class="section-title">
         <h2>${escapeHtml(pageHeading)}</h2>
         <div class="actions">
-          ${viewTabs}
           ${renderSortControl({
             action: '/catalog',
             sort,
@@ -500,8 +491,7 @@ export function renderCatalog({
               ...(year ? { year: String(year) } : {}),
               ...(minRate >= 1 ? { minRate: String(minRate) } : {}),
               ...((hasSeries === 0 || hasSeries === 1) ? { hasSeries: String(hasSeries) } : {}),
-              ...(letter ? { letter } : {}),
-              ...(isListView ? { view: 'list' } : {})
+              ...(letter ? { letter } : {})
             }
           })}
         </div>
@@ -513,11 +503,7 @@ export function renderCatalog({
       }) : ''}
       ${letter && !query ? `<div class="list-context-hint list-context-hint-spacious">${escapeHtml(tp('catalog.letterResults', { letter: letter.toUpperCase() }))}</div>` : ''}
       ${resultsMarkup}
-      ${isBookField && items.length && total > page * pageSize ? `<div class="load-more-wrap"><button class="button load-more-button" data-load-more-trigger>${escapeHtml(t('catalog.loadMore'))}</button></div>` : ''}
-      ${isBookField && items.length && total > page * pageSize
-        ? `<noscript>${renderPagination(catalogPageBase, page, pageSize, total, query)}</noscript>`
-        : ''}
-      ${!isBookField || !items.length ? renderPagination(catalogPageBase, page, pageSize, total, query) : ''}
+      ${renderPagination(catalogPageBase, page, pageSize, total)}
     </section>`;
   return pageShell({ title: t('catalog.title'), content, user, query, field, stats, indexStatus, breadcrumbs: [{ label: t('nav.home'), href: '/' }, { label: t('catalog.title') }], currentPath: '/catalog', csrfToken, readBookIds });
 }
@@ -594,24 +580,15 @@ export function renderLibraryView({ view, title, subtitle = '', items, total, pa
   if (sort) viewParams.set('sort', sort);
   if (order) viewParams.set('order', order);
   if (type) viewParams.set('type', type);
-  if (isListView) viewParams.set('view', 'list');
-  const viewTabs = isSeries
-    ? ''
-    : renderBrowseViewTabs({
-      basePath: `/library/${view}`,
-      params: viewParams,
-      viewMode: isListView ? 'list' : 'grid'
-    });
   const sortControl = isSeries
     ? ''
-    : `<div class="actions">${viewTabs}${renderSortControl({
+    : `<div class="actions">${renderSortControl({
       action: `/library/${view}`,
       sort,
       order,
       options: sortOptions,
       extraHidden: {
-        ...(type ? { type } : {}),
-        ...(isListView ? { view: 'list' } : {})
+        ...(type ? { type } : {})
       }
     })}</div>`;
   const listBatch = Boolean(isListView && canDownloadInUi(user) && items.length);
@@ -620,8 +597,6 @@ export function renderLibraryView({ view, title, subtitle = '', items, total, pa
       ? `<div class="batch-select-scope">${renderBatchDownloadToolbar({ adhoc: true }, { user })}${renderBookFlibustaList(items, { user, batchSelect: true })}</div>`
       : renderBookFlibustaList(items, { user, batchSelect: false }))
     : renderBookGrid(items, { isAuthenticated: Boolean(user), batchSelect: false, user, readBookIds });
-  const loadMoreApi = `/api/library/${encodeURIComponent(view)}?sort=${encodeURIComponent(sort)}${order ? `&order=${encodeURIComponent(order)}` : ''}${type ? `&type=${encodeURIComponent(type)}` : ''}`;
-  const loadMoreAttrs = `data-load-more-grid data-load-more-api="${escapeHtml(loadMoreApi)}" data-load-more-page="${page}" data-load-more-total="${total}" data-load-more-page-size="${pageSize}"${isListView ? ' data-load-more-mode="list"' : ''}${listBatch ? ' data-batch-context="1"' : ''}`;
   const currentPathQs = viewParams.toString();
   const currentPath = currentPathQs ? `/library/${view}?${currentPathQs}` : `/library/${view}`;
   const content = `
@@ -641,7 +616,7 @@ export function renderLibraryView({ view, title, subtitle = '', items, total, pa
               <a class="table-row table-row-link" href="/facet/series/${encodeURIComponent(item.name)}">
                 <div style="display:flex;align-items:center"><span><strong>${escapeHtml(item.name)}</strong><br><span class="muted">${countLabel('book', item.bookCount)} ${escapeHtml(t('entity.inLibrary'))}</span></span>${readSeriesNames && readSeriesNames.has(item.name) ? `<span class="read-series-badge">${READ_CHECK_SVG}</span>` : ''}</div>
               </a>`).join('')}</div>`
-          : `<div ${loadMoreAttrs}>${booksMarkup}</div>`}
+          : booksMarkup}
       </section>`
       : `
     <div class="list-context-hint list-context-hint-spacious">${escapeHtml(countHintLabel)}: <strong>${totalNum}</strong> ${totalBookWord}${page > 1 ? ` ${escapeHtml(t('library.pageSep'))} <strong>${formatLocaleInt(page)}</strong>` : ''}</div>
@@ -655,8 +630,7 @@ export function renderLibraryView({ view, title, subtitle = '', items, total, pa
         secondaryLabel: emptyStates[view]?.secondaryLabel || ''
       })}
     </section>`}
-    ${total > page * pageSize ? `<div class="load-more-wrap"><button class="button load-more-button" data-load-more-trigger>${escapeHtml(t('catalog.loadMore'))}</button></div>` : ''}
-    <noscript>${renderPagination(currentPath, page, pageSize, total)}</noscript>
+    ${renderPagination(currentPath, page, pageSize, total)}
   `;
 
   return pageShell({
@@ -1040,14 +1014,7 @@ export function renderFacetBooks({ title, items, total, page, pageSize, user, st
   const markSeriesReadBtn = user && facet === 'series' && items.length
     ? `<button class="button${seriesRead ? ' is-active' : ''}" type="button" data-mark-series-read="${escapeHtml(facetValue)}">${seriesRead ? escapeHtml(t('facet.seriesMarkedRead')) : escapeHtml(t('facet.markSeriesRead'))}</button>`
     : '';
-  const hasMore = !isEntityView && items.length > 0 && total > page * pageSize;
-  const loadMoreParams = new URLSearchParams({ facet: String(facet), value: String(facetValue), sort: String(sort || 'recent') });
-  if (authorFilter) loadMoreParams.set('author', authorFilter);
-  const facetLoadMoreApi = hasMore
-    ? `/api/facet-books?${loadMoreParams.toString()}`
-    : '';
   const batchCtx = facet === 'series' && facetValue !== '' ? { facet: 'series', value: facetValue } : null;
-  const batchCtxJson = batchCtx ? escapeHtml(JSON.stringify(batchCtx)) : '';
   const showBatch = !isEntityView && Boolean(batchCtx && items.length && canDownloadInUi(user));
 
   // View switcher tabs for genre/language pages: Books | By authors | By series
@@ -1085,6 +1052,7 @@ export function renderFacetBooks({ title, items, total, page, pageSize, user, st
     paginationBaseParams.set('sort', sort || 'recent');
     if (authorFilter) paginationBaseParams.set('author', authorFilter);
   }
+  if (order) paginationBaseParams.set('order', order);
   const paginationBase = `${facetPath}?${paginationBaseParams.toString()}`;
 
   // Body block: either entity grid or book grid
@@ -1095,9 +1063,7 @@ export function renderFacetBooks({ title, items, total, page, pageSize, user, st
         : renderEmptyState({ title: t('facet.emptyTitle'), text: t('facet.emptyText'), actionHref: facetPath, actionLabel: t('facet.viewBooks') }))
     : !items.length
       ? renderEmptyState({ title: t('facet.emptyTitle'), text: t('facet.emptyText'), actionHref: '/', actionLabel: t('facet.toCatalog') })
-      : hasMore
-        ? `<div data-load-more-grid data-load-more-api="${escapeHtml(facetLoadMoreApi)}" data-load-more-page="${page}" data-load-more-total="${total}" data-load-more-page-size="${pageSize}"${showBatch ? ` data-batch-context="${batchCtxJson}"` : ''}>${renderBookGrid(items, { isAuthenticated: Boolean(user), batchSelect: showBatch, user, readBookIds, seriesContext: facet === 'series' ? facetValue : null })}</div>`
-        : renderBookGrid(items, { isAuthenticated: Boolean(user), batchSelect: showBatch, user, readBookIds, seriesContext: facet === 'series' ? facetValue : null });
+      : renderBookGrid(items, { isAuthenticated: Boolean(user), batchSelect: showBatch, user, readBookIds, seriesContext: facet === 'series' ? facetValue : null });
 
   const countLabelKey = isEntityView ? (view === 'authors' ? 'author' : 'series') : 'book';
 
@@ -1122,12 +1088,7 @@ export function renderFacetBooks({ title, items, total, page, pageSize, user, st
     ${showBatch ? renderBatchDownloadToolbar(batchCtx, { user }) : ''}
     <div class="list-context-hint list-context-hint-spacious">${escapeHtml(t('facet.inSectionCount'))} <strong>${formatLocaleInt(Math.max(0, Math.floor(Number(total) || 0)))}</strong> ${plural(countLabelKey, total)}${page > 1 ? ` ${escapeHtml(t('library.pageSep'))} <strong>${formatLocaleInt(page)}</strong>` : ''}</div>
     ${bodyBlock}
-    ${hasMore ? `<div class="load-more-wrap"><button class="button load-more-button" data-load-more-trigger>${escapeHtml(t('catalog.loadMore'))}</button></div>` : ''}
-    ${isEntityView
-      ? renderPagination(paginationBase, page, pageSize, total)
-      : hasMore
-        ? `<noscript>${renderPagination(paginationBase, page, pageSize, total)}</noscript>`
-        : renderPagination(paginationBase, page, pageSize, total)}
+    ${renderPagination(paginationBase, page, pageSize, total)}
   `;
   const content = `
     ${showBatch ? `<div class="batch-select-scope">${facetBatchInner}</div>` : facetBatchInner}
@@ -1203,23 +1164,10 @@ export function renderAuthorFacetPage({
       </div>
     </section>`;
 
-  const viewTab = (v, label) => {
-    const params = new URLSearchParams();
-    if (v === 'list') params.set('view', 'list');
-    if (sort) params.set('sort', sort);
-    if (order) params.set('order', order);
-    const qs = params.toString();
-    const href = `${facetPath}${qs ? `?${qs}` : ''}`;
-    const active = (isListView ? 'list' : 'series') === v ? ' is-active' : '';
-    return `<a class="button${active}" href="${escapeHtml(href)}">${escapeHtml(label)}</a>`;
-  };
-  const viewTabs = `<div class="facet-view-tabs author-facet-view-tabs">${viewTab('series', t('authorPage.viewSeries'))}${viewTab('list', t('authorPage.viewList'))}</div>`;
-
   const controls = `
     <section class="page-intro page-intro-slim author-facet-controls">
       <div class="page-intro-actions author-facet-controls-actions">
         ${facetAction}
-        ${viewTabs}
         ${renderSortControl({
           action: facetPath,
           sort,
@@ -1228,8 +1176,7 @@ export function renderAuthorFacetPage({
             { value: 'recent', label: t('sort.recentFirst') },
             { value: 'title', label: t('sort.byTitle') },
             { value: 'series', label: t('sort.bySeries') }
-          ],
-          extraHidden: isListView ? { view: 'list' } : {}
+          ]
         })}
       </div>
     </section>`;
@@ -1457,6 +1404,8 @@ export function renderShelfDetail({ shelf, books = [], user, stats, indexStatus,
 export function renderReader({ book, details, user, csrfToken = '', lite = false }) {
   const ext = String(book.ext || 'fb2').toLowerCase();
   const title = details?.title || book.title || t('opds.noTitle');
+  const authorLabel = formatAuthorLabel(book.authors) || '';
+  const documentTitle = authorLabel ? `${title} \u2014 ${authorLabel}` : title;
   const htmlLang = getLocale() === 'en' ? 'en' : 'ru';
   const backHref = lite ? liteBookPagePath(book.id) : bookPagePath(book.id);
   const readerBackClick = lite
@@ -1464,8 +1413,8 @@ export function renderReader({ book, details, user, csrfToken = '', lite = false
     : '';
   const htmlAttrs = lite ? ' data-eink="1" data-lite="1" data-reader-theme="eink"' : '';
   const themeBoot = lite
-    ? "document.documentElement.dataset.readerTheme='eink'"
-    : "try{var _t=JSON.parse(localStorage.getItem('reader-settings')||'{}').theme||'sepia';document.documentElement.dataset.readerTheme=_t}catch(e){document.documentElement.dataset.readerTheme='sepia'}";
+    ? "document.documentElement.dataset.readerTheme='eink';try{var _ls=JSON.parse(localStorage.getItem('reader-settings-lite')||'{}');if(_ls.chromePinned)document.documentElement.dataset.chromePinned='1'}catch(e){}"
+    : "try{var _s=JSON.parse(localStorage.getItem('reader-settings')||'{}');document.documentElement.dataset.readerTheme=_s.theme||'sepia';if(_s.chromePinned)document.documentElement.dataset.chromePinned='1'}catch(e){document.documentElement.dataset.readerTheme='sepia'}";
   const fontPreconnect = lite ? '' : `<link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>`;
   const liteBoot = lite
@@ -1488,7 +1437,7 @@ export function renderReader({ book, details, user, csrfToken = '', lite = false
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 ${csrfToken ? `<meta name="csrf-token" content="${escapeHtml(csrfToken)}">` : ''}
-<title>${escapeHtml(siteTitleForDisplay())} \u2014 ${escapeHtml(title)}</title>
+<title>${escapeHtml(documentTitle)}</title>
 ${renderFaviconLinks()}
 ${fontPreconnect}
 <link rel="stylesheet" href="/reader.css?v=${STATIC_ASSET_VERSION}">
@@ -1542,10 +1491,17 @@ ${fontPreconnect}
 
 <div class="reader-tts-dock" id="reader-tts-dock" role="region" aria-hidden="true" aria-label="${escapeHtml(t('reader.ttsBar'))}">
   <div class="reader-tts-dock-inner">
-    <button type="button" class="reader-tts-dock-btn tb-btn js-tts-prev" id="btn-tts-dock-prev" disabled title="${escapeHtml(t('reader.ttsPrev'))}" aria-label="${escapeHtml(t('reader.ttsPrev'))}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5h2v14H6V5zm3.6 7L18 5v14L9.6 12z" fill="currentColor"/></svg></button>
-    <button type="button" class="reader-tts-dock-btn tb-btn reader-tts-dock-main" id="btn-tts-dock" title="${escapeHtml(t('reader.ttsPlay'))}" aria-label="${escapeHtml(t('reader.tts'))}"><svg class="tts-main-icon" viewBox="0 0 24 24" aria-hidden="true"><path class="tts-main-path" fill="currentColor" d="M8 5v14l11-7z"/></svg></button>
-    <button type="button" class="reader-tts-dock-btn tb-btn js-tts-stop" id="btn-tts-dock-stop" hidden title="${escapeHtml(t('reader.ttsStop'))}" aria-label="${escapeHtml(t('reader.ttsStop'))}">${ttsStopSvg}</button>
-    <button type="button" class="reader-tts-dock-btn tb-btn js-tts-next" id="btn-tts-dock-next" disabled title="${escapeHtml(t('reader.ttsNext'))}" aria-label="${escapeHtml(t('reader.ttsNext'))}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 5h2v14h-2V5zm-2.4 7L8 5v14l7.6-7z" fill="currentColor"/></svg></button>
+    <div class="reader-tts-dock-row reader-tts-dock-transport">
+      <button type="button" class="reader-tts-dock-btn tb-btn js-tts-prev" id="btn-tts-dock-prev" disabled title="${escapeHtml(t('reader.ttsPrev'))}" aria-label="${escapeHtml(t('reader.ttsPrev'))}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5h2v14H6V5zm3.6 7L18 5v14L9.6 12z" fill="currentColor"/></svg></button>
+      <button type="button" class="reader-tts-dock-btn tb-btn reader-tts-dock-main" id="btn-tts-dock" title="${escapeHtml(t('reader.ttsPlay'))}" aria-label="${escapeHtml(t('reader.tts'))}"><svg class="tts-main-icon" viewBox="0 0 24 24" aria-hidden="true"><path class="tts-main-path" fill="currentColor" d="M8 5v14l11-7z"/></svg></button>
+      <button type="button" class="reader-tts-dock-btn tb-btn js-tts-stop" id="btn-tts-dock-stop" hidden title="${escapeHtml(t('reader.ttsStop'))}" aria-label="${escapeHtml(t('reader.ttsStop'))}">${ttsStopSvg}</button>
+      <button type="button" class="reader-tts-dock-btn tb-btn js-tts-next" id="btn-tts-dock-next" disabled title="${escapeHtml(t('reader.ttsNext'))}" aria-label="${escapeHtml(t('reader.ttsNext'))}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 5h2v14h-2V5zm-2.4 7L8 5v14l7.6-7z" fill="currentColor"/></svg></button>
+    </div>
+    <div class="reader-tts-dock-row reader-tts-dock-rate-group">
+      <button type="button" class="reader-tts-dock-btn tb-btn" id="btn-tts-dock-slower" title="${escapeHtml(t('reader.ttsSlower'))}" aria-label="${escapeHtml(t('reader.ttsSlower'))}"><span class="reader-tts-dock-rate-sym" aria-hidden="true">−</span></button>
+      <span class="reader-tts-dock-rate" id="tts-dock-rate" aria-live="polite">1.00×</span>
+      <button type="button" class="reader-tts-dock-btn tb-btn" id="btn-tts-dock-faster" title="${escapeHtml(t('reader.ttsFaster'))}" aria-label="${escapeHtml(t('reader.ttsFaster'))}"><span class="reader-tts-dock-rate-sym" aria-hidden="true">+</span></button>
+    </div>
   </div>
 </div>
 
@@ -1630,6 +1586,19 @@ ${fontPreconnect}
       <div class="rs-group">
         <div class="rs-label">${escapeHtml(t('reader.font'))}</div>
         <select id="rs-font-family" name="readerFontFamily" class="rs-select" aria-label="${escapeHtml(t('reader.fontFaceAria'))}"></select>
+        <label class="rs-check">
+          <input type="checkbox" id="rs-publisher-font" name="readerPublisherFont">
+          <span>${escapeHtml(t('reader.publisherFont'))}</span>
+        </label>
+      </div>
+      <div class="rs-group">
+        <div class="rs-label">${escapeHtml(t('reader.fontWeight'))}</div>
+        <select id="rs-font-weight" name="readerFontWeight" class="rs-select" aria-label="${escapeHtml(t('reader.fontWeight'))}">
+          <option value="400">${escapeHtml(t('reader.fontWeight.regular'))}</option>
+          <option value="500">${escapeHtml(t('reader.fontWeight.medium'))}</option>
+          <option value="600">${escapeHtml(t('reader.fontWeight.semibold'))}</option>
+          <option value="700">${escapeHtml(t('reader.fontWeight.bold'))}</option>
+        </select>
       </div>
       <div class="rs-group">
         <div class="rs-label">${escapeHtml(t('reader.color'))}</div>
@@ -1646,6 +1615,13 @@ ${fontPreconnect}
             <div class="rs-color-row">
               <input type="color" id="rs-bg-color" name="readerBgColor" value="#f4edd5" aria-label="${escapeHtml(t('reader.bgColor'))}" title="${escapeHtml(t('reader.customBgColorTitle'))}">
               <button type="button" class="rs-color-default" id="rs-bg-color-default" title="${escapeHtml(t('reader.fromTheme'))}">${escapeHtml(t('reader.fromTheme'))}</button>
+            </div>
+          </div>
+          <div class="rs-color-line">
+            <div class="rs-color-sub">${escapeHtml(t('reader.linkColor'))}</div>
+            <div class="rs-color-row">
+              <input type="color" id="rs-link-color" name="readerLinkColor" value="#6b4226" aria-label="${escapeHtml(t('reader.linkColor'))}" title="${escapeHtml(t('reader.customLinkColorTitle'))}">
+              <button type="button" class="rs-color-default" id="rs-link-color-default" title="${escapeHtml(t('reader.fromTheme'))}">${escapeHtml(t('reader.fromTheme'))}</button>
             </div>
           </div>
         </div>
@@ -1668,12 +1644,46 @@ ${fontPreconnect}
         </div>
       </div>
       <div class="rs-group">
-        <div class="rs-label">${escapeHtml(t('reader.pageMargin'))}</div>
+        <div class="rs-label">${escapeHtml(t('reader.typography'))}</div>
+        <label class="rs-check">
+          <input type="checkbox" id="rs-justify" name="readerJustify" checked>
+          <span>${escapeHtml(t('reader.justify'))}</span>
+        </label>
+        <label class="rs-check">
+          <input type="checkbox" id="rs-hyphenate" name="readerHyphenate" checked>
+          <span>${escapeHtml(t('reader.hyphenate'))}</span>
+        </label>
+        <div class="rs-sublabel">${escapeHtml(t('reader.letterSpacing'))}</div>
+        <div class="rs-slider">
+          <input type="range" id="rs-letter-spacing" name="readerLetterSpacing" min="-0.05" max="0.2" step="0.01" aria-label="${escapeHtml(t('reader.letterSpacing'))}">
+          <span class="rs-val" id="rs-letter-spacing-val">0.00</span>
+        </div>
+        <div class="rs-sublabel">${escapeHtml(t('reader.paragraphSpacing'))}</div>
+        <div class="rs-slider">
+          <input type="range" id="rs-paragraph-spacing" name="readerParagraphSpacing" min="0" max="1.5" step="0.05" aria-label="${escapeHtml(t('reader.paragraphSpacing'))}">
+          <span class="rs-val" id="rs-paragraph-spacing-val">0.40</span>
+        </div>
+        <div class="rs-sublabel">${escapeHtml(t('reader.textIndent'))}</div>
+        <div class="rs-slider">
+          <input type="range" id="rs-text-indent" name="readerTextIndent" min="0" max="3" step="0.1" aria-label="${escapeHtml(t('reader.textIndent'))}">
+          <span class="rs-val" id="rs-text-indent-val">0.0 em</span>
+        </div>
+      </div>
+      <div class="rs-group">
+        <div class="rs-label">${escapeHtml(t('reader.margins'))}</div>
+        <div class="rs-sublabel">${escapeHtml(t('reader.pageMargin'))}</div>
         <div class="rs-slider">
           <span class="rs-icon" aria-hidden="true">|</span>
           <input type="range" id="rs-page-margin" name="readerPageMargin" min="0" max="72" step="4" aria-label="${escapeHtml(t('reader.pageMargin'))}">
           <span class="rs-val" id="rs-page-margin-val">32 px</span>
           <span class="rs-icon" aria-hidden="true">|&nbsp;|</span>
+        </div>
+        <div class="rs-sublabel">${escapeHtml(t('reader.verticalMargin'))}</div>
+        <div class="rs-slider">
+          <span class="rs-icon" aria-hidden="true">—</span>
+          <input type="range" id="rs-vertical-margin" name="readerVerticalMargin" min="0" max="96" step="4" aria-label="${escapeHtml(t('reader.verticalMargin'))}">
+          <span class="rs-val" id="rs-vertical-margin-val">32 px</span>
+          <span class="rs-icon" aria-hidden="true">≡</span>
         </div>
         <div class="rs-hint">${escapeHtml(t('reader.pageMarginHint'))}</div>
       </div>
@@ -1682,7 +1692,16 @@ ${fontPreconnect}
         <div class="rs-seg">
           <button type="button" data-set-layout="paginated">${escapeHtml(t('reader.layoutPaginated'))}</button>
           <button type="button" data-set-layout="dual" class="rs-layout-dual-btn">${escapeHtml(t('reader.layoutDual'))}</button>
+          <button type="button" data-set-layout="scrolled">${escapeHtml(t('reader.layoutScrolled'))}</button>
         </div>
+      </div>
+      <div class="rs-group">
+        <div class="rs-label">${escapeHtml(t('reader.chromePinned'))}</div>
+        <label class="rs-check">
+          <input type="checkbox" id="rs-chrome-pinned" name="readerChromePinned">
+          <span>${escapeHtml(t('reader.chromePinnedLabel'))}</span>
+        </label>
+        <div class="rs-hint">${escapeHtml(t('reader.chromePinnedHint'))}</div>
       </div>
       <div class="rs-group" id="rs-layout-paginated">
         <div class="rs-label">${escapeHtml(t('reader.columnWidth'))}</div>
@@ -1702,6 +1721,25 @@ ${fontPreconnect}
           <span class="rs-val" id="rs-column-gap-val">7%</span>
         </div>
         <div class="rs-hint">${escapeHtml(t('reader.columnGapHint'))}</div>
+      </div>
+      <div class="rs-group" id="rs-layout-scrolled" hidden>
+        <div class="rs-label">${escapeHtml(t('reader.maxBlockSize'))}</div>
+        <div class="rs-slider">
+          <input type="range" id="rs-max-block-size" name="readerMaxBlockSize" min="720" max="2400" step="40" aria-label="${escapeHtml(t('reader.maxBlockSize'))}">
+          <span class="rs-val" id="rs-max-block-size-val">1440 px</span>
+        </div>
+        <div class="rs-hint">${escapeHtml(t('reader.maxBlockSizeHint'))}</div>
+      </div>
+      <div class="rs-group">
+        <div class="rs-label">${escapeHtml(t('reader.tapZones'))}</div>
+        <div class="rs-seg rs-tap-mode-seg">
+          <button type="button" data-tap-edit="short" class="is-active">${escapeHtml(t('reader.tapZones.short'))}</button>
+          <button type="button" data-tap-edit="long">${escapeHtml(t('reader.tapZones.long'))}</button>
+        </div>
+        <div class="rs-tap-grid" id="rs-tap-grid" role="group" aria-label="${escapeHtml(t('reader.tapZones'))}"></div>
+        <select id="rs-tap-action" class="rs-select" aria-label="${escapeHtml(t('reader.tapZones.action'))}" hidden></select>
+        <div class="rs-hint" id="rs-tap-hint">${escapeHtml(t('reader.tapZones.hint'))}</div>
+        <button type="button" class="rs-tap-reset" id="rs-tap-reset">${escapeHtml(t('reader.tapZones.reset'))}</button>
       </div>
       <div class="rs-group">
         <div class="rs-label">${escapeHtml(t('reader.ttsSettings'))}</div>
@@ -1841,23 +1879,22 @@ export function renderProfile({ user, stats, indexStatus, userStats, recentBooks
   return pageShell({ title: t('profile.title'), content, user, stats, indexStatus, breadcrumbs: [{ label: t('profile.title') }], currentPath: '/profile', csrfToken });
 }
 
-export function renderProfileSettings({ user, stats, indexStatus, userStats, ereaderEmail = '', telegramId = '', telegramLinkedAt = '', telegramBotAvailable = false, telegramBotAllowed = true, ereaderEmailAllowed = true, flash = '', csrfToken = '', hasLocalPassword = true }) {
-  const fmtDate = (d) => formatLocaleDateLong(d);
-  const initials = String(user.username || '?').replace(/[^\p{L}\p{N}]/gu, '').slice(0, 2).toUpperCase() || '?';
-  const roleLabel = user.role === 'admin' ? t('profile.admin') : t('profile.user');
-  const memberSince = tp('profile.memberSince', { date: fmtDate(userStats.createdAt) });
-
-  const navCounts = {
+function profileNavCounts(userStats) {
+  return {
     books: userStats.bookmarkCount,
     authors: userStats.favoriteAuthorsCount,
     series: userStats.favoriteSeriesCount,
     shelves: userStats.shelvesCount,
     read: userStats.readBooksCount
   };
+}
 
-  const content = `
-    ${flash ? renderAlert('success', flash) : ''}
-    <div class="profile-shell">
+function renderProfileIdentityHeader(user, userStats) {
+  const fmtDate = (d) => formatLocaleDateLong(d);
+  const initials = String(user.username || '?').replace(/[^\p{L}\p{N}]/gu, '').slice(0, 2).toUpperCase() || '?';
+  const roleLabel = user.role === 'admin' ? t('profile.admin') : t('profile.user');
+  const memberSince = tp('profile.memberSince', { date: fmtDate(userStats.createdAt) });
+  return `
     <header class="profile-identity">
       <span class="profile-avatar" aria-hidden="true">${escapeHtml(initials)}</span>
       <div class="profile-identity-info">
@@ -1867,9 +1904,38 @@ export function renderProfileSettings({ user, stats, indexStatus, userStats, ere
           <span class="muted">${escapeHtml(memberSince)}</span>
         </div>
       </div>
-    </header>
-    ${renderAccountNav('settings', navCounts)}
-    <div class="table-list">
+    </header>`;
+}
+
+function renderProfileSettingsSubnav(active = 'account') {
+  const section = active === 'view' ? 'view' : 'account';
+  const tab = (key, label) => {
+    const href = key === 'view' ? '/profile/settings?section=view' : '/profile/settings';
+    const isActive = section === key;
+    return `<a class="button profile-settings-tab${isActive ? ' is-active' : ''}" href="${escapeHtml(href)}"${isActive ? ' aria-current="page"' : ''}>${escapeHtml(label)}</a>`;
+  };
+  return `
+    <nav class="profile-settings-tabs" aria-label="${escapeHtml(t('profile.settingsTabsAria'))}">
+      ${tab('account', t('profile.settingsTab.account'))}
+      ${tab('view', t('profile.settingsTab.view'))}
+    </nav>`;
+}
+
+export function renderProfileSettings({
+  user, stats, indexStatus, userStats,
+  ereaderEmail = '', telegramId = '', telegramLinkedAt = '',
+  telegramBotAvailable = false, telegramBotAllowed = true, ereaderEmailAllowed = true,
+  flash = '', csrfToken = '', hasLocalPassword = true,
+  homeView = 'grid', catalogView = 'grid',
+  section = 'account'
+} = {}) {
+  const fmtDate = (d) => formatLocaleDateLong(d);
+  const navCounts = profileNavCounts(userStats);
+  const activeSection = section === 'view' ? 'view' : 'account';
+  const currentPath = activeSection === 'view' ? '/profile/settings?section=view' : '/profile/settings';
+
+  const accountPanel = `
+    <div class="table-list profile-tab-panel">
       <div class="table-row table-row-stack profile-form-row">
         <div>
           ${renderAppPairWidget('panel')}
@@ -1921,8 +1987,46 @@ export function renderProfileSettings({ user, stats, indexStatus, userStats, ere
           </form>
         </div>
       </div>
-    </div>
+    </div>`;
+
+  const viewPanel = `
+    <div class="table-list profile-tab-panel">
+      <div class="table-row table-row-stack profile-form-row">
+        <div>
+          <strong>${escapeHtml(t('profile.viewPrefs'))}</strong>
+          <p class="muted" style="margin:4px 0 8px;font-size:12px;">${escapeHtml(t('profile.viewPrefs.hint'))}</p>
+          <form method="post" action="/profile/view" class="vertical-form">
+            ${csrfHiddenField(csrfToken)}
+            <div class="profile-view-prefs">
+              <label class="profile-view-pref">
+                <span>${escapeHtml(t('profile.viewPrefs.home'))}</span>
+                <select name="homeView" aria-label="${escapeHtml(t('profile.viewPrefs.home'))}">
+                  <option value="grid"${homeView !== 'list' ? ' selected' : ''}>${escapeHtml(t('browse.viewGrid'))}</option>
+                  <option value="list"${homeView === 'list' ? ' selected' : ''}>${escapeHtml(t('browse.viewList'))}</option>
+                </select>
+              </label>
+              <label class="profile-view-pref">
+                <span>${escapeHtml(t('profile.viewPrefs.catalog'))}</span>
+                <select name="catalogView" aria-label="${escapeHtml(t('profile.viewPrefs.catalog'))}">
+                  <option value="grid"${catalogView !== 'list' ? ' selected' : ''}>${escapeHtml(t('browse.viewGrid'))}</option>
+                  <option value="list"${catalogView === 'list' ? ' selected' : ''}>${escapeHtml(t('browse.viewList'))}</option>
+                </select>
+              </label>
+            </div>
+            <div class="actions"><button type="submit">${escapeHtml(t('profile.save'))}</button></div>
+          </form>
+        </div>
+      </div>
+    </div>`;
+
+  const content = `
+    ${flash ? renderAlert('success', flash) : ''}
+    <div class="profile-shell">
+    ${renderProfileIdentityHeader(user, userStats)}
+    ${renderAccountNav('settings', navCounts)}
+    ${renderProfileSettingsSubnav(activeSection)}
+    ${activeSection === 'view' ? viewPanel : accountPanel}
     </div>
   `;
-  return pageShell({ title: t('profile.tabSettings'), content, user, stats, indexStatus, breadcrumbs: [{ label: t('profile.tabSettings') }], currentPath: '/profile/settings', csrfToken });
+  return pageShell({ title: t('profile.tabSettings'), content, user, stats, indexStatus, breadcrumbs: [{ label: t('profile.tabSettings') }], currentPath, csrfToken });
 }

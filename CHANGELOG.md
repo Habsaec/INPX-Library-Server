@@ -2,6 +2,18 @@
 
 Формат основан на [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/).
 
+## [2.5.0] - 2026-08-05
+
+### Added
+
+- Предпочтение вида Обложки/Список в настройках профиля (отдельно для главной и каталога)
+
+### Fixed
+
+- Багфиксы
+
+[2.5.0]: https://github.com/Habsaec/inpx-library-server/releases/tag/v2.5.0
+
 ## [2.4.2] - 2026-08-03
 
 ### Added

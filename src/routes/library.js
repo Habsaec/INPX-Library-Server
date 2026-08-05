@@ -31,6 +31,7 @@ import {
   PAGE_CACHE_TTL_MS
 } from '../constants.js';
 import { getUserShelves, getShelfById, getShelfBooks, getSetting, getReadBookIdSet, getFullyReadSeriesNames, getUserStats } from '../db.js';
+import { isListBrowseView } from '../browse-view-prefs.js';
 import {
   getBookById,
   getBooksByIds,
@@ -213,7 +214,7 @@ async function asyncMapLimit(items, limit, mapper) {
   const max = Math.max(1, Math.min(24, Math.floor(Number(limit) || 1)));
   let index = 0;
   const workers = Array.from({ length: Math.min(max, arr.length) }, async () => {
-    for (;;) {
+    for (; ;) {
       const i = index++;
       if (i >= arr.length) return;
       out[i] = await mapper(arr[i], i);
@@ -282,16 +283,17 @@ export function registerLibraryRoutes(app, deps) {
     const displaySections = { ...sections, newest: displayNewest };
     const hasContinueData = username ? hasContinueBooks(username) : false;
     const readBookIds = username ? getReadBookIdSet(username) : null;
-    const canUseAnonymousHomeHtmlCache = !user && !indexStatus?.active && !indexStatus?.error;
+    const listView = isListBrowseView({ username, queryView: req.query.view, scope: 'home' });
+    const canUseAnonymousHomeHtmlCache = !user && !listView && !indexStatus?.active && !indexStatus?.error;
     const csrfToken = req.csrfToken || '';
     const homeSubtitle = getSetting('home_subtitle') || '';
     const html = canUseAnonymousHomeHtmlCache
-      ? getCachedPageData(`page:home:anon:${getLocale()}`, () => renderHome({ user, stats, indexStatus, sections: displaySections, homeSubtitle, csrfToken: '', hasContinueData: false }), 1000 * 60 * 2)
-      : renderHome({ user, stats, indexStatus, sections: displaySections, homeSubtitle, csrfToken, hasContinueData, readBookIds });
+      ? getCachedPageData(`page:home:anon:${getLocale()}`, () => renderHome({ user, stats, indexStatus, sections: displaySections, homeSubtitle, csrfToken: '', hasContinueData: false, listView: false }), 1000 * 60 * 2)
+      : renderHome({ user, stats, indexStatus, sections: displaySections, homeSubtitle, csrfToken, hasContinueData, readBookIds, listView });
     res.send(html);
     // Фоновый прогрев per-user кэшей для последующих переходов
     if (username) {
-      setImmediate(() => { try { getReadBookIdSet(username); } catch {} });
+      setImmediate(() => { try { getReadBookIdSet(username); } catch { } });
     }
   });
 
@@ -413,7 +415,7 @@ export function registerLibraryRoutes(app, deps) {
         PAGE_CACHE_TTL_MS
       )
       : null;
-    const listView = String(req.query.view || '') === 'list';
+    const listView = isListBrowseView({ username: user?.username || '', queryView: req.query.view, scope: 'catalog' });
     res.send(renderCatalog({
       ...result, page, pageSize, query, field, sort, order, genre, genres, letter, lang, format, year,
       minRate, hasSeries, langs, formats, genreOptions, genreOptionsLazy, searchNav,
@@ -433,8 +435,8 @@ export function registerLibraryRoutes(app, deps) {
     const defaultSort = view === 'recent' ? 'recent' : 'title';
     const sort = ['recent', 'title', 'author', 'series', 'rating'].includes(requestedSort) ? requestedSort : defaultSort;
     const order = String(req.query.order || '');
-    const listView = String(req.query.view || '') === 'list';
     const user = req.user || null;
+    const listView = isListBrowseView({ username: user?.username || '', queryView: req.query.view, scope: 'catalog' });
     const stats = getCachedStats();
     const titles = {
       recent: t('library.title.recent'),
@@ -589,39 +591,39 @@ export function registerLibraryRoutes(app, deps) {
   // --- Facet pages ---
   app.get('/facet/authors/:value/outside-series', requireBrowseAuth, async (req, res, next) => {
     try {
-    const sort = String(req.query.sort || 'title');
-    const order = String(req.query.order || '');
-    const stats = getCachedStats();
-    const value = String(req.params.value || '');
-    const displayValue = formatAuthorLabel(value);
-    const username = req.user?.username || '';
-    const favorite = username ? isFavoriteAuthor(username, value) : false;
-    const breadcrumbs = [
-      { label: t('nav.home'), href: '/' },
-      { label: t('nav.authors'), href: '/authors' },
-      {
-        label: displayValue,
-        href: `/facet/authors/${encodeURIComponent(value)}`
-      },
-      { label: t('authorPage.outsideSeries') }
-    ];
-    const p = safePage(req.query.page, 1);
-    const pageSize = 48;
-    const grouped = await getAuthorBooksGroupedCoalesced(value, sort, order, { page: p, pageSize });
-    const facetPath = `/facet/authors/${encodeURIComponent(value)}/outside-series`;
-    res.send(
-      renderAuthorOutsideSeriesPage({
-        title: t('authorPage.outsideSeries'),
-        displayName: displayValue,
-        books: grouped.standaloneBooks,
-        total: grouped.standaloneBooks.length,
-        user: req.user || null, stats,
-        indexStatus: getIndexStatus(), sort, order, facetPath, breadcrumbs,
-        favorite, facetValue: value, csrfToken: req.csrfToken || '',
-        page: p, pageSize, hasMore: grouped.standaloneBooks.length >= pageSize,
-        readBookIds: username ? getReadBookIdSet(username) : null
-      })
-    );
+      const sort = String(req.query.sort || 'title');
+      const order = String(req.query.order || '');
+      const stats = getCachedStats();
+      const value = String(req.params.value || '');
+      const displayValue = formatAuthorLabel(value);
+      const username = req.user?.username || '';
+      const favorite = username ? isFavoriteAuthor(username, value) : false;
+      const breadcrumbs = [
+        { label: t('nav.home'), href: '/' },
+        { label: t('nav.authors'), href: '/authors' },
+        {
+          label: displayValue,
+          href: `/facet/authors/${encodeURIComponent(value)}`
+        },
+        { label: t('authorPage.outsideSeries') }
+      ];
+      const p = safePage(req.query.page, 1);
+      const pageSize = 48;
+      const grouped = await getAuthorBooksGroupedCoalesced(value, sort, order, { page: p, pageSize });
+      const facetPath = `/facet/authors/${encodeURIComponent(value)}/outside-series`;
+      res.send(
+        renderAuthorOutsideSeriesPage({
+          title: t('authorPage.outsideSeries'),
+          displayName: displayValue,
+          books: grouped.standaloneBooks,
+          total: grouped.standaloneBooks.length,
+          user: req.user || null, stats,
+          indexStatus: getIndexStatus(), sort, order, facetPath, breadcrumbs,
+          favorite, facetValue: value, csrfToken: req.csrfToken || '',
+          page: p, pageSize, hasMore: grouped.standaloneBooks.length >= pageSize,
+          readBookIds: username ? getReadBookIdSet(username) : null
+        })
+      );
     } catch (error) {
       next(error);
     }
@@ -631,7 +633,7 @@ export function registerLibraryRoutes(app, deps) {
     try {
       const facetType = String(req.params.facet || '');
       const sort = String(req.query.sort || (facetType === 'series' ? 'series' : 'title'));
-    const order = String(req.query.order || '');
+      const order = String(req.query.order || '');
       const page = safePage(req.query.page);
       const pageSize = 24;
       const stats = getCachedStats();
@@ -672,7 +674,7 @@ export function registerLibraryRoutes(app, deps) {
           ? formatLanguageLabel(value)
           : facet === 'genres'
             ? formatGenreLabel(value)
-          : value;
+            : value;
       const username = req.user?.username || '';
       const favorite = facet === 'authors'
         ? (username ? isFavoriteAuthor(username, value) : false)
@@ -691,15 +693,15 @@ export function registerLibraryRoutes(app, deps) {
         const facetRoot = flibSourceId != null ? getSourceRoot(flibSourceId) : '';
         const p = safePage(req.query.page, 1);
         const pageSize = 48;
-        const authorView = String(req.query.view || '') === 'list' ? 'list' : 'series';
+        const authorView = isListBrowseView({ username, queryView: req.query.view, scope: 'catalog' }) ? 'list' : 'series';
 
         const [grouped, fullSummary, authorPortraitUrl, authorBioHtml] = await Promise.all([
           getAuthorBooksGroupedCoalesced(value, sort, order, { page: p, pageSize }),
           Promise.resolve(getFacetSummary(facet, value)),
           flibSourceId != null
             ? readFlibustaAuthorPortraitForAuthorName(value, facetRoot)
-                .then(pic => pic?.data?.length ? `/api/authors/portrait?name=${encodeURIComponent(value)}` : '')
-                .catch(() => '')
+              .then(pic => pic?.data?.length ? `/api/authors/portrait?name=${encodeURIComponent(value)}` : '')
+              .catch(() => '')
             : Promise.resolve(''),
           flibSourceId != null
             ? readFlibustaAuthorBioHtml(value, facetRoot, flibSourceId).catch(() => '')

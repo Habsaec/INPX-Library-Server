@@ -58,14 +58,17 @@ async function loadHomeRecommendationsProgressively(attempt = 0) {
       section.remove();
       return;
     }
+    const listMode = section.dataset.homeView === 'list';
     const tmp = document.createElement('div');
-    tmp.innerHTML = `<div class="grid home-reveal">${items.map((b) => renderCardHtml(b)).join('')}</div>`;
+    tmp.innerHTML = listMode
+      ? `<div class="author-flibusta-list catalog-book-list home-reveal"><section class="author-flibusta-group catalog-book-list-group"><ul class="author-flibusta-books catalog-book-list-ul">${items.map((b) => renderListRowHtml(b)).join('')}</ul></section></div>`
+      : `<div class="grid home-reveal">${items.map((b) => renderCardHtml(b)).join('')}</div>`;
     const grid = tmp.firstElementChild;
     if (!grid) return;
     gridMount.replaceWith(grid);
     attachCoverErrorFallback(grid);
     attachDownloadMenus(grid);
-    loadCardDetails(grid.querySelectorAll('.card'));
+    if (!listMode) loadCardDetails(grid.querySelectorAll('.card'));
     revealHomeBlock(grid);
     revealHomeBlock(section);
     section.dataset.loaded = '1';
@@ -111,14 +114,17 @@ async function loadHomeContinueProgressively() {
       return;
     }
     if (!gridMount) return;
+    const listMode = section.dataset.homeView === 'list';
     const tmp = document.createElement('div');
-    tmp.innerHTML = `<div class="grid home-reveal">${remainingItems.map((b) => renderCardHtml(b)).join('')}</div>`;
+    tmp.innerHTML = listMode
+      ? `<div class="author-flibusta-list catalog-book-list home-reveal"><section class="author-flibusta-group catalog-book-list-group"><ul class="author-flibusta-books catalog-book-list-ul">${remainingItems.map((b) => renderListRowHtml(b)).join('')}</ul></section></div>`
+      : `<div class="grid home-reveal">${remainingItems.map((b) => renderCardHtml(b)).join('')}</div>`;
     const grid = tmp.firstElementChild;
     if (!grid) return;
     gridMount.replaceWith(grid);
     attachCoverErrorFallback(grid);
     attachDownloadMenus(grid);
-    loadCardDetails(grid.querySelectorAll('.card'));
+    if (!listMode) loadCardDetails(grid.querySelectorAll('.card'));
     revealHomeBlock(grid);
     revealHomeBlock(section);
     section.dataset.loaded = '1';
@@ -3309,12 +3315,11 @@ function renderListRowHtml(book, { batchSelect = false } = {}) {
   const bookRefAttr = bookIdNeedsSafeUrl(book.id)
     ? `data-book-id-ref="${escapeHtml(cardRef)}"`
     : `data-book-id-ref="${escapeHtml(cardRef)}" data-book-id="${id}"`;
+  const readBtn = `<a class="button author-flibusta-read" href="${readPagePath(book.id)}" target="_blank" rel="noopener noreferrer">${escapeHtml(uiT('book.read'))}</a>`;
   const emailBtn = isPageEmailSendAllowed()
     ? `<button class="button author-flibusta-email" type="button" ${bookRefAttr} data-send-to-ereader="1">${escapeHtml(uiT('book.toEmail'))}</button>`
     : '';
-  const actions = (dl || emailBtn)
-    ? `<span class="author-flibusta-actions">${dl}${emailBtn}</span>`
-    : '';
+  const actions = `<span class="author-flibusta-actions">${readBtn}${dl}${emailBtn}</span>`;
   const cardAttrs = bookRefAttr;
   return `<li class="author-flibusta-book" ${cardAttrs}>
     ${batchCb}<a class="author-flibusta-title" href="${bookPagePath(book.id)}">${title}</a>
@@ -6669,7 +6674,7 @@ function attachAdminUserFormAutofillGuard() {
 
   function renderAutoCleanPanel(preview) {
     if (!preview || preview.willDelete <= 0) return '';
-    return '<div class="admin-card admin-dup-auto-clean" style="margin-bottom:20px;border-left:4px solid var(--accent-color)">'
+    return '<div class="admin-card admin-dup-auto-clean" style="margin-bottom:20px;box-shadow:inset 0 0 0 1px color-mix(in srgb, var(--accent-color, var(--accent)) 35%, transparent)">'
       + '<div class="admin-card-title">' + escapeHtml(uiT('admin.duplicates.autoCleanTitle')) + '</div>'
       + '<p style="margin:8px 0">' + escapeHtml(uiTp('admin.duplicates.autoCleanDesc', { groups: preview.totalGroups, total: preview.totalBooks, delete: preview.willDelete })) + '</p>'
       + '<p class="muted" style="font-size:.85em;margin:4px 0">' + escapeHtml(uiT('admin.duplicates.autoCleanStrategy')) + '</p>'

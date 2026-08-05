@@ -24,7 +24,7 @@ import {
   serializeClientI18n
 } from '../i18n.js';
 import { resolveIndexStageLine } from '../index-stage-i18n.js';
-import { getUiCustomization, getThemeCssVars, hasUiThemeColorsConfigured, usesPanelGlass, hasUiThemeShapeConfigured, hasUiThemeTypographyConfigured, FONT_FAMILY_WEBFONT } from '../services/ui-customization.js';
+import { getUiCustomization, getThemeCssVars, hasUiThemeColorsConfigured, usesPanelGlass, hasUiThemeShapeConfigured, hasUiThemeTypographyConfigured, FONT_FAMILY_WEBFONT, DISPLAY_FONT_WEBFONT } from '../services/ui-customization.js';
 import { balanceHtmlFragment, stripFlibustaMediaPlaceholders } from '../html-sanitize.js';
 
 export { t, tp, getLocale, plural, countLabel, formatLocaleInt, formatLocaleDateShort, formatLocaleDateTimeShort, formatLocaleDateLong, serializeClientI18n };
@@ -68,6 +68,7 @@ const CSS_SRC_PATH = path.join(config.publicDir, 'styles.css');
 const LITE_CSS_PATH = path.join(config.publicDir, 'lite.css');
 const READER_JS_PATH = path.join(config.publicDir, 'reader.js');
 const READER_CSS_PATH = path.join(config.publicDir, 'reader.css');
+const TAP_ZONES_PATH = path.join(config.publicDir, 'tap-zones.js');
 const POSITION_SYNC_PATH = path.join(config.publicDir, 'position-sync.js');
 const READER_SHARED_DIR = path.join(config.publicDir, 'reader-shared');
 const FOLIATE_DIR = path.join(config.publicDir, 'foliate');
@@ -128,10 +129,10 @@ function listReaderSharedAssetPaths() {
 function computeStaticAssetVersion() {
   const readerShared = listReaderSharedAssetPaths();
   const files = USE_MINIFIED_ASSETS
-    ? [APP_MIN_PATH, CSS_MIN_PATH, LITE_CSS_PATH, READER_JS_PATH, READER_CSS_PATH, POSITION_SYNC_PATH,
-        ...readerShared, FOLIATE_PROGRESS_PATH, FOLIATE_VIEW_PATH, FOLIATE_FB2_PATH]
-    : [APP_SRC_PATH, CSS_SRC_PATH, LITE_CSS_PATH, READER_JS_PATH, READER_CSS_PATH, POSITION_SYNC_PATH,
-        ...readerShared, FOLIATE_PROGRESS_PATH, FOLIATE_VIEW_PATH, FOLIATE_FB2_PATH];
+    ? [APP_MIN_PATH, CSS_MIN_PATH, LITE_CSS_PATH, READER_JS_PATH, READER_CSS_PATH, TAP_ZONES_PATH, POSITION_SYNC_PATH,
+      ...readerShared, FOLIATE_PROGRESS_PATH, FOLIATE_VIEW_PATH, FOLIATE_FB2_PATH]
+    : [APP_SRC_PATH, CSS_SRC_PATH, LITE_CSS_PATH, READER_JS_PATH, READER_CSS_PATH, TAP_ZONES_PATH, POSITION_SYNC_PATH,
+      ...readerShared, FOLIATE_PROGRESS_PATH, FOLIATE_VIEW_PATH, FOLIATE_FB2_PATH];
   const hash = crypto.createHash('md5');
   for (const p of files) {
     try {
@@ -414,9 +415,9 @@ export function renderPagination(basePath, page, pageSize, total, query = '') {
     <nav class="pagination" style="margin-top:20px;" aria-label="${escapeHtml(t('pagination.label'))}">
       ${page > 1 ? `<a class="page-link page-link-prev" href="${pageHref(page - 1)}" aria-label="${escapeHtml(t('pagination.prev'))}">${escapeHtml(t('pagination.prev'))}</a>` : ''}
       ${pageNumbers.map((p) => p === '...'
-        ? '<span class="page-ellipsis muted">…</span>'
-        : `<a class="page-link ${p === page ? 'page-link-active' : ''}" href="${pageHref(p)}">${p}</a>`
-      ).join('')}
+    ? '<span class="page-ellipsis muted">…</span>'
+    : `<a class="page-link ${p === page ? 'page-link-active' : ''}" href="${pageHref(p)}">${p}</a>`
+  ).join('')}
       ${page < totalPages ? `<a class="page-link page-link-next" href="${pageHref(page + 1)}" aria-label="${escapeHtml(t('pagination.next'))}">${escapeHtml(t('pagination.next'))}</a>` : ''}
     </nav>`;
 }
@@ -635,7 +636,7 @@ function renderBatchEmailMenu(params) {
     .join('');
   return `
     <details class="download-menu batch-email-menu" data-batch-ereader-params="${paramsJson}">
-      <summary class="button download-menu-trigger">${escapeHtml(t('email.toEreader'))}</summary>
+      <summary class="button download-menu-trigger batch-fab-btn">${escapeHtml(t('email.toEreader'))}</summary>
       <div class="download-menu-popover">${links}</div>
     </details>`;
 }
@@ -676,9 +677,9 @@ export function renderBatchDownloadToolbar(batchContext, { extraActions = '', us
     <div class="batch-fab" data-batch-fab hidden>
       <div class="batch-fab-inner batch-download-toolbar" data-batch-download-toolbar data-batch-context="${ctxJson}">
         <span class="batch-fab-count" data-batch-selected-count hidden></span>
-        <button type="button" class="button batch-fab-clear" data-batch-clear-select>${escapeHtml(t('app.batchDeselectAll'))}</button>
+        <button type="button" class="button batch-fab-btn batch-fab-clear" data-batch-clear-select>${escapeHtml(t('app.batchDeselectAll'))}</button>
         <details class="download-menu batch-fab-menu">
-          <summary class="button batch-fab-download download-menu-trigger">${escapeHtml(t('download.label'))}</summary>
+          <summary class="button batch-fab-btn batch-fab-download download-menu-trigger">${escapeHtml(t('download.label'))}</summary>
           <div class="download-menu-popover download-menu-popover--batch">
             <label class="batch-per-book-zip-option">
               <input type="checkbox" name="perBookZip" value="1" data-batch-per-book-zip>
@@ -787,8 +788,8 @@ function renderChromeAccountTools({
       <button type="button" class="theme-toggle" data-theme-toggle aria-label="${escapeHtml(t('themeToggle'))}" title="${escapeHtml(t('themeToggle'))}"><span data-theme-toggle-label>☀</span></button>
       ${!isAdmin ? `${canAccessAdmin ? `<a class="button" href="/admin">${escapeHtml(t('nav.admin'))}</a>` : ''}` : `<a class="button" href="/">${escapeHtml(t('nav.library'))}</a>`}
       ${isAuthenticated
-    ? `<a class="button" href="/profile">${escapeHtml(userLabel)}</a><form method="post" action="/logout" class="topbar-logout-form">${csrfHiddenField(csrfToken)}<button type="submit" class="button">${escapeHtml(t('nav.logout'))}</button></form>`
-    : `<a class="button" href="/login">${escapeHtml(t('nav.login'))}</a>`}
+      ? `<a class="button" href="/profile">${escapeHtml(userLabel)}</a><form method="post" action="/logout" class="topbar-logout-form">${csrfHiddenField(csrfToken)}<button type="submit" class="button">${escapeHtml(t('nav.logout'))}</button></form>`
+      : `<a class="button" href="/login">${escapeHtml(t('nav.login'))}</a>`}
     </div>`;
 }
 
@@ -833,21 +834,21 @@ export function renderBookGrid(items = [], { isAuthenticated = false, lazyDetail
   return `
     <div class="grid">
       ${uniqueItems.map((book) => {
-        const isRead = readBookIds && readBookIds.has(book.id);
-        /* readProgress входит в ключ кеша: иначе HTML карточки, отрендеренный
-           без прогресса (на каталоге), переиспользуется на /library/continue,
-           где прогресс реально присутствует — и полоска не появляется. */
-        const progressKey = Math.round(Number(book.readProgress) || 0);
-        const cacheKey = _cardCacheKey(book, `${flags}${isRead ? '1' : '0'}${book.libRate || 0}|p${progressKey}`);
-        const cached = getCachedCardHtml(cacheKey);
-        if (cached) return cached;
-        const cardDl = hideDownloads ? '' : renderDownloadMenu(book, { compact: true, user });
-        const seriesInfo = seriesContext
-          ? (book.seriesList?.find((s) => s.name === seriesContext) || null)
-          : null;
-        const titlePrefix = seriesInfo?.seriesNo ? `${escapeHtml(String(seriesInfo.seriesNo))}. ` : '';
-        const showSeries = !seriesContext && book.seriesList?.length;
-        const html = `
+    const isRead = readBookIds && readBookIds.has(book.id);
+    /* readProgress входит в ключ кеша: иначе HTML карточки, отрендеренный
+       без прогресса (на каталоге), переиспользуется на /library/continue,
+       где прогресс реально присутствует — и полоска не появляется. */
+    const progressKey = Math.round(Number(book.readProgress) || 0);
+    const cacheKey = _cardCacheKey(book, `${flags}${isRead ? '1' : '0'}${book.libRate || 0}|p${progressKey}`);
+    const cached = getCachedCardHtml(cacheKey);
+    if (cached) return cached;
+    const cardDl = hideDownloads ? '' : renderDownloadMenu(book, { compact: true, user });
+    const seriesInfo = seriesContext
+      ? (book.seriesList?.find((s) => s.name === seriesContext) || null)
+      : null;
+    const titlePrefix = seriesInfo?.seriesNo ? `${escapeHtml(String(seriesInfo.seriesNo))}. ` : '';
+    const showSeries = !seriesContext && book.seriesList?.length;
+    const html = `
         <article class="card" ${bookCardDataAttrs(book.id)}>
           ${batchCb(book)}
           ${renderCover(book, { readBookIds })}
@@ -859,9 +860,9 @@ export function renderBookGrid(items = [], { isAuthenticated = false, lazyDetail
             ${cardDl ? `<div class="card-actions">${cardDl}</div>` : ''}
           </div>
         </article>`;
-        setCachedCardHtml(cacheKey, html);
-        return html;
-      }).join('')}
+    setCachedCardHtml(cacheKey, html);
+    return html;
+  }).join('')}
     </div>`;
 }
 
@@ -874,12 +875,12 @@ export function renderFavoriteBookGrid(items = [], { batchSelect = false, user =
   return `
     <div class="grid">
       ${uniqueItems.map((book) => {
-        const seriesInfo = seriesContext
-          ? (book.seriesList?.find((s) => s.name === seriesContext) || null)
-          : null;
-        const titlePrefix = seriesInfo?.seriesNo ? `${escapeHtml(String(seriesInfo.seriesNo))}. ` : '';
-        const showSeries = !seriesContext && book.seriesList?.length;
-        return `
+    const seriesInfo = seriesContext
+      ? (book.seriesList?.find((s) => s.name === seriesContext) || null)
+      : null;
+    const titlePrefix = seriesInfo?.seriesNo ? `${escapeHtml(String(seriesInfo.seriesNo))}. ` : '';
+    const showSeries = !seriesContext && book.seriesList?.length;
+    return `
         <article class="card" ${bookCardDataAttrs(book.id)}>
           ${batchCb(book)}
           ${renderCover(book, { readBookIds })}
@@ -893,7 +894,7 @@ export function renderFavoriteBookGrid(items = [], { batchSelect = false, user =
             </div>
           </div>
         </article>`;
-      }).join('')}
+  }).join('')}
     </div>`;
 }
 
@@ -943,7 +944,7 @@ export function renderAuthorFacetSeriesList(series = [], outsideSeries = null, r
   return `
     <div class="table-list entity-list author-facet-series-entity-list">
       ${series.map(
-        (s) => `
+    (s) => `
         <a class="table-row table-row-link" href="/facet/series/${encodeURIComponent(s.name)}${authorParam}">
           <div style="display:flex;align-items:center">
             <span><strong>${escapeHtml(s.displayName || s.name)}</strong><br>
@@ -951,7 +952,7 @@ export function renderAuthorFacetSeriesList(series = [], outsideSeries = null, r
             ${seriesBadge(s.name)}
           </div>
         </a>`
-      ).join('')}
+  ).join('')}
       ${outsideRow}
     </div>`;
 }
@@ -963,13 +964,13 @@ export function renderAuthorFacetStandaloneBookRows(books = [], batchSelect = fa
   return `
     <div class="table-list compact-list author-facet-standalone-books">
       ${books
-        .map((book) => {
-          const id = escapeHtml(String(book.id));
-          const title = escapeHtml(book.title || '');
-          const meta = `${escapeHtml(formatLanguageLabel(book.lang || 'unknown'))} · ${escapeHtml(String(book.ext || 'fb2').toUpperCase())}`;
-          const batchCb = batchSelect
-            ? `<label class="batch-select-hit" title="${escapeHtml(t('batch.selectTitle'))}"><input type="checkbox" class="batch-select-cb" ${batchSelectInputAttrs(book.id)} ${batchBookIdDataAttr(book.id)} aria-label="${escapeHtml(t('batch.selectAria'))}"></label>`
-            : '';
+      .map((book) => {
+        const id = escapeHtml(String(book.id));
+        const title = escapeHtml(book.title || '');
+        const meta = `${escapeHtml(formatLanguageLabel(book.lang || 'unknown'))} · ${escapeHtml(String(book.ext || 'fb2').toUpperCase())}`;
+        const batchCb = batchSelect
+          ? `<label class="batch-select-hit" title="${escapeHtml(t('batch.selectTitle'))}"><input type="checkbox" class="batch-select-cb" ${batchSelectInputAttrs(book.id)} ${batchBookIdDataAttr(book.id)} aria-label="${escapeHtml(t('batch.selectAria'))}"></label>`
+          : '';
         return `
         <div class="author-facet-standalone-row" ${bookCardDataAttrs(book.id)}>
           ${batchCb}
@@ -980,8 +981,8 @@ export function renderAuthorFacetStandaloneBookRows(books = [], batchSelect = fa
             </div>
           </a>
         </div>`;
-        })
-        .join('')}
+      })
+      .join('')}
     </div>`;
 }
 
@@ -1016,15 +1017,14 @@ function renderAuthorFlibustaBookRow(book, {
   const batchCb = batchSelect
     ? `<label class="author-flibusta-batch" title="${escapeHtml(t('batch.selectTitle'))}"><input type="checkbox" class="batch-select-cb" ${batchSelectInputAttrs(book.id)} ${batchBookIdDataAttr(book.id)} aria-label="${escapeHtml(t('batch.selectAria'))}"></label>`
     : '';
+  const readBtn = `<a class="button author-flibusta-read" href="${readPagePath(book.id)}" target="_blank" rel="noopener noreferrer">${escapeHtml(t('book.read'))}</a>`;
   const dl = canDownloadInUi(user)
     ? `<span class="author-flibusta-dl">${renderDownloadMenu(book, { compact: true, user })}</span>`
     : '';
   const emailBtn = canSendToEmailInUi(user)
     ? `<button class="button author-flibusta-email" type="button" ${bookIdDataAttr(book.id)} data-send-to-ereader="1">${escapeHtml(t('book.toEmail'))}</button>`
     : '';
-  const actions = (dl || emailBtn)
-    ? `<span class="author-flibusta-actions">${dl}${emailBtn}</span>`
-    : '';
+  const actions = `<span class="author-flibusta-actions">${readBtn}${dl}${emailBtn}</span>`;
   return `<li class="author-flibusta-book" ${bookCardDataAttrs(book.id)}>
     ${batchCb}${noHtml}<a class="author-flibusta-title" href="${bookPagePath(book.id)}">${escapeHtml(book.title || '')}</a>
     ${authorHtml}${rating}${meta}${actions}
@@ -1097,25 +1097,6 @@ export function renderBookFlibustaList(books = [], { user = null, batchSelect = 
       <ul class="author-flibusta-books catalog-book-list-ul">${rows}</ul>
     </section>
   </div>`;
-}
-
-/** Grid / List toggle for catalog, search results, and library shelves. */
-export function renderBrowseViewTabs({ basePath = '/catalog', params = null, viewMode = 'grid' } = {}) {
-  const isList = viewMode === 'list';
-  const tab = (mode, label) => {
-    const p = params instanceof URLSearchParams
-      ? new URLSearchParams(params.toString())
-      : new URLSearchParams(params || {});
-    p.delete('page');
-    if (mode === 'list') p.set('view', 'list');
-    else p.delete('view');
-    const qs = p.toString();
-    const href = qs ? `${basePath}?${qs}` : basePath;
-    const active = (isList ? 'list' : 'grid') === mode ? ' is-active' : '';
-    const ariaCurrent = (isList ? 'list' : 'grid') === mode ? ' aria-current="page"' : '';
-    return `<a class="browse-view-tab${active}" href="${escapeHtml(href)}"${ariaCurrent}>${escapeHtml(label)}</a>`;
-  };
-  return `<nav class="browse-view-tabs" aria-label="${escapeHtml(t('browse.viewTabsLabel'))}">${tab('grid', t('browse.viewGrid'))}${tab('list', t('browse.viewList'))}</nav>`;
 }
 
 export function renderFacetSummaryBlock(title, items = [], path = '') {
@@ -1219,18 +1200,21 @@ export function renderMiniBookList(title, items = [], emptyText = null) {
     </section>`;
 }
 
-export function renderHomeShelf({ title, href, items, type = 'books', facetBasePath = '', isAuthenticated = false, showBatch = false, user = null, readBookIds = null } = {}) {
+export function renderHomeShelf({ title, href, items, type = 'books', facetBasePath = '', isAuthenticated = false, showBatch = false, user = null, readBookIds = null, listView = false } = {}) {
   const batchToolbar = showBatch && items.length && canDownloadInUi(user)
     ? renderBatchDownloadToolbar({ adhoc: true }, { user })
     : '';
   const body = type === 'books'
     ? (items.length
-        ? renderBookGrid(items, { isAuthenticated, batchSelect: Boolean(batchToolbar), user, readBookIds })
-        : renderEmptyState({ title: t('home.shelfEmptyTitle'), text: t('home.shelfEmptyText') }))
+      ? (listView
+        ? renderBookFlibustaList(items, { user, batchSelect: Boolean(batchToolbar) })
+        : renderBookGrid(items, { isAuthenticated, batchSelect: Boolean(batchToolbar), user, readBookIds }))
+      : renderEmptyState({ title: t('home.shelfEmptyTitle'), text: t('home.shelfEmptyText') }))
     : renderEntityGrid(items, facetBasePath, t('home.entityEmpty'));
   const wrapped = batchToolbar ? `<div class="batch-select-scope">${batchToolbar}${body}</div>` : body;
+  const viewAttr = type === 'books' && listView ? ' data-home-view="list"' : type === 'books' ? ' data-home-view="grid"' : '';
   return `
-    <section class="library-shelf">
+    <section class="library-shelf"${viewAttr}>
       <div class="section-title">
         <h2>${escapeHtml(title)}</h2>
         ${href ? `<div class="actions"><a class="shelf-link" href="${href}">${escapeHtml(t('home.showAll'))}</a></div>` : ''}
@@ -1260,14 +1244,13 @@ export function renderFaviconLinks() {
 function renderWebFontLinks() {
   const ui = getUiCustomization();
   const families = [];
-  if (ui.fontFamily === 'inter') {
-    families.push('Inter:wght@400;500;600;700');
-  }
   const activeWebfont = FONT_FAMILY_WEBFONT[ui.fontFamily];
-  if (activeWebfont && activeWebfont !== 'Lora:ital,wght@0,400;0,600;1,400;1,600' && ui.fontFamily !== 'inter') {
+  if (activeWebfont) {
     families.push(activeWebfont);
   }
-  families.push('Lora:ital,wght@0,400;0,600;1,400;1,600');
+  if (DISPLAY_FONT_WEBFONT && !families.includes(DISPLAY_FONT_WEBFONT)) {
+    families.push(DISPLAY_FONT_WEBFONT);
+  }
   const familyQuery = families.map((f) => `family=${f}`).join('&');
   return `<link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -1332,8 +1315,8 @@ function renderBottomNav({ user = null, currentPath = '', isAdmin = false } = {}
       ${item('/', t('nav.bottomHome'), homeActive)}
       ${item('/catalog', t('nav.bottomCatalog'), catalogActive)}
       ${isAuthed
-        ? `${item('/favorites', t('nav.bottomFavorites'), favActive)}${item('/profile', t('nav.bottomProfile'), profileActive)}`
-        : item('/login', t('nav.bottomLogin'), loginActive)}
+      ? `${item('/favorites', t('nav.bottomFavorites'), favActive)}${item('/profile', t('nav.bottomProfile'), profileActive)}`
+      : item('/login', t('nav.bottomLogin'), loginActive)}
     </nav>`;
 }
 
@@ -1497,8 +1480,8 @@ export function pageShell({ title, content, user, query = '', field = 'all', sta
   <a class="skip-to-content" href="#main-content">${escapeHtml(t('skipToContent'))}</a>
   <div class="shell">
     ${isAdmin
-    ? renderAdminSidebar(currentPath, { user, csrfToken })
-    : renderUserSidebar({ query, field, stats, user, currentPath, canAccessAdmin, csrfToken })}
+      ? renderAdminSidebar(currentPath, { user, csrfToken })
+      : renderUserSidebar({ query, field, stats, user, currentPath, canAccessAdmin, csrfToken })}
     <div class="main-wrap">
       <header class="topbar ${isAdmin ? 'topbar-admin' : ''}" data-topbar>
         <button class="sidebar-toggle" type="button" aria-label="${escapeHtml(t('sidebarOpen'))}" data-sidebar-toggle aria-expanded="false">☰</button>
@@ -1509,13 +1492,13 @@ export function pageShell({ title, content, user, query = '', field = 'all', sta
         <div class="topbar-right">
           ${!isAdmin ? `<button type="button" class="topbar-search-toggle" data-topbar-search-toggle aria-label="${escapeHtml(t('topbar.searchToggle'))}" aria-expanded="false" aria-controls="global-search-input" title="${escapeHtml(t('topbar.searchToggle'))}">⌕</button>` : ''}
           ${renderChromeAccountTools({
-    isAdmin,
-    canAccessAdmin,
-    isAuthenticated,
-    userLabel,
-    csrfToken,
-    className: 'topbar-desktop-tools'
-  })}
+        isAdmin,
+        canAccessAdmin,
+        isAuthenticated,
+        userLabel,
+        csrfToken,
+        className: 'topbar-desktop-tools'
+      })}
         </div>
       </header>
     ${isAdmin ? renderAdminIndexControls(indexStatus) : renderIndexStatus(indexStatus, stats)}

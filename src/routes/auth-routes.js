@@ -12,6 +12,7 @@ import { getIndexStatus, getReadingHistory } from '../inpx.js';
 import {
   getUserByUsername, getSetting, createUser, changePassword,
   setEreaderEmail, getEreaderEmail, getUserStats,
+  getUserBrowseViewPrefs, setUserBrowseViewPrefs,
   getAllReaderBookmarks, getAllReaderAnnotations, decryptValue,
   createTelegramLinkToken, unlinkTelegram, getTelegramBotUsername, resolveTelegramRuntimeConfig, setMeta,
   isTelegramBotAllowedForUser,
@@ -93,12 +94,15 @@ export function registerAuthRoutes(app, deps) {
   function buildProfileSettingsData(user, flash = '', csrfToken = '', extra = {}) {
     const fullUser = getUserByUsername(user.username);
     const tgRuntime = resolveTelegramRuntimeConfig();
+    const browseView = getUserBrowseViewPrefs(user.username);
     return {
       user,
       stats: getCachedStats(),
       indexStatus: getIndexStatus(),
       userStats: getUserStats(user.username),
       ereaderEmail: getEreaderEmail(user.username),
+      homeView: browseView.homeView,
+      catalogView: browseView.catalogView,
       telegramId: fullUser?.telegramId || '',
       telegramLinkedAt: fullUser?.telegramLinkedAt || '',
       telegramBotUsername: getTelegramBotUsername(),
@@ -340,30 +344,57 @@ export function registerAuthRoutes(app, deps) {
     res.send(renderProfile(buildProfileData(req.user, '', req.csrfToken || '')));
   });
 
+  function profileSettingsSection(req) {
+    return String(req.query.section || req.body?.section || '') === 'view' ? 'view' : 'account';
+  }
+
+  function renderSettingsPage(user, flash, csrfToken, section = 'account') {
+    return renderProfileSettings(buildProfileSettingsData(user, flash, csrfToken, { section }));
+  }
+
   app.get('/profile/settings', requireWebAuth, (req, res) => {
-    res.send(renderProfileSettings(buildProfileSettingsData(req.user, String(req.query.flash || ''), req.csrfToken || '')));
+    res.send(renderSettingsPage(req.user, String(req.query.flash || ''), req.csrfToken || '', profileSettingsSection(req)));
+  });
+
+  app.get('/profile/view', requireWebAuth, (req, res) => {
+    const qs = new URLSearchParams();
+    qs.set('section', 'view');
+    if (req.query.flash) qs.set('flash', String(req.query.flash));
+    res.redirect(302, `/profile/settings?${qs.toString()}`);
   });
 
   app.post('/profile/email', requireWebAuth, (req, res) => {
     const rawEmail = String(req.body.ereaderEmail || '').trim();
     if (rawEmail && !/^[^\s@,;<>]+@[^\s@,;<>]+\.[^\s@,;<>]+$/.test(rawEmail)) {
-      return res.status(400).send(renderProfileSettings(buildProfileSettingsData(req.user, t('profile.invalidEmail'), req.csrfToken || '')));
+      return res.status(400).send(renderSettingsPage(req.user, t('profile.invalidEmail'), req.csrfToken || '', 'account'));
     }
     const fullUser = getUserByUsername(req.user.username);
     if (!isEreaderEmailAllowedForUser(fullUser)) {
-      return res.status(403).send(renderProfileSettings(buildProfileSettingsData(req.user, t('profile.ereaderEmail.accessDenied'), req.csrfToken || '')));
+      return res.status(403).send(renderSettingsPage(req.user, t('profile.ereaderEmail.accessDenied'), req.csrfToken || '', 'account'));
     }
     try {
       setEreaderEmail(req.user.username, rawEmail);
-      res.send(renderProfileSettings(buildProfileSettingsData(req.user, t('profile.emailSaved'), req.csrfToken || '')));
+      res.send(renderSettingsPage(req.user, t('profile.emailSaved'), req.csrfToken || '', 'account'));
     } catch (error) {
-      res.status(500).send(renderProfileSettings(buildProfileSettingsData(req.user, translateKnownErrorMessage(error.message), req.csrfToken || '')));
+      res.status(500).send(renderSettingsPage(req.user, translateKnownErrorMessage(error.message), req.csrfToken || '', 'account'));
+    }
+  });
+
+  app.post('/profile/view', requireWebAuth, (req, res) => {
+    try {
+      setUserBrowseViewPrefs(req.user.username, {
+        homeView: req.body.homeView,
+        catalogView: req.body.catalogView
+      });
+      res.send(renderSettingsPage(req.user, t('profile.viewPrefsSaved'), req.csrfToken || '', 'view'));
+    } catch (error) {
+      res.status(500).send(renderSettingsPage(req.user, translateKnownErrorMessage(error.message), req.csrfToken || '', 'view'));
     }
   });
 
   app.post('/profile/password', requireWebAuth, (req, res) => {
     const { currentPassword, newPassword, confirmPassword } = req.body;
-    const renderErr = (msg) => res.status(400).send(renderProfileSettings(buildProfileSettingsData(req.user, msg, req.csrfToken || '')));
+    const renderErr = (msg) => res.status(400).send(renderSettingsPage(req.user, msg, req.csrfToken || '', 'account'));
 
     const fullUser = getUserByUsername(req.user.username);
     const hasLocal = Number(fullUser?.hasLocalPassword ?? 1) !== 0;
@@ -387,7 +418,7 @@ export function registerAuthRoutes(app, deps) {
       });
       logSystemEvent('info', 'auth', 'password changed', { username: req.user.username });
       const okMsg = hasLocal ? t('profile.passwordChanged') : t('profile.passwordSet');
-      res.send(renderProfileSettings(buildProfileSettingsData(freshUser, okMsg, req.csrfToken || '')));
+      res.send(renderSettingsPage(freshUser, okMsg, req.csrfToken || '', 'account'));
     } catch (error) {
       return renderErr(translateKnownErrorMessage(error.message));
     }

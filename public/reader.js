@@ -1,4 +1,4 @@
-import '/foliate/view.js?v=fb2seek4';
+import '/foliate/view.js?v=tts-hl1';
 import { Overlayer } from '/foliate/overlayer.js?v=fb2seek4';
 import {
   FootnoteHandler,
@@ -29,6 +29,14 @@ import {
   POSITION_VERSION,
   positionFields,
 } from '/reader-shared/position-revision.js';
+import {
+  TAP_ZONE_IDS,
+  TAP_ACTIONS,
+  defaultTapZonesShort,
+  defaultTapZonesLong,
+  normalizeTapZones,
+  resolveTapZone9,
+} from '/tap-zones.js';
 
 (function () {
   'use strict';
@@ -409,7 +417,7 @@ import {
   let bookPageLayoutKeyCached = '';
 
   function bookPageLayoutKey() {
-    return [S.font, S.fontSize, S.lineHeight, S.maxWidth, S.pageMargin, S.columnGap, layoutMode(), innerWidth, innerHeight].join('|');
+    return [S.font, S.fontSize, S.fontWeight, S.lineHeight, S.maxWidth, S.maxBlockSize, S.pageMargin, S.verticalMargin, S.columnGap, layoutMode(), innerWidth, innerHeight].join('|');
   }
 
   function invalidateBookPageCache() {
@@ -428,9 +436,17 @@ import {
   /* ===== Settings ===== */
   const defaults = {
     theme: 'sepia', font: 'serif', fontSize: 18, lineHeight: 1.6,
-    pageMargin: 32, columnGap: 7, maxWidth: 99999, layout: 'paginated', textColor: '', bgColor: '',
-    ttsRate: 1, ttsVoice: ''
+    pageMargin: 32, verticalMargin: 32, columnGap: 7, maxWidth: 99999, maxBlockSize: 1440,
+    layout: 'paginated', textColor: '', bgColor: '', linkColor: '',
+    justify: true, hyphenate: true,
+    usePublisherFont: false, fontWeight: 400,
+    letterSpacing: 0, paragraphSpacing: 0.4, textIndent: 0,
+    ttsRate: 1, ttsVoice: '', chromePinned: false,
+    tapZonesShort: defaultTapZonesShort(),
+    tapZonesLong: defaultTapZonesLong(),
   };
+  let tapEditMode = 'short';
+  let tapEditSelected = 'mm';
   const SYSTEM_FONTS = {
     serif: { label: 'Georgia', stack: 'Georgia, "Times New Roman", serif' },
     palatino: { label: 'Palatino', stack: '"Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif' },
@@ -553,14 +569,22 @@ import {
     if (!view?.renderer) return;
     invalidateBookPageCache();
     const side = readerSideMarginPx();
-    const gap = Math.max(0, Math.min(20, Number(S.columnGap) || 0));
+    const gapPct = Math.max(0, Math.min(20, Number(S.columnGap) || 0));
+    const vert = Math.max(0, Math.min(96, Number(S.verticalMargin) || 0));
     const mode = layoutMode();
     view.style.boxSizing = 'border-box';
     view.style.paddingInline = side ? `${side}px` : '';
-    view.renderer.setAttribute('margin', '0px');
-    view.renderer.setAttribute('gap', `${gap}%`);
+    view.renderer.setAttribute('margin', `${vert}px`);
+    // Single-column: gap would add side padding; horizontal margins use paddingInline only.
+    view.renderer.setAttribute('gap', mode === 'dual' ? `${gapPct}%` : '0%');
     view.renderer.setAttribute('max-inline-size', `${resolveMaxInlineSizePx()}px`);
     view.renderer.setAttribute('max-column-count', mode === 'dual' ? '2' : '1');
+    view.renderer.setAttribute('flow', mode === 'scrolled' ? 'scrolled' : 'paginated');
+    if (mode === 'scrolled') {
+      view.renderer.setAttribute('max-block-size', `${Math.round(S.maxBlockSize || defaults.maxBlockSize)}px`);
+    } else {
+      view.renderer.removeAttribute('max-block-size');
+    }
   }
   function isFullWidth() {
     return Number(S.maxWidth) >= 9000;
@@ -583,19 +607,38 @@ import {
         S.bgColor = '';
       }
     }
-    if (S.layout !== 'paginated' && S.layout !== 'dual') S.layout = defaults.layout;
+    if (!['paginated', 'dual', 'scrolled'].includes(S.layout)) S.layout = defaults.layout;
+    if (typeof S.justify !== 'boolean') S.justify = defaults.justify;
+    if (typeof S.hyphenate !== 'boolean') S.hyphenate = defaults.hyphenate;
+    if (typeof S.usePublisherFont !== 'boolean') S.usePublisherFont = defaults.usePublisherFont;
     if (S.textColor && !/^#[0-9A-Fa-f]{6}$/.test(String(S.textColor).trim())) S.textColor = '';
     if (S.bgColor && !/^#[0-9A-Fa-f]{6}$/.test(String(S.bgColor).trim())) S.bgColor = '';
+    if (S.linkColor && !/^#[0-9A-Fa-f]{6}$/.test(String(S.linkColor).trim())) S.linkColor = '';
     if (!(S.font in fontMap)) S.font = defaults.font;
     const pm = Number(S.pageMargin);
     S.pageMargin = Number.isFinite(pm) ? Math.min(80, Math.max(0, Math.round(pm))) : defaults.pageMargin;
+    const vm = Number(S.verticalMargin);
+    S.verticalMargin = Number.isFinite(vm) ? Math.min(96, Math.max(0, Math.round(vm))) : defaults.verticalMargin;
     const cg = Number(S.columnGap);
     S.columnGap = Number.isFinite(cg) ? Math.min(20, Math.max(0, Math.round(cg))) : defaults.columnGap;
     const mw = Number(S.maxWidth);
     S.maxWidth = Number.isFinite(mw) ? mw : defaults.maxWidth;
+    const mbs = Number(S.maxBlockSize);
+    S.maxBlockSize = Number.isFinite(mbs) ? Math.min(2400, Math.max(720, Math.round(mbs))) : defaults.maxBlockSize;
+    const fw = Number(S.fontWeight);
+    S.fontWeight = [400, 500, 600, 700].includes(fw) ? fw : defaults.fontWeight;
+    const ls = Number(S.letterSpacing);
+    S.letterSpacing = Number.isFinite(ls) ? Math.min(0.2, Math.max(-0.05, ls)) : defaults.letterSpacing;
+    const ps = Number(S.paragraphSpacing);
+    S.paragraphSpacing = Number.isFinite(ps) ? Math.min(1.5, Math.max(0, ps)) : defaults.paragraphSpacing;
+    const ti = Number(S.textIndent);
+    S.textIndent = Number.isFinite(ti) ? Math.min(3, Math.max(0, ti)) : defaults.textIndent;
     const tr = Number(S.ttsRate);
     S.ttsRate = Number.isFinite(tr) ? Math.min(2, Math.max(0.5, tr)) : defaults.ttsRate;
     if (typeof S.ttsVoice !== 'string') S.ttsVoice = defaults.ttsVoice;
+    S.chromePinned = Boolean(S.chromePinned);
+    S.tapZonesShort = normalizeTapZones(S.tapZonesShort, defaultTapZonesShort());
+    S.tapZonesLong = normalizeTapZones(S.tapZonesLong, defaultTapZonesLong());
   }
   function saveSettings() { localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(S)); }
   loadSettings();
@@ -626,26 +669,45 @@ import {
     return c.bg;
   }
 
-  function getBookCSS() {
+  function getEffectiveLinkColor() {
     const c = themeColors[S.theme] || themeColors.dark;
+    const t = S.linkColor && String(S.linkColor).trim();
+    if (t && /^#[0-9A-Fa-f]{6}$/.test(t)) return t;
+    if (READER_LITE || S.theme === 'eink') return getEffectiveTextColor();
+    return c.link;
+  }
+
+  function getBookCSS() {
     const fg = getEffectiveTextColor();
     const bg = getEffectiveBgColor();
+    const link = getEffectiveLinkColor();
     const ff = fontMap[S.font] || fontMap.serif;
     const mono = fontMap.mono;
+    const align = S.justify !== false ? 'justify' : 'start';
+    const hyph = S.hyphenate !== false ? 'auto' : 'manual';
+    const pubFont = S.usePublisherFont === true;
+    const weight = Number(S.fontWeight) || 400;
+    const ls = Number(S.letterSpacing) || 0;
+    const ps = Number(S.paragraphSpacing) || 0;
+    const ti = Number(S.textIndent) || 0;
+    const fontFamilyRule = pubFont ? '' : `
+      body, p, div, span, li, td, th, h1, h2, h3, h4, h5, h6, blockquote, dd, dt, em, strong, i, b, u, a, section, article {
+        font-family: ${ff} !important;
+      }`;
     const text = `
       @namespace epub "http://www.idpf.org/2007/ops";
       html { color: ${fg} !important; background: ${bg} !important; }
-      body, p, div, span, li, td, th, h1, h2, h3, h4, h5, h6, blockquote, dd, dt, em, strong, i, b, u, a, section, article {
-        font-family: ${ff} !important;
-      }
-      body { color: ${fg} !important; background: ${bg} !important; font-size: ${S.fontSize}px !important; }
+      ${fontFamilyRule}
+      body { color: ${fg} !important; background: ${bg} !important; font-size: ${S.fontSize}px !important; font-weight: ${weight} !important; letter-spacing: ${ls}em !important; }
       pre, code, kbd, samp { font-family: ${mono} !important; }
       p,li,blockquote,dd,div { line-height: ${S.lineHeight} !important; }
-      p,li,blockquote,dd { text-align: justify; hyphens: auto; -webkit-hyphens: auto; -webkit-hyphenate-limit-before: 3; -webkit-hyphenate-limit-after: 2; -webkit-hyphenate-limit-lines: 2; hanging-punctuation: allow-end last; widows: 2; }
+      p { margin-block-start: ${ps}em !important; margin-block-end: 0 !important; text-indent: ${ti}em !important; }
+      p:first-child, li p:first-child, blockquote p:first-child { margin-block-start: 0 !important; }
+      p,li,blockquote,dd { text-align: ${align}; hyphens: ${hyph}; -webkit-hyphens: ${hyph}; -webkit-hyphenate-limit-before: 3; -webkit-hyphenate-limit-after: 2; -webkit-hyphenate-limit-lines: 2; hanging-punctuation: allow-end last; widows: 2; }
       [align="left"]{text-align:left} [align="right"]{text-align:right} [align="center"]{text-align:center} [align="justify"]{text-align:justify}
       pre { white-space: pre-wrap !important; }
       aside[epub|type~="endnote"],aside[epub|type~="footnote"],aside[epub|type~="note"],aside[epub|type~="rearnote"] { display: none; }
-      a { color: ${READER_LITE ? fg : c.link}; }
+      a { color: ${link} !important; }
       /* EPUB / residual in-document chapter starts (FB2 chapters are split in fb2.js). */
       body:not(.notesBodyType) h1 {
         break-before: column !important;
@@ -676,7 +738,7 @@ import {
       ${READER_LITE ? 'img,svg image { filter: grayscale(100%) contrast(115%) !important; }' : ''}
     `;
     const gf = GOOGLE_FONTS[S.font];
-    if (gf) return [`@import url("${googleFontCssUrl(gf)}");`, text];
+    if (gf && !pubFont) return [`@import url("${googleFontCssUrl(gf)}");`, text];
     return text;
   }
   function applyBookStyles() {
@@ -828,9 +890,9 @@ import {
     const bg = getEffectiveBgColor();
     document.body.style.background = bg;
     if (readerBody) readerBody.style.background = bg;
+    applyChromePinnedLayout();
     saveSettings();
     if (view?.renderer) {
-      view.renderer.setAttribute('flow', S.layout === 'scrolled' ? 'scrolled' : 'paginated');
       applyRendererLayout();
       applyBookStyles();
       syncReaderGoogleFont().then(() => applyBookStyles());
@@ -846,8 +908,129 @@ import {
   }
 
   function resetSettings() {
-    S = { ...defaults };
+    S = {
+      ...defaults,
+      tapZonesShort: defaultTapZonesShort(),
+      tapZonesLong: defaultTapZonesLong(),
+    };
     applySettings(); refreshSettingsUI(); toast(rt('readerJs.settingsReset'));
+  }
+
+  function tapActionLabel(action) {
+    const key = `reader.tapAction.${action}`;
+    const lab = rt(key);
+    return lab === key ? action : lab;
+  }
+
+  function runTapAction(action) {
+    if (!action || action === 'none') return;
+    void acquireReaderWakeLock();
+    switch (action) {
+      case 'prevPage': view?.goLeft?.(); break;
+      case 'nextPage': view?.goRight?.(); break;
+      case 'toggleChrome': toggleChromeFromCenterTap(); break;
+      case 'toc': openPanel('toc'); break;
+      case 'search': openPanel('search'); break;
+      case 'settings': openPanel('settings'); break;
+      case 'bookmark': addBookmark(); break;
+      case 'dayNight': toggleDayNightTheme(); break;
+      case 'tts': toggleReaderTts(); break;
+      case 'prevChapter': {
+        const i = getTocIdx();
+        if (i > 0) goTocIdx(i - 1);
+        break;
+      }
+      case 'nextChapter': {
+        const i = getTocIdx();
+        if (i >= 0 && i < tocData.length - 1) goTocIdx(i + 1);
+        break;
+      }
+      case 'goto':
+        setChromeVisible(true);
+        scheduleChromeHide();
+        seekBar?.focus?.();
+        break;
+      default: break;
+    }
+  }
+
+  function shortActionLabel(action) {
+    const full = tapActionLabel(action);
+    if (full.length <= 10) return full;
+    return full.slice(0, 9) + '…';
+  }
+
+  function refreshTapZonesUi() {
+    const grid = $('rs-tap-grid');
+    const sel = $('rs-tap-action');
+    const hint = $('rs-tap-hint');
+    if (!grid) return;
+    const map = tapEditMode === 'long' ? S.tapZonesLong : S.tapZonesShort;
+    if (!grid.dataset.built) {
+      grid.dataset.built = '1';
+      grid.innerHTML = TAP_ZONE_IDS.map((id) =>
+        `<button type="button" class="rs-tap-cell" data-tap-zone="${id}">` +
+        `<span class="rs-tap-cell-id">${id}</span>` +
+        `<span class="rs-tap-cell-label"></span></button>`
+      ).join('');
+      grid.addEventListener('click', (e) => {
+        const cell = e.target.closest?.('[data-tap-zone]');
+        if (!cell) return;
+        tapEditSelected = cell.dataset.tapZone;
+        refreshTapZonesUi();
+        sel?.focus();
+      });
+    }
+    grid.querySelectorAll('[data-tap-zone]').forEach((cell) => {
+      const id = cell.dataset.tapZone;
+      const action = map?.[id] || 'none';
+      cell.classList.toggle('is-selected', id === tapEditSelected);
+      const label = cell.querySelector('.rs-tap-cell-label');
+      if (label) label.textContent = shortActionLabel(action);
+    });
+    if (sel) {
+      if (!sel.dataset.built) {
+        sel.dataset.built = '1';
+        sel.hidden = false;
+        sel.innerHTML = TAP_ACTIONS
+          .map((k) => `<option value="${k}">${esc(tapActionLabel(k))}</option>`)
+          .join('');
+        sel.addEventListener('change', () => {
+          const mapKey = tapEditMode === 'long' ? 'tapZonesLong' : 'tapZonesShort';
+          S[mapKey] = { ...S[mapKey], [tapEditSelected]: sel.value };
+          saveSettings();
+          refreshTapZonesUi();
+        });
+      }
+      sel.value = map?.[tapEditSelected] || 'none';
+    }
+    if (hint) {
+      const zone = String(tapEditSelected || 'mm').toUpperCase();
+      hint.textContent = rtp(
+        tapEditMode === 'long' ? 'reader.tapZones.hintLong' : 'reader.tapZones.hintShort',
+        { zone }
+      );
+    }
+    document.querySelectorAll('[data-tap-edit]').forEach((b) => {
+      b.classList.toggle('is-active', b.dataset.tapEdit === tapEditMode);
+    });
+  }
+
+  function initTapZonesSettings() {
+    document.querySelectorAll('[data-tap-edit]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        tapEditMode = btn.dataset.tapEdit === 'long' ? 'long' : 'short';
+        refreshTapZonesUi();
+      });
+    });
+    $('rs-tap-reset')?.addEventListener('click', () => {
+      S.tapZonesShort = defaultTapZonesShort();
+      S.tapZonesLong = defaultTapZonesLong();
+      saveSettings();
+      refreshTapZonesUi();
+      toast(rt('reader.tapZones.resetDone'));
+    });
+    refreshTapZonesUi();
   }
 
   function getActivePreset() {
@@ -915,7 +1098,31 @@ import {
     setChromeVisible(true);
   }
 
+  function isChromePinned() {
+    return Boolean(S.chromePinned);
+  }
+
+  function applyChromePinnedLayout({ triggerResize = false, resumeAutohide = false } = {}) {
+    const pinned = isChromePinned();
+    document.documentElement.dataset.chromePinned = pinned ? '1' : '0';
+    document.body.classList.toggle('chrome-pinned', pinned);
+    if (pinned) {
+      clearTimeout(chromeTimer);
+      chromeVisible = true;
+      document.body.classList.remove('chrome-hidden');
+    } else if (resumeAutohide) {
+      setChromeVisible(true);
+      scheduleChromeHide();
+    }
+    if (triggerResize) onViewportResize();
+  }
+
   function setChromeVisible(show) {
+    if (isChromePinned()) {
+      chromeVisible = true;
+      document.body.classList.remove('chrome-hidden');
+      return;
+    }
     chromeVisible = show;
     const panelOpen = panelOverlay.classList.contains('is-open');
     const settingsPreview = panelOpen && panelOverlay.classList.contains('panel-settings-mode');
@@ -925,12 +1132,14 @@ import {
   /** Сбросить таймер скрытия, не показывая панели силой (если уже скрыты — ничего не делаем). */
   function scheduleChromeHide() {
     clearTimeout(chromeTimer);
+    if (isChromePinned()) return;
     if (panelOverlay.classList.contains('is-open')) return;
     if (!chromeVisible) return;
     chromeTimer = setTimeout(() => setChromeVisible(false), CHROME_AUTOHIDE_MS());
   }
   /** Тап по центру поля: скрыто → показать и снова автоскрытие; уже видно → скрыть. */
   function toggleChromeFromCenterTap() {
+    if (isChromePinned()) return;
     clearTimeout(chromeTimer);
     if (panelOverlay.classList.contains('is-open')) return;
     if (document.body.classList.contains('chrome-hidden')) {
@@ -1777,6 +1986,8 @@ import {
     m.style.top = top + 'px';
   }
   function maybeShowSelMenu(doc) {
+    // Во время TTS фразы раньше выделялись через Selection — меню заметок всплывало само.
+    if (ttsChainActive) { hideSelMenu(); return; }
     if (panelOverlay.classList.contains('is-open') || isFootnoteOverlayOpen()) { hideSelMenu(); return; }
     const sel = doc.getSelection?.();
     if (!sel || sel.isCollapsed || !sel.rangeCount) {
@@ -1794,6 +2005,7 @@ import {
     showSelMenuAt(rectToPage(rect, doc), false);
   }
   function openSelMenuForExisting(a, range) {
+    if (ttsChainActive) return;
     if (panelOverlay.classList.contains('is-open')) return;
     const doc = range?.startContainer?.ownerDocument || range?.commonAncestorContainer?.ownerDocument;
     activeSel = { doc, index: doc ? docIndexMap.get(doc) : null, range, text: a.text, existing: a };
@@ -2041,6 +2253,7 @@ import {
     refreshTriggers();
     syncPanelChrome(tab);
     if (tab === 'settings') {
+      document.querySelectorAll('.panel-body input[type="range"]').forEach(guardRangeSliderTouchScroll);
       void ensureTtsVoices().then(() => {
         try {
           populateTtsVoiceList();
@@ -2095,13 +2308,22 @@ import {
     }
   }
 
-  /** На таче: вертикальный свайп — прокрутка панели, не сброс ползунка. */
+  /**
+   * На таче вертикальный свайп по ползунку = прокрутка панели, не смена значения.
+   * Откат value в capture ДО bubble applySettings — иначе визуально «как было»,
+   * а настройка уже записана. Меняем только после явного горизонтального drag.
+   */
   function guardRangeSliderTouchScroll(slider) {
-    if (!isTouch.matches) return;
+    if (!isTouch.matches || slider.dataset.scrollGuardWired) return;
+    slider.dataset.scrollGuardWired = '1';
     let startX = 0;
     let startY = 0;
     let startVal = '';
     let mode = 'idle'; // idle | pending | scroll | slide
+
+    const restore = () => {
+      if (slider.value !== startVal) slider.value = startVal;
+    };
 
     slider.addEventListener('touchstart', (e) => {
       if (e.touches.length !== 1) return;
@@ -2110,11 +2332,18 @@ import {
       startY = t.clientY;
       startVal = slider.value;
       mode = 'pending';
-    }, { passive: true });
+      queueMicrotask(() => {
+        if (mode === 'pending' || mode === 'scroll') restore();
+      });
+    }, { capture: true, passive: true });
 
     slider.addEventListener('input', () => {
-      if (mode === 'pending' || mode === 'scroll') slider.value = startVal;
-    });
+      if (mode === 'pending' || mode === 'scroll') restore();
+    }, { capture: true });
+
+    slider.addEventListener('change', () => {
+      if (mode === 'pending' || mode === 'scroll') restore();
+    }, { capture: true });
 
     slider.addEventListener('touchmove', (e) => {
       if (mode !== 'pending' && mode !== 'slide') return;
@@ -2123,34 +2352,28 @@ import {
       const adx = Math.abs(t.clientX - startX);
       const ady = Math.abs(t.clientY - startY);
       if (mode === 'pending') {
-        if (ady > 10 && ady > adx * 1.15) {
+        if (ady > 6 && ady >= adx) {
           mode = 'scroll';
-          slider.value = startVal;
+          restore();
           slider.style.pointerEvents = 'none';
           return;
         }
-        if (adx > 8 && adx >= ady) mode = 'slide';
-        else return;
+        if (adx > 12 && adx > ady * 1.25) {
+          mode = 'slide';
+        } else {
+          return;
+        }
       }
       if (mode === 'slide') setRangeFromClientX(slider, t.clientX);
     }, { passive: true });
 
-    const end = (e) => {
-      if (mode === 'pending' && e.changedTouches?.[0]) {
-        const t = e.changedTouches[0];
-        if (Math.hypot(t.clientX - startX, t.clientY - startY) < 14) {
-          setRangeFromClientX(slider, t.clientX);
-        } else {
-          slider.value = startVal;
-        }
-      } else if (mode === 'scroll') {
-        slider.value = startVal;
-      }
+    const end = () => {
+      if (mode !== 'slide') restore();
       mode = 'idle';
       slider.style.pointerEvents = '';
     };
-    slider.addEventListener('touchend', end, { passive: true });
-    slider.addEventListener('touchcancel', end, { passive: true });
+    slider.addEventListener('touchend', end, { capture: true, passive: true });
+    slider.addEventListener('touchcancel', end, { capture: true, passive: true });
   }
 
   function bindSeg(sel, prop) {
@@ -2203,16 +2426,63 @@ import {
       refreshSettingsUI();
     });
 
-    const wire = (id, valId, prop, fmt) => {
+    const linkColorInput = $('rs-link-color');
+    const linkColorDefaultBtn = $('rs-link-color-default');
+    if (linkColorInput) {
+      linkColorInput.addEventListener('input', () => {
+        S.linkColor = linkColorInput.value;
+        applySettings();
+      });
+    }
+    linkColorDefaultBtn?.addEventListener('click', () => {
+      S.linkColor = '';
+      applySettings();
+      refreshSettingsUI();
+    });
+
+    const wire = (id, valId, prop, fmt, parse) => {
       const sl = $(id), vl = $(valId); if (!sl) return;
       sl.value = S[prop]; if (vl) vl.textContent = fmt ? fmt(S[prop]) : S[prop];
-      sl.addEventListener('input', () => { S[prop] = Number(fmt ? Number(sl.value).toFixed(1) : sl.value); if (vl) vl.textContent = fmt ? fmt(S[prop]) : S[prop]; applySettings(); });
+      sl.addEventListener('input', () => {
+        const raw = Number(sl.value);
+        S[prop] = parse ? parse(raw) : (fmt ? Number(raw.toFixed(1)) : raw);
+        if (vl) vl.textContent = fmt ? fmt(S[prop]) : S[prop];
+        applySettings();
+      });
     };
     wire('rs-font-size', 'rs-font-size-val', 'fontSize');
     wire('rs-line-height', 'rs-line-height-val', 'lineHeight', v => Number(v).toFixed(1));
     wire('rs-page-margin', 'rs-page-margin-val', 'pageMargin', v => `${Math.round(v)} px`);
+    wire('rs-vertical-margin', 'rs-vertical-margin-val', 'verticalMargin', v => `${Math.round(v)} px`);
     wire('rs-column-gap', 'rs-column-gap-val', 'columnGap', v => `${Math.round(v)}%`);
     wire('rs-column-width', 'rs-column-width-val', 'maxWidth', v => `${Math.round(v)} px`);
+    wire('rs-max-block-size', 'rs-max-block-size-val', 'maxBlockSize', v => `${Math.round(v)} px`);
+    wire('rs-letter-spacing', 'rs-letter-spacing-val', 'letterSpacing', v => Number(v).toFixed(2), v => Number(v.toFixed(2)));
+    wire('rs-paragraph-spacing', 'rs-paragraph-spacing-val', 'paragraphSpacing', v => Number(v).toFixed(2), v => Number(v.toFixed(2)));
+    wire('rs-text-indent', 'rs-text-indent-val', 'textIndent', v => `${Number(v).toFixed(1)} em`, v => Number(v.toFixed(1)));
+
+    const fontWeightEl = $('rs-font-weight');
+    if (fontWeightEl) {
+      fontWeightEl.addEventListener('change', () => {
+        const fw = Number(fontWeightEl.value);
+        S.fontWeight = [400, 500, 600, 700].includes(fw) ? fw : 400;
+        applySettings();
+        refreshSettingsUI();
+      });
+    }
+
+    const bindCheck = (id, key) => {
+      const el = $(id);
+      if (!el) return;
+      el.addEventListener('change', () => {
+        S[key] = el.checked;
+        applySettings();
+        refreshSettingsUI();
+      });
+    };
+    bindCheck('rs-justify', 'justify');
+    bindCheck('rs-hyphenate', 'hyphenate');
+    bindCheck('rs-publisher-font', 'usePublisherFont');
 
     const fullWidthEl = $('rs-full-width');
     if (fullWidthEl) {
@@ -2227,13 +2497,23 @@ import {
       });
     }
 
+    const chromePinnedEl = $('rs-chrome-pinned');
+    if (chromePinnedEl) {
+      chromePinnedEl.addEventListener('change', () => {
+        S.chromePinned = chromePinnedEl.checked;
+        applyChromePinnedLayout({ triggerResize: true, resumeAutohide: !S.chromePinned });
+        saveSettings();
+        refreshSettingsUI();
+      });
+    }
+
+    initTapZonesSettings();
+
     const ttsRateEl = $('rs-tts-rate');
     const ttsRateVal = $('rs-tts-rate-val');
     if (ttsRateEl) {
       ttsRateEl.addEventListener('input', () => {
-        S.ttsRate = Number(ttsRateEl.value);
-        if (ttsRateVal) ttsRateVal.textContent = Number(S.ttsRate).toFixed(2);
-        saveSettings();
+        setTtsRate(Number(ttsRateEl.value), { persist: true, fromSlider: true });
       });
     }
     const ttsVoiceEl = $('rs-tts-voice');
@@ -2265,14 +2545,33 @@ import {
     if (fs) {
       if (!(S.font in fontMap)) S.font = defaults.font;
       fs.value = S.font;
+      fs.disabled = S.usePublisherFont === true;
     }
     const sync = (id, v) => { const el = $(id); if (el) el.value !== undefined ? el.value = v : el.textContent = v; };
     sync('rs-font-size', S.fontSize); sync('rs-font-size-val', S.fontSize);
     sync('rs-line-height', S.lineHeight); sync('rs-line-height-val', Number(S.lineHeight).toFixed(1));
     sync('rs-page-margin', S.pageMargin);
     sync('rs-page-margin-val', `${S.pageMargin} px`);
+    sync('rs-vertical-margin', S.verticalMargin);
+    sync('rs-vertical-margin-val', `${S.verticalMargin} px`);
     sync('rs-column-gap', S.columnGap);
     sync('rs-column-gap-val', `${S.columnGap}%`);
+    sync('rs-max-block-size', S.maxBlockSize);
+    sync('rs-max-block-size-val', `${Math.round(S.maxBlockSize)} px`);
+    sync('rs-letter-spacing', S.letterSpacing);
+    sync('rs-letter-spacing-val', Number(S.letterSpacing).toFixed(2));
+    sync('rs-paragraph-spacing', S.paragraphSpacing);
+    sync('rs-paragraph-spacing-val', Number(S.paragraphSpacing).toFixed(2));
+    sync('rs-text-indent', S.textIndent);
+    sync('rs-text-indent-val', `${Number(S.textIndent).toFixed(1)} em`);
+    const fwEl = $('rs-font-weight');
+    if (fwEl) fwEl.value = String(S.fontWeight || 400);
+    const justifyEl = $('rs-justify');
+    if (justifyEl) justifyEl.checked = S.justify !== false;
+    const hyphenateEl = $('rs-hyphenate');
+    if (hyphenateEl) hyphenateEl.checked = S.hyphenate !== false;
+    const publisherFontEl = $('rs-publisher-font');
+    if (publisherFontEl) publisherFontEl.checked = S.usePublisherFont === true;
     const cwSlider = $('rs-column-width');
     const cwVal = $('rs-column-width-val');
     const fullW = isFullWidth();
@@ -2283,10 +2582,14 @@ import {
     if (cwVal) cwVal.textContent = fullW ? rt('reader.fullWidth') : `${Math.round(S.maxWidth)} px`;
     const fullWidthEl = $('rs-full-width');
     if (fullWidthEl) fullWidthEl.checked = fullW;
+    const chromePinnedEl = $('rs-chrome-pinned');
+    if (chromePinnedEl) chromePinnedEl.checked = Boolean(S.chromePinned);
     const pagGroup = $('rs-layout-paginated');
     const dualGroup = $('rs-layout-dual');
-    if (pagGroup) pagGroup.hidden = S.layout === 'dual';
+    const scrolledGroup = $('rs-layout-scrolled');
+    if (pagGroup) pagGroup.hidden = S.layout !== 'paginated';
     if (dualGroup) dualGroup.hidden = S.layout !== 'dual';
+    if (scrolledGroup) scrolledGroup.hidden = S.layout !== 'scrolled';
     const ap = getActivePreset();
     document.querySelectorAll('[data-preset]').forEach(b => b.classList.toggle('is-active', b.dataset.preset === ap));
     const tcEl = $('rs-text-color');
@@ -2301,6 +2604,12 @@ import {
       const v = (S.bgColor && /^#[0-9A-Fa-f]{6}$/.test(String(S.bgColor).trim())) ? S.bgColor.trim() : c.bg;
       if (bgEl.value !== v) bgEl.value = v;
     }
+    const lcEl = $('rs-link-color');
+    if (lcEl) {
+      const v = getEffectiveLinkColor();
+      if (lcEl.value !== v) lcEl.value = v;
+    }
+    refreshTapZonesUi();
     updateSeekbar();
     updateDayNightButton();
     const ttsR = $('rs-tts-rate');
@@ -2310,6 +2619,7 @@ import {
       ttsR.value = String(Number.isFinite(r) ? Math.min(2, Math.max(0.5, r)) : 1);
       if (ttsRV) ttsRV.textContent = Number(ttsR.value).toFixed(2);
     }
+    updateTtsDockRateUi();
     const ttsV = $('rs-tts-voice');
     if (ttsV && S.ttsVoice && [...ttsV.options].some(o => o.value === S.ttsVoice)) ttsV.value = S.ttsVoice;
     else if (ttsV) ttsV.value = '';
@@ -2405,9 +2715,44 @@ import {
     else sel.value = '';
   }
 
+  const TTS_RATE_MIN = 0.5;
+  const TTS_RATE_MAX = 2;
+  const TTS_RATE_STEP = 0.1;
+
+  function clampTtsRate(value) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return 1;
+    return Math.min(TTS_RATE_MAX, Math.max(TTS_RATE_MIN, Math.round(n * 100) / 100));
+  }
+
+  function updateTtsDockRateUi() {
+    const rate = clampTtsRate(S.ttsRate);
+    const label = $('tts-dock-rate');
+    if (label) label.textContent = `${rate.toFixed(2)}×`;
+    const slower = $('btn-tts-dock-slower');
+    const faster = $('btn-tts-dock-faster');
+    if (slower) slower.disabled = rate <= TTS_RATE_MIN + 1e-9;
+    if (faster) faster.disabled = rate >= TTS_RATE_MAX - 1e-9;
+  }
+
+  function setTtsRate(next, opts = {}) {
+    const rate = clampTtsRate(next);
+    S.ttsRate = rate;
+    if (!opts.fromSlider) {
+      const ttsR = $('rs-tts-rate');
+      const ttsRV = $('rs-tts-rate-val');
+      if (ttsR) ttsR.value = String(rate);
+      if (ttsRV) ttsRV.textContent = rate.toFixed(2);
+    } else {
+      const ttsRV = $('rs-tts-rate-val');
+      if (ttsRV) ttsRV.textContent = rate.toFixed(2);
+    }
+    updateTtsDockRateUi();
+    if (opts.persist !== false) saveSettings();
+  }
+
   function applyTtsUtteranceSettings(u) {
-    const r = Number(S.ttsRate);
-    u.rate = Number.isFinite(r) ? Math.min(2, Math.max(0.5, r)) : 1;
+    u.rate = clampTtsRate(S.ttsRate);
     const uri = S.ttsVoice && String(S.ttsVoice).trim();
     if (uri && window.speechSynthesis) {
       const v = speechSynthesis.getVoices().find((x) => x.voiceURI === uri);
@@ -2472,6 +2817,7 @@ import {
       ttsDockEl.classList.toggle('is-visible', ttsChainActive);
       ttsDockEl.setAttribute('aria-hidden', ttsChainActive ? 'false' : 'true');
     }
+    updateTtsDockRateUi();
     document.body.classList.toggle('reader-tts-active', ttsChainActive);
     if (!ttsChainActive) pauseTtsKeepalive();
     syncTtsMediaSessionPlayback();
@@ -2492,6 +2838,10 @@ import {
     try {
       window.speechSynthesis?.cancel();
     } catch { /* */ }
+    try { view?.tts?.clearHighlight?.(); } catch { /* */ }
+    try { view?.deselect?.(); } catch { /* */ }
+    hideSelMenu();
+    activeSel = null;
     ttsChainActive = false;
     ttsPausedByUser = false;
     ttsAdvancingSection = false;
@@ -2736,6 +3086,9 @@ import {
     ttsChainActive = true;
     ttsPausedByUser = false;
     lastTtsSpeechAt = Date.now();
+    try { view?.deselect?.(); } catch { /* */ }
+    hideSelMenu();
+    activeSel = null;
     void acquireReaderWakeLock();
     setChromeVisible(true);
     updateTtsButtons();
@@ -2842,6 +3195,20 @@ import {
       scheduleChromeHide();
     });
   });
+
+  const btnTtsDockSlower = $('btn-tts-dock-slower');
+  const btnTtsDockFaster = $('btn-tts-dock-faster');
+  if (btnTtsDockSlower) {
+    btnTtsDockSlower.addEventListener('click', () => {
+      setTtsRate(clampTtsRate(S.ttsRate) - TTS_RATE_STEP);
+    });
+  }
+  if (btnTtsDockFaster) {
+    btnTtsDockFaster.addEventListener('click', () => {
+      setTtsRate(clampTtsRate(S.ttsRate) + TTS_RATE_STEP);
+    });
+  }
+  updateTtsDockRateUi();
 
   /* ===== Toolbar buttons ===== */
   const btnFullscreen = $('btn-fullscreen');
@@ -3141,41 +3508,59 @@ import {
     let linkTapTouch = null;
     const isFlowPaginated = () => S.layout !== 'scrolled';
 
-    const TAP_EDGE = 0.22;
     /** Макс. сдвиг пальца для «тапа»; Foliate на touchmove листает при меньшем dx — см. touchmove cancel. */
     const TAP_SLOP_PX = 22;
     const TAP_MAX_MS = 700;
+    const TAP_LONG_MS = 480;
     /** Любой touchmove дальше — не тап (иначе после лёгкого drag Foliate touchend + наш тап = двойной сдвиг). */
     const TAP_CANCEL_MOVE_PX = 10;
     let screenTapTrack = null;
 
     /**
-     * Зоны относительно видимого foliate-view на странице (как у экранного ридера), а не innerWidth iframe.
-     * В foliate-js reader.js зон на doc нет — листание делает paginator; у нас добавлены края/центр для UI.
-     * clientX/Y события в iframe — в системе вьюпорта iframe; переносим в координаты страницы через frameElement.
+     * Координаты тапа относительно видимого foliate-view + id зоны 3×3.
+     * clientX/Y в iframe → page coords через frameElement.
      */
-    function tapZoneHost(clientX, clientY, doc_) {
+    function tapCoordsInHost(clientX, clientY, doc_) {
       const win = doc_?.defaultView;
       const iframe = win?.frameElement;
       const host = view?.getBoundingClientRect?.();
-      if (!iframe || !host?.width) return 'center';
+      if (!iframe || !host?.width) return null;
       const fr = iframe.getBoundingClientRect();
       const px = fr.left + clientX;
       const py = fr.top + clientY;
-      const rx = (px - host.left) / Math.max(1, host.width);
-      const ry = (py - host.top) / Math.max(1, host.height);
-      const fx = Math.max(0, Math.min(1, rx));
-      const fy = Math.max(0, Math.min(1, ry));
+      const fx = Math.max(0, Math.min(1, (px - host.left) / Math.max(1, host.width)));
+      const fy = Math.max(0, Math.min(1, (py - host.top) / Math.max(1, host.height)));
       const el = doc_?.documentElement;
       const wm = (el && win?.getComputedStyle(el).writingMode || 'horizontal-tb').toLowerCase();
-      if (wm.startsWith('vertical')) {
-        if (fy < TAP_EDGE) return 'left';
-        if (fy > 1 - TAP_EDGE) return 'right';
-        return 'center';
-      }
-      if (fx < TAP_EDGE) return 'left';
-      if (fx > 1 - TAP_EDGE) return 'right';
-      return 'center';
+      const zone = resolveTapZone9(fx, fy, { verticalWriting: wm.startsWith('vertical') });
+      return { fx, fy, zone, pageX: px, pageY: py };
+    }
+
+    function clearScreenTapLongPress() {
+      if (screenTapTrack?.longTimer) clearTimeout(screenTapTrack.longTimer);
+      if (screenTapTrack) screenTapTrack.longTimer = null;
+    }
+
+    function armScreenTapLongPress(doc_) {
+      clearScreenTapLongPress();
+      if (!screenTapTrack) return;
+      screenTapTrack.longTimer = setTimeout(() => {
+        if (!screenTapTrack || screenTapTrack.longFired) return;
+        try {
+          const sel = doc_?.getSelection?.();
+          if (sel && !sel.isCollapsed && String(sel).trim()) {
+            clearScreenTapLongPress();
+            screenTapTrack = null;
+            return;
+          }
+        } catch { /* */ }
+        screenTapTrack.longFired = true;
+        const coords = tapCoordsInHost(screenTapTrack.x, screenTapTrack.y, doc_);
+        const zone = coords?.zone || 'mm';
+        const action = S.tapZonesLong?.[zone] || 'none';
+        screenTapTrack = null;
+        runTapAction(action);
+      }, TAP_LONG_MS);
     }
 
     function slopOk(t) {
@@ -3218,8 +3603,10 @@ import {
     doc.addEventListener('touchstart', e => {
       if (isFlowPaginated() && e.touches.length === 1 && !e.target.closest?.('a[href]')) {
         const t = e.touches[0];
-        screenTapTrack = { x: t.clientX, y: t.clientY, t: Date.now() };
+        screenTapTrack = { x: t.clientX, y: t.clientY, t: Date.now(), longFired: false, longTimer: null };
+        armScreenTapLongPress(doc);
       } else {
+        clearScreenTapLongPress();
         screenTapTrack = null;
       }
     }, { capture: true, passive: true });
@@ -3228,6 +3615,7 @@ import {
       if (!isFlowPaginated() || !screenTapTrack || e.touches.length !== 1) return;
       const t = e.touches[0];
       if (Math.hypot(t.clientX - screenTapTrack.x, t.clientY - screenTapTrack.y) > TAP_CANCEL_MOVE_PX) {
+        clearScreenTapLongPress();
         screenTapTrack = null;
       }
     }, { capture: true, passive: true });
@@ -3240,25 +3628,36 @@ import {
       if (!isFlowPaginated()) return;
       if (isFootnoteOverlayOpen()) return;
       if (!screenTapTrack || e.changedTouches.length !== 1) return;
+      if (screenTapTrack.longFired) {
+        clearScreenTapLongPress();
+        screenTapTrack = null;
+        e.preventDefault();
+        return;
+      }
       const t = e.changedTouches[0];
-      if (panelBlocksBookTap(touchToPageY(t.clientY, doc))) return;
+      if (panelBlocksBookTap(touchToPageY(t.clientY, doc))) {
+        clearScreenTapLongPress();
+        screenTapTrack = null;
+        return;
+      }
       const dt = Date.now() - screenTapTrack.t;
       const adx = Math.abs(t.clientX - screenTapTrack.x);
       const ady = Math.abs(t.clientY - screenTapTrack.y);
       if (dt > TAP_MAX_MS || adx > TAP_SLOP_PX || ady > TAP_SLOP_PX) {
+        clearScreenTapLongPress();
         screenTapTrack = null;
         return;
       }
-      const z = tapZoneHost(t.clientX, t.clientY, doc);
+      clearScreenTapLongPress();
+      const zone = tapCoordsInHost(t.clientX, t.clientY, doc)?.zone || 'mm';
+      const action = S.tapZonesShort?.[zone] || 'toggleChrome';
       screenTapTrack = null;
       e.preventDefault();
-      void acquireReaderWakeLock();
-      if (z === 'center') toggleChromeFromCenterTap();
-      else if (z === 'left') view?.goLeft();
-      else view?.goRight();
+      runTapAction(action);
     }, { capture: true, passive: false });
 
     doc.addEventListener('touchcancel', () => {
+      clearScreenTapLongPress();
       screenTapTrack = null;
     }, { capture: true, passive: true });
 
@@ -3305,11 +3704,60 @@ import {
 
     let pStart = null;
     let pointerDownOnLink = false;
+    let pointerLongTrack = null;
+    let pointerLongFired = false;
+
+    function clearPointerLongPress() {
+      if (pointerLongTrack?.longTimer) clearTimeout(pointerLongTrack.longTimer);
+      pointerLongTrack = null;
+    }
+
+    function armPointerLongPress(doc_, x, y) {
+      clearPointerLongPress();
+      pointerLongFired = false;
+      pointerLongTrack = { x, y, longTimer: null };
+      pointerLongTrack.longTimer = setTimeout(() => {
+        if (!pointerLongTrack || pointerLongFired) return;
+        try {
+          const sel = doc_?.getSelection?.();
+          if (sel && !sel.isCollapsed && String(sel).trim()) {
+            clearPointerLongPress();
+            return;
+          }
+        } catch { /* */ }
+        pointerLongFired = true;
+        const zone = tapCoordsInHost(pointerLongTrack.x, pointerLongTrack.y, doc_)?.zone || 'mm';
+        const action = S.tapZonesLong?.[zone] || 'none';
+        clearPointerLongPress();
+        runTapAction(action);
+      }, TAP_LONG_MS);
+    }
 
     doc.addEventListener('pointerdown', e => {
       if (e.button !== 0) return;
       pointerDownOnLink = !!e.target.closest?.('a[href]');
       pStart = { x: e.clientX, y: e.clientY, t: Date.now() };
+      pointerLongFired = false;
+      if (
+        isFlowPaginated()
+        && (e.pointerType === 'mouse' || e.pointerType === 'pen')
+        && !pointerDownOnLink
+      ) {
+        armPointerLongPress(doc, e.clientX, e.clientY);
+      } else {
+        clearPointerLongPress();
+      }
+    });
+
+    doc.addEventListener('pointermove', e => {
+      if (!pointerLongTrack) return;
+      if (Math.hypot(e.clientX - pointerLongTrack.x, e.clientY - pointerLongTrack.y) > TAP_CANCEL_MOVE_PX) {
+        clearPointerLongPress();
+      }
+    });
+
+    doc.addEventListener('pointercancel', () => {
+      clearPointerLongPress();
     });
 
     doc.addEventListener('touchstart', e => {
@@ -3339,10 +3787,12 @@ import {
       if (e.pointerType !== 'mouse' && e.pointerType !== 'pen') {
         pStart = null;
         pointerDownOnLink = false;
+        clearPointerLongPress();
         return;
       }
       if (!pStart || e.button !== 0) {
         pointerDownOnLink = false;
+        clearPointerLongPress();
         return;
       }
       const fromLink = pointerDownOnLink;
@@ -3350,6 +3800,9 @@ import {
       const startX = pStart.x, startY = pStart.y, startT = pStart.t;
       const dx = e.clientX - startX, dy = e.clientY - startY, dt = Date.now() - startT;
       pStart = null;
+      const longFired = pointerLongFired;
+      clearPointerLongPress();
+      if (longFired) return;
 
       const adx = Math.abs(dx), ady = Math.abs(dy);
       /* Мышь: горизонтальный свайп с любого места (как у многих десктоп-ридеров). Перо: только с края — иначе мешает выделению. */
@@ -3360,8 +3813,8 @@ import {
           return;
         }
         if (e.pointerType === 'pen') {
-          const zStart = tapZoneHost(startX, startY, doc);
-          if (zStart === 'left' || zStart === 'right') {
+          const zStart = tapCoordsInHost(startX, startY, doc)?.zone || '';
+          if (zStart.endsWith('l') || zStart.endsWith('r')) {
             if (dx < 0) view?.goRight(); else view?.goLeft();
             void acquireReaderWakeLock();
             return;
@@ -3374,17 +3827,23 @@ import {
        * короткий тап с малым сдвигом уже отфильтрован выше. */
       if (fromLink) return;
 
-      const z = tapZoneHost(e.clientX, e.clientY, doc);
-      if (z === 'left') {
-        view?.goLeft();
-        void acquireReaderWakeLock();
-      } else if (z === 'right') {
-        view?.goRight();
-        void acquireReaderWakeLock();
-      } else {
-        toggleChromeFromCenterTap();
-        void acquireReaderWakeLock();
-      }
+      const zone = tapCoordsInHost(e.clientX, e.clientY, doc)?.zone || 'mm';
+      runTapAction(S.tapZonesShort?.[zone] || 'toggleChrome');
+    });
+
+    /* Клик по полям foliate-view вне iframe (фон колонок) — тоже зоны 3×3. */
+    view.addEventListener('click', e => {
+      if (!isFlowPaginated()) return;
+      if (e.defaultPrevented) return;
+      const path = typeof e.composedPath === 'function' ? e.composedPath() : [];
+      if (path.some((n) => n && (n.tagName === 'IFRAME' || n.tagName === 'A' || n.tagName === 'BUTTON'
+        || n.tagName === 'INPUT' || n.tagName === 'TEXTAREA' || n.tagName === 'SELECT'))) return;
+      const host = view.getBoundingClientRect();
+      if (!host.width) return;
+      const fx = (e.clientX - host.left) / host.width;
+      const fy = (e.clientY - host.top) / host.height;
+      const zone = resolveTapZone9(fx, fy);
+      runTapAction(S.tapZonesShort?.[zone] || 'toggleChrome');
     });
 
     const WHEEL_FLIP_PX = 28;
@@ -3567,7 +4026,7 @@ import {
       fb2FlatToc = isFb2Active() ? flattenTocForSeek(view.book?.toc) : [];
       window.__READER_FB2_FLAT_TOC__ = flatTocForPrompt();
 
-    view.renderer.setAttribute('flow', S.layout === 'scrolled' ? 'scrolled' : 'paginated');
+    view.renderer.setAttribute('flow', layoutMode() === 'scrolled' ? 'scrolled' : 'paginated');
     applyRendererLayout();
     await syncReaderGoogleFont();
     applyBookStyles();

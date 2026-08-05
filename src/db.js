@@ -199,6 +199,16 @@ function ensureUsersSchema() {
     db.exec(`ALTER TABLE users ADD COLUMN has_local_password INTEGER NOT NULL DEFAULT 1`);
   }
 
+  const hasUiHomeView = columns.some((column) => column.name === 'ui_home_view');
+  if (!hasUiHomeView) {
+    db.exec(`ALTER TABLE users ADD COLUMN ui_home_view TEXT NOT NULL DEFAULT 'grid'`);
+  }
+
+  const hasUiCatalogView = columns.some((column) => column.name === 'ui_catalog_view');
+  if (!hasUiCatalogView) {
+    db.exec(`ALTER TABLE users ADD COLUMN ui_catalog_view TEXT NOT NULL DEFAULT 'grid'`);
+  }
+
   db.exec(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_unique
     ON users(email)
@@ -3247,6 +3257,38 @@ export function deleteReaderAnnotation(id, username) {
   const row = db.prepare('SELECT book_id FROM reader_annotations WHERE id = ? AND username = ?').get(id, username);
   _stmtDelReaderAnnotation.run(id, username);
   if (row?.book_id) touchReaderBookRevision(username, row.book_id, 'annotations_rev');
+}
+
+function normalizeUiBrowseView(value) {
+  return String(value || '').toLowerCase() === 'list' ? 'list' : 'grid';
+}
+
+let _stmtGetBrowseViewPrefs = null;
+export function getUserBrowseViewPrefs(username) {
+  _stmtGetBrowseViewPrefs ??= db.prepare(`
+    SELECT COALESCE(ui_home_view, 'grid') AS homeView,
+           COALESCE(ui_catalog_view, 'grid') AS catalogView
+    FROM users WHERE username = ?
+  `);
+  const row = _stmtGetBrowseViewPrefs.get(username);
+  return {
+    homeView: normalizeUiBrowseView(row?.homeView),
+    catalogView: normalizeUiBrowseView(row?.catalogView)
+  };
+}
+
+let _stmtSetBrowseViewPrefs = null;
+export function setUserBrowseViewPrefs(username, { homeView, catalogView } = {}) {
+  const user = getUserByUsername(username);
+  if (!user) throw new Error('User not found');
+  _stmtSetBrowseViewPrefs ??= db.prepare(
+    'UPDATE users SET ui_home_view = ?, ui_catalog_view = ? WHERE username = ?'
+  );
+  _stmtSetBrowseViewPrefs.run(
+    normalizeUiBrowseView(homeView),
+    normalizeUiBrowseView(catalogView),
+    username
+  );
 }
 
 let _stmtGetEreaderEmail = null;

@@ -352,10 +352,11 @@ const DENSITY_PRESETS = {
 
 export const UI_FONT_FAMILY_PRESETS = ['inter', 'system', 'serif', 'georgia', 'merriweather', 'rounded', 'mono', 'custom'];
 
+/** Default UI voice: Source Sans 3 (preset key `inter` kept for settings compatibility). */
 export const FONT_FAMILY_STACKS = {
-  inter: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
-  system: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
-  serif: "'Lora', Georgia, 'Times New Roman', serif",
+  inter: "'Source Sans 3', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+  system: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+  serif: "'Source Serif 4', Georgia, 'Times New Roman', serif",
   georgia: "Georgia, 'Times New Roman', serif",
   merriweather: "'Merriweather', Georgia, 'Times New Roman', serif",
   rounded: "'Nunito', 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif",
@@ -364,11 +365,15 @@ export const FONT_FAMILY_STACKS = {
 
 /** Google Fonts family spec for presets that require a web font (empty = system/available). */
 export const FONT_FAMILY_WEBFONT = {
-  inter: 'Inter:wght@400;500;600;700',
-  serif: 'Lora:ital,wght@0,400;0,600;1,400;1,600',
+  inter: 'Source+Sans+3:wght@400;500;600;700',
+  serif: 'Source+Serif+4:ital,wght@0,400;0,600;1,400;1,600',
   merriweather: 'Merriweather:wght@400;700',
   rounded: 'Nunito:wght@400;600;700;800',
 };
+
+/** Display/serif companion loaded on every page for hero and literary chrome. */
+export const DISPLAY_FONT_WEBFONT = 'Source+Serif+4:ital,wght@0,400;0,600;1,400;1,600';
+export const DISPLAY_FONT_STACK = "'Source Serif 4', Georgia, 'Times New Roman', serif";
 
 /** CSS font-family stack for UI preset (custom uses uploaded @font-face name). */
 export function resolveFontFamilyStack(preset, customFontName = 'Custom Font') {
