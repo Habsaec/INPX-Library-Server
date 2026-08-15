@@ -194,6 +194,7 @@ export function renderOperations({ user, stats = {}, indexStatus = {}, operation
         <span class="admin-chip"><strong data-operations-field="statsAuthors">${escapeHtml(countLabel('author', Number(operations.totalAuthors ?? stats.totalAuthors) || 0))}</strong></span>
         <span class="admin-chip"><strong data-operations-field="statsSeries">${escapeHtml(countLabel('series', Number(operations.totalSeries ?? stats.totalSeries) || 0))}</strong></span>
         <span class="admin-chip" title="${escapeHtml(t('admin.duplicates.suppressedTitle'))}"><strong data-operations-field="statsSuppressed">${escapeHtml(tp('admin.statsSuppressed', { n: (Number(operations.suppressedCount) || 0).toLocaleString(loc) }))}</strong></span>
+        <span class="admin-chip" title="${escapeHtml(t('admin.statsDeletedTitle'))}"><strong data-operations-field="statsDeleted">${escapeHtml(tp('admin.statsDeleted', { n: (Number(operations.deletedCount) || 0).toLocaleString(loc) }))}</strong></span>
         <span class="admin-sep"></span>
         <span class="admin-chip" data-index-field="active">${indexStatus.active ? escapeHtml(t('admin.indexUpdating')) : escapeHtml(t('admin.indexReady'))}</span>
         ${(() => {
@@ -381,7 +382,7 @@ export function renderAdminUpdate({ user, stats = {}, indexStatus = {}, operatio
   return pageShell({ title: t('admin.nav.backup'), content, user, stats, indexStatus, breadcrumbs: [{ label: t('admin.nav.backup') }], mode: 'admin', currentPath: '/admin/update', csrfToken });
 }
 
-export function renderAdminUsers({ user, stats, indexStatus, users = [], flash = '', adminCount = 0, registrationEnabled = false, recaptchaSiteKey = '', recaptchaSecretKey = '', allowAnonymousBrowse = false, allowAnonymousDownload = false, allowAnonymousOpds = false, passwordResetEnabled = false, publicBaseUrl = '', oidc = null, csrfToken = '' }) {
+export function renderAdminUsers({ user, stats, indexStatus, users = [], flash = '', adminCount = 0, registrationEnabled = false, registrationInviteToken = '', registrationInviteUrl = '', recaptchaSiteKey = '', recaptchaSecretKey = '', allowAnonymousBrowse = false, allowAnonymousDownload = false, allowAnonymousOpds = false, passwordResetEnabled = false, publicBaseUrl = '', oidc = null, csrfToken = '' }) {
   const admins = users.filter((account) => account.role === 'admin');
   const regularUsers = users.filter((account) => account.role !== 'admin');
   const fmtDate = (d) => formatLocaleDateShort(d);
@@ -598,6 +599,27 @@ export function renderAdminUsers({ user, stats, indexStatus, users = [], flash =
           </form>
         </div>
       </div>
+      <form id="registration-invite-form" method="post" action="/admin/settings/registration-invite" class="admin-action-item" style="flex-wrap:wrap;align-items:flex-end;" data-ajax>
+        ${csrfHiddenField(csrfToken)}
+        <div class="admin-action-item-info" style="flex:1 1 100%;">
+          <strong>${escapeHtml(t('admin.users.inviteToken'))}</strong>
+          <span class="muted">${escapeHtml(t('admin.users.inviteTokenHint'))}</span>
+        </div>
+        <div class="admin-field-group" style="flex:1;min-width:220px;margin:0;">
+          <input id="registration-invite-token" name="token" value="${escapeHtml(registrationInviteToken)}" autocomplete="off" spellcheck="false" maxlength="128">
+        </div>
+        <div class="admin-actions-row">
+          <button type="submit" name="inviteAction" value="generate">${escapeHtml(t('admin.users.inviteGenerate'))}</button>
+          <button type="submit" name="inviteAction" value="save">${escapeHtml(t('admin.save'))}</button>
+        </div>
+        <div id="registration-invite-link-wrap" class="admin-field-group" style="flex:1 1 100%;margin:8px 0 0;${registrationInviteUrl ? '' : 'display:none;'}">
+          <label for="registration-invite-url">${escapeHtml(t('admin.users.inviteLink'))}</label>
+          <div class="admin-inline-row" style="gap:8px;width:100%;">
+            <input id="registration-invite-url" type="url" readonly value="${escapeHtml(registrationInviteUrl)}" autocomplete="off" style="flex:1;min-width:0;">
+            <button type="button" data-copy-invite data-copy-text="${escapeHtml(registrationInviteUrl)}" data-copy-done="${escapeHtml(t('admin.users.inviteCopied'))}">${escapeHtml(t('admin.users.inviteCopy'))}</button>
+          </div>
+        </div>
+      </form>
       <div class="admin-action-item">
         <div class="admin-action-item-info">
           <strong>${escapeHtml(t('admin.users.recaptcha'))}</strong>
@@ -751,6 +773,7 @@ export function renderAdminContent({
   genres = [],
   excludedGenreSet = new Set(),
   disabledDownloadFormatSet = new Set(),
+  showDeletedBooks = false,
   flash = '',
   csrfToken = ''
 }) {
@@ -890,6 +913,17 @@ export function renderAdminContent({
     </div>
     <form method="POST" action="/admin/content">
       ${csrfHiddenField(csrfToken)}
+      <div class="admin-card" style="margin-bottom:16px">
+        <div class="admin-card-title">${escapeHtml(t('admin.content.deletedSection'))}</div>
+        <p class="muted admin-compact-btn" style="margin:4px 0 12px;">${escapeHtml(t('admin.content.deletedHint'))}</p>
+        <label class="admin-check-row" style="display:flex;align-items:flex-start;gap:10px;cursor:pointer">
+          <input type="checkbox" name="show_deleted_books" value="1" ${showDeletedBooks ? 'checked' : ''} style="margin-top:3px">
+          <span>
+            <strong>${escapeHtml(t('admin.content.deletedToggle'))}</strong>
+            <span class="muted" style="display:block;margin-top:4px;font-size:13px">${escapeHtml(t('admin.content.deletedToggleHint'))}</span>
+          </span>
+        </label>
+      </div>
       <div class="admin-card" style="margin-bottom:16px">
         <div class="admin-card-title" style="display:flex;align-items:center;gap:12px">
           ${escapeHtml(t('admin.content.downloadSection'))}

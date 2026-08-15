@@ -42,7 +42,13 @@ export function renderAdminLogin(error = '') {
   });
 }
 
-export function renderRegister({ error = '', registrationEnabled = false, recaptchaSiteKey = '' } = {}) {
+export function renderRegister({
+  error = '',
+  registrationEnabled = false,
+  recaptchaSiteKey = '',
+  inviteRequired = false,
+  inviteValue = ''
+} = {}) {
   if (!registrationEnabled) {
     return renderLoginScreen({
       title: t('register.closedTitle'),
@@ -54,6 +60,12 @@ export function renderRegister({ error = '', registrationEnabled = false, recapt
     });
   }
   const hasCaptcha = Boolean(recaptchaSiteKey);
+  const inviteHtml = inviteRequired
+    ? `<div>
+          <label for="inviteToken">${escapeHtml(t('register.inviteToken'))}</label>
+          <input id="inviteToken" name="inviteToken" type="text" autocomplete="off" spellcheck="false" required maxlength="128" value="${escapeHtml(inviteValue)}">
+        </div>`
+    : '';
   return renderLoginScreen({
     title: t('register.title'),
     subtitle: t('register.subtitle'),
@@ -62,6 +74,7 @@ export function renderRegister({ error = '', registrationEnabled = false, recapt
     extraHtml: `<a href="/login" class="login-footer-link">${escapeHtml(t('register.haveAccount'))}</a>`,
     submitLabel: t('register.submit'),
     passwordAutocomplete: 'new-password',
+    extraFieldsHtml: inviteHtml,
     headExtra: hasCaptcha ? '<script src="https://www.google.com/recaptcha/api.js" async defer></script>' : '',
     captchaHtml: hasCaptcha ? `<div class="g-recaptcha" data-sitekey="${escapeHtml(recaptchaSiteKey)}" style="margin:8px 0;"></div>` : ''
   });

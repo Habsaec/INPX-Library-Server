@@ -394,9 +394,20 @@ export const MIN_RADIUS_SCALE = 0;
 export const MAX_RADIUS_SCALE = 28;
 export const DEFAULT_RADIUS_SCALE = 8;
 
+/** Resolved radius tokens for a preset (or custom scale). */
+export function radiusTokensForPreset(preset, scalePx) {
+  if (preset === 'custom') {
+    const base = Math.min(MAX_RADIUS_SCALE, Math.max(MIN_RADIUS_SCALE, Math.round(Number(scalePx) || 0)));
+    const r = (mult) => `${Math.round(base * mult)}px`;
+    return { sm: r(0.75), md: r(1), lg: r(1.5), xl: r(2), button: r(1.25), card: r(0.75) };
+  }
+  const r = RADIUS_PRESETS[preset] || RADIUS_PRESETS.rounded;
+  return { sm: r.sm, md: r.md, lg: r.lg, xl: r.xl, button: r.button, card: r.card };
+}
+
 /** Генерация CSS-переменных радиусов по пресету */
 export function radiusPresetToCssVars(preset) {
-  const r = RADIUS_PRESETS[preset] || RADIUS_PRESETS.rounded;
+  const r = radiusTokensForPreset(preset);
   return [
     `--radius-sm:${r.sm}`,
     `--radius:${r.md}`,
@@ -409,16 +420,23 @@ export function radiusPresetToCssVars(preset) {
 
 /** Генерация CSS-переменных радиусов по произвольному базовому значению (px). */
 export function customRadiusToCssVars(basePx) {
-  const base = Math.min(MAX_RADIUS_SCALE, Math.max(MIN_RADIUS_SCALE, Math.round(Number(basePx) || 0)));
-  const r = (mult) => `${Math.round(base * mult)}px`;
+  const r = radiusTokensForPreset('custom', basePx);
   return [
-    `--radius-sm:${r(0.75)}`,
-    `--radius:${r(1)}`,
-    `--radius-lg:${r(1.5)}`,
-    `--radius-xl:${r(2)}`,
-    `--radius-button:${r(1.25)}`,
-    `--radius-card:${r(0.75)}`,
+    `--radius-sm:${r.sm}`,
+    `--radius:${r.md}`,
+    `--radius-lg:${r.lg}`,
+    `--radius-xl:${r.xl}`,
+    `--radius-button:${r.button}`,
+    `--radius-card:${r.card}`,
   ];
+}
+
+/** Shadow tokens for Android / public UI JSON (dark + light). */
+export function shadowTokensForPreset(preset) {
+  const dark = SHADOW_PRESETS[preset] || SHADOW_PRESETS.normal;
+  const light = SHADOW_PRESETS_LIGHT[preset] || SHADOW_PRESETS_LIGHT.normal;
+  const pick = (s) => ({ sm: s.sm, md: s.md, lg: s.lg });
+  return { dark: pick(dark), light: pick(light) };
 }
 
 /** Генерация CSS-переменных теней по пресету (с учётом тёмной/светлой темы) */

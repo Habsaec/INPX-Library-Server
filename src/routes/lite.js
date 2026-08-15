@@ -272,6 +272,7 @@ export function registerLiteRoutes(app, { getCachedStats }) {
           series: grouped.series,
           standaloneBooks: grouped.standaloneBooks,
           facetValue: value,
+          total: grouped.total,
           user: req.user || null,
           stats,
           csrfToken: csrf(req)
@@ -298,7 +299,8 @@ export function registerLiteRoutes(app, { getCachedStats }) {
         user,
         paginationBase: `${facetPath}?sort=${encodeURIComponent(sort)}${authorFilter ? `&author=${encodeURIComponent(authorFilter)}` : ''}`,
         readBookIds,
-        csrfToken: csrf(req)
+        csrfToken: csrf(req),
+        scopeDownload: facet === 'series' ? { facet: 'series', value } : null
       }));
     } catch (error) {
       next(error);

@@ -26,7 +26,7 @@ import { invalidateUserPageCaches } from '../services/cache.js';
 import { invalidateRecommendationsCache } from '../services/recommendations.js';
 import { logSystemEvent } from '../services/system-events.js';
 import { formatAuthorLabel } from '../genre-map.js';
-import { BATCH_DOWNLOAD_MAX } from '../constants.js';
+import { BATCH_DOWNLOAD_MAX, BATCH_ZIP_MAX } from '../constants.js';
 import { normalizeBatchIdsParam, resolveAdhocBookIdsFromClientList, resolveBatchScopeBookIds } from './download.js';
 
 /**
@@ -347,8 +347,8 @@ export function registerUserApiRoutes(app, deps) {
         return apiFail(res, 404, ApiErrorCode.BATCH_BOOKS_NOT_FOUND, t('api.error.booksNotFound'));
       }
 
-      if (bookIds.length > BATCH_DOWNLOAD_MAX) {
-        return apiFail(res, 400, ApiErrorCode.BATCH_MAX_SEND, tp('api.batch.maxSend', { max: BATCH_DOWNLOAD_MAX }));
+      if (bookIds.length > BATCH_ZIP_MAX) {
+        return apiFail(res, 400, ApiErrorCode.BATCH_MAX_SEND, tp('api.batch.maxSend', { max: BATCH_ZIP_MAX }));
       }
 
       const lockKey = req.user.username;

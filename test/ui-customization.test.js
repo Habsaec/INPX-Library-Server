@@ -453,6 +453,23 @@ test('getPublicUiSettingsJson returns serializable settings', () => {
   assert.equal(json.bgBlur, 4);
 });
 
+test('getPublicUiSettingsJson includes resolved chrome tokens', () => {
+  invalidateUiCustomizationCache();
+  setSetting('ui_radius_preset', 'pill');
+  setSetting('ui_shadow_preset', 'subtle');
+  setSetting('ui_bg_overlay', '40');
+  setSetting('ui_bg_size', 'contain');
+  invalidateUiCustomizationCache();
+  const json = getPublicUiSettingsJson();
+  assert.equal(json.radiusPreset, 'pill');
+  assert.equal(json.radius.lg, '22px');
+  assert.equal(json.shadowPreset, 'subtle');
+  assert.equal(typeof json.shadows.dark.sm, 'string');
+  assert.equal(typeof json.shadows.light.sm, 'string');
+  assert.equal(json.bgOverlayStrength, 40);
+  assert.equal(json.bgSize, 'contain');
+});
+
 test('dynamic theme from background applies extracted palette', async () => {
   invalidateUiCustomizationCache();
   resetUiThemeColors();

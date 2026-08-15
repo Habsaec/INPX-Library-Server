@@ -52,7 +52,7 @@ import { startTelegramBot, stopTelegramBot, restartTelegramBot, isTelegramBotRun
 import {
   STATS_CACHE_TTL_MS, HOME_SECTIONS_CACHE_TTL_MS
 } from './constants.js';
-import { db, getUserByUsername, hasAdminUser, initDb, ensureSchemaIndexes, analyzeDatabaseYielding, getSmtpSettings, getUserStats, getSetting, setSetting, getSources, decryptValue, getMeta, setMeta, rebuildBooksFtsFromContent, ensureBooksFtsTriggers, rebuildActiveBooksView, refreshCatalogBookCounts, countSuppressedBooks, getDbBreakdown, getTelegramSettings, invalidateBooksFtsHealthCache, getBooksFtsStatus } from './db.js';
+import { db, getUserByUsername, hasAdminUser, initDb, ensureSchemaIndexes, analyzeDatabaseYielding, getSmtpSettings, getUserStats, getSetting, setSetting, getSources, decryptValue, getMeta, setMeta, rebuildBooksFtsFromContent, ensureBooksFtsTriggers, rebuildActiveBooksView, refreshCatalogBookCounts, countSuppressedBooks, countIndexedDeletedBooks, getDbBreakdown, getTelegramSettings, invalidateBooksFtsHealthCache, getBooksFtsStatus } from './db.js';
 import {
   backfillCatalogSearchFields,
   getConfiguredInpxFile,
@@ -455,6 +455,10 @@ function getOperationsSnapshot() {
   try { suppressedCount = countSuppressedBooks(); } catch (err) {
     console.warn('[ops snapshot] countSuppressedBooks failed:', err.message);
   }
+  let deletedCount = 0;
+  try { deletedCount = countIndexedDeletedBooks(); } catch (err) {
+    console.warn('[ops snapshot] countIndexedDeletedBooks failed:', err.message);
+  }
   let dbBreakdown = null;
   try { dbBreakdown = getDbBreakdown(); } catch (err) {
     console.warn('[ops snapshot] getDbBreakdown failed:', err.message);
@@ -508,6 +512,8 @@ function getOperationsSnapshot() {
     totalAuthors: Number(liveStats?.totalAuthors) || 0,
     totalSeries: Number(liveStats?.totalSeries) || 0,
     suppressedCount,
+    deletedCount,
+    showDeletedBooks: getSetting('show_deleted_books') === '1',
     /* Разбивка содержимого БД по категориям (стэковый бар на дашборде). */
     dbBreakdown,
     /* Сводка по последней (или текущей) индексации — переживает завершение
@@ -1194,7 +1200,7 @@ async function bootstrap() {
   setTimeout(async () => {
     try {
       // Full catalog recount is multi-second on huge libraries — only when filters changed.
-      const fingerprint = `${getSetting('excluded_languages') || ''}\n${getSetting('excluded_genres') || ''}`;
+      const fingerprint = `${getSetting('excluded_languages') || ''}\n${getSetting('excluded_genres') || ''}\n${getSetting('show_deleted_books') === '1' ? '1' : '0'}`;
       if (getMeta('active_books_filter_fp') === fingerprint) {
         return;
       }

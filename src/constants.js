@@ -35,12 +35,17 @@ export const ONLINE_THRESHOLD_MS = 5 * 60 * 1000;      // 5 min
 
 // --- Browse rate limiter (token-bucket) ---
 export const BROWSE_WINDOW_MS = 60 * 1000;              // 1 min window
-export const BROWSE_MAX_HITS_DEFAULT = 120;              // tokens per window (overridable via BROWSE_RATE_LIMIT env)
+export const BROWSE_MAX_HITS_DEFAULT = 180;              // anon tokens / window (overridable via BROWSE_RATE_LIMIT)
+/** Authenticated API clients (Android device token / Basic) — covers exempt; search+sync still bursty. */
+export const BROWSE_MAX_HITS_AUTH_DEFAULT = 360;         // overridable via BROWSE_RATE_LIMIT_AUTH
 export const BROWSE_MAX_TRACKED = 10_000;                // max tracked IPs
 export const BROWSE_PRUNE_INTERVAL_MS = 2 * 60 * 1000;  // prune stale records every 2 min
 
 // --- Batch operations (скачивание архива, email, выбор на клиенте) ---
+/** Полки, закладки, «прочитано» — короткий лимит (UX). */
 export const BATCH_DOWNLOAD_MAX = 20;
+/** ZIP и отправка на email. Страховка для NAS/Pi, не «все книги на экране». */
+export const BATCH_ZIP_MAX = 2000;
 
 /** Единый лимит распаковки одной записи из zip/7z (archives.js, seven-zip.js). */
 export const ARCHIVE_MAX_ENTRY_BYTES = 100 * 1024 * 1024;

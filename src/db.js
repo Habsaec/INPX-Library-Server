@@ -2536,7 +2536,11 @@ export function resetDbPreparedStatements() {
   _stmtUpsertReadHistory = null;
   _stmtGetReaderBookmarks = null;
   _stmtAllReaderBm = null;
+  _stmtAllReaderBmPage = null;
+  _stmtAllReaderBmCount = null;
   _stmtAllReaderAnnotations = null;
+  _stmtAllReaderAnnPage = null;
+  _stmtAllReaderAnnCount = null;
   _stmtAddReaderBm = null;
   _stmtDelReaderBm = null;
   _stmtGetEreaderEmail = null;
@@ -2547,11 +2551,13 @@ export function resetDbPreparedStatements() {
   _stmtUserStats = null;
   _stmtGetUserShelves = null;
   _stmtGetShelfBooks = null;
+  _stmtCountSuppressed = null;
+  _stmtCountIndexedDeleted = null;
 }
 
 /**
- * Пересоздание VIEW active_books с учётом исключённых языков и жанров.
- * Вызывается при изменении настроек excluded_languages / excluded_genres.
+ * Пересоздание VIEW active_books с учётом исключённых языков/жанров и
+ * настройки show_deleted_books (INPX DEL=1). Вызывается при изменении фильтров.
  */
 export async function rebuildActiveBooksView() {
   const excluded = getSetting('excluded_languages');
@@ -2563,6 +2569,8 @@ export async function rebuildActiveBooksView() {
   const genres = excludedGenres
     ? excludedGenres.split(',').map(s => s.trim()).filter(Boolean)
     : [];
+
+  const showDeleted = getSetting('show_deleted_books') === '1';
 
   // Populate excluded_filters table with current settings (safe parameterized inserts)
   db.exec('DELETE FROM excluded_filters');
@@ -2580,13 +2588,18 @@ export async function rebuildActiveBooksView() {
   const genreFilter = genres.length > 0
     ? ` AND (NOT EXISTS (SELECT 1 FROM book_genres bg WHERE bg.book_id = b.id) OR EXISTS (SELECT 1 FROM book_genres bg JOIN genres_catalog gc ON gc.id = bg.genre_id WHERE bg.book_id = b.id AND gc.name NOT IN (SELECT value FROM excluded_filters WHERE type = 'genre')))`
     : '';
+  /* По умолчанию скрываем deleted=1. При show_deleted_books=1 показываем INPX-удалённые,
+     но не soft-delete дубликатов (они в suppressed_books). */
+  const deletedFilter = showDeleted
+    ? ` AND (b.deleted = 0 OR NOT EXISTS (SELECT 1 FROM suppressed_books sp WHERE sp.book_id = b.id))`
+    : ` AND b.deleted = 0`;
 
   db.exec('DROP VIEW IF EXISTS active_books');
-  db.exec(`CREATE VIEW active_books AS SELECT b.* FROM books b LEFT JOIN sources s ON s.id = b.source_id WHERE b.deleted = 0 AND (b.source_id IS NULL OR s.enabled = 1)${langFilter}${genreFilter}`);
+  db.exec(`CREATE VIEW active_books AS SELECT b.* FROM books b LEFT JOIN sources s ON s.id = b.source_id WHERE (b.source_id IS NULL OR s.enabled = 1)${deletedFilter}${langFilter}${genreFilter}`);
   resetDbPreparedStatements();
   for (const cb of _viewResetCallbacks) cb();
   await refreshCatalogBookCounts();
-  setMeta('active_books_filter_fp', `${excluded || ''}\n${excludedGenres || ''}`);
+  setMeta('active_books_filter_fp', `${excluded || ''}\n${excludedGenres || ''}\n${showDeleted ? '1' : '0'}`);
 }
 
 /**
@@ -2927,17 +2940,81 @@ export function getReaderBookSyncMeta(username, bookId) {
   const u = String(username || '').trim();
   const id = String(bookId ?? '');
   const row = db.prepare('SELECT bookmarks_rev AS bookmarksRev, annotations_rev AS annotationsRev FROM reader_book_revisions WHERE username = ? AND book_id = ?').get(u, id);
-  const pos = db.prepare('SELECT updated_at AS updatedAt, progress FROM reading_positions WHERE username = ? AND book_id = ?').get(u, id);
+  const pos = db.prepare('SELECT updated_at AS updatedAt, progress, revision FROM reading_positions WHERE username = ? AND book_id = ?').get(u, id);
   const bmCount = db.prepare('SELECT COUNT(*) AS cnt FROM reader_bookmarks WHERE username = ? AND book_id = ?').get(u, id)?.cnt || 0;
   const annCount = db.prepare('SELECT COUNT(*) AS cnt FROM reader_annotations WHERE username = ? AND book_id = ?').get(u, id)?.cnt || 0;
+  const revision = pos?.revision != null ? Math.max(0, Number(pos.revision) || 0) : 0;
   return {
     bookmarksRev: row?.bookmarksRev || READER_SYNC_EPOCH,
     annotationsRev: row?.annotationsRev || READER_SYNC_EPOCH,
     positionUpdatedAt: pos?.updatedAt || null,
     positionProgress: Number(pos?.progress) || 0,
+    positionRevision: revision,
     bookmarkCount: bmCount,
     annotationCount: annCount,
   };
+}
+
+const READER_SYNC_INDEX_MAX_IDS = 200;
+
+/**
+ * Bulk dirty-check for silent background sync.
+ * @param {string} username
+ * @param {string[]} bookIds
+ */
+export function getReaderSyncIndex(username, bookIds) {
+  const u = String(username || '').trim();
+  const ids = [...new Set(
+    (Array.isArray(bookIds) ? bookIds : [])
+      .map((id) => String(id ?? '').trim())
+      .filter(Boolean),
+  )].slice(0, READER_SYNC_INDEX_MAX_IDS);
+
+  const activity = getUserReaderActivitySyncMeta(u);
+  if (ids.length === 0) {
+    return { activity, books: [] };
+  }
+
+  const placeholders = ids.map(() => '?').join(',');
+  const revRows = db.prepare(
+    `SELECT book_id AS bookId, bookmarks_rev AS bookmarksRev, annotations_rev AS annotationsRev
+     FROM reader_book_revisions WHERE username = ? AND book_id IN (${placeholders})`,
+  ).all(u, ...ids);
+  const posRows = db.prepare(
+    `SELECT book_id AS bookId, updated_at AS updatedAt, progress, revision
+     FROM reading_positions WHERE username = ? AND book_id IN (${placeholders})`,
+  ).all(u, ...ids);
+  const bmRows = db.prepare(
+    `SELECT book_id AS bookId, COUNT(*) AS cnt FROM reader_bookmarks
+     WHERE username = ? AND book_id IN (${placeholders}) GROUP BY book_id`,
+  ).all(u, ...ids);
+  const annRows = db.prepare(
+    `SELECT book_id AS bookId, COUNT(*) AS cnt FROM reader_annotations
+     WHERE username = ? AND book_id IN (${placeholders}) GROUP BY book_id`,
+  ).all(u, ...ids);
+
+  const revById = new Map(revRows.map((r) => [String(r.bookId), r]));
+  const posById = new Map(posRows.map((r) => [String(r.bookId), r]));
+  const bmById = new Map(bmRows.map((r) => [String(r.bookId), Number(r.cnt) || 0]));
+  const annById = new Map(annRows.map((r) => [String(r.bookId), Number(r.cnt) || 0]));
+
+  const books = ids.map((bookId) => {
+    const rev = revById.get(bookId);
+    const pos = posById.get(bookId);
+    const revision = pos?.revision != null ? Math.max(0, Number(pos.revision) || 0) : 0;
+    return {
+      bookId,
+      bookmarksRev: rev?.bookmarksRev || READER_SYNC_EPOCH,
+      annotationsRev: rev?.annotationsRev || READER_SYNC_EPOCH,
+      positionUpdatedAt: pos?.updatedAt || null,
+      positionProgress: Number(pos?.progress) || 0,
+      positionRevision: revision,
+      bookmarkCount: bmById.get(bookId) || 0,
+      annotationCount: annById.get(bookId) || 0,
+    };
+  });
+
+  return { activity, books };
 }
 
 export function getUserReaderActivitySyncMeta(username) {
@@ -3175,6 +3252,32 @@ export function getAllReaderBookmarks(username, limit = 10) {
   return _stmtAllReaderBm.all(username, limit);
 }
 
+let _stmtAllReaderBmPage = null;
+let _stmtAllReaderBmCount = null;
+export function getAllReaderBookmarksPage(username, { page = 1, pageSize = 100 } = {}) {
+  const safePageNum = Math.max(1, Math.floor(Number(page) || 1));
+  const size = Math.min(500, Math.max(1, Math.floor(Number(pageSize) || 100)));
+  const offset = (safePageNum - 1) * size;
+  _stmtAllReaderBmPage ??= db.prepare(`
+    SELECT rb.id, rb.book_id AS bookId, rb.position, rb.title AS label, rb.created_at AS createdAt,
+           b.title AS bookTitle, b.authors, b.ext
+    FROM reader_bookmarks rb
+    JOIN active_books b ON b.id = rb.book_id
+    WHERE rb.username = ?
+    ORDER BY rb.created_at DESC
+    LIMIT ? OFFSET ?
+  `);
+  _stmtAllReaderBmCount ??= db.prepare(`
+    SELECT COUNT(*) AS n
+    FROM reader_bookmarks rb
+    JOIN active_books b ON b.id = rb.book_id
+    WHERE rb.username = ?
+  `);
+  const items = _stmtAllReaderBmPage.all(username, size, offset);
+  const total = _stmtAllReaderBmCount.get(username)?.n || 0;
+  return { items, total, page: safePageNum, pageSize: size };
+}
+
 let _stmtAddReaderBm = null;
 export function addReaderBookmark(username, bookId, position, title) {
   _stmtAddReaderBm ??= db.prepare('INSERT INTO reader_bookmarks (username, book_id, position, title) VALUES (?, ?, ?, ?)');
@@ -3223,6 +3326,32 @@ export function getAllReaderAnnotations(username, limit = 10) {
     LIMIT ?
   `);
   return _stmtAllReaderAnnotations.all(username, limit);
+}
+
+let _stmtAllReaderAnnPage = null;
+let _stmtAllReaderAnnCount = null;
+export function getAllReaderAnnotationsPage(username, { page = 1, pageSize = 100 } = {}) {
+  const safePageNum = Math.max(1, Math.floor(Number(page) || 1));
+  const size = Math.min(500, Math.max(1, Math.floor(Number(pageSize) || 100)));
+  const offset = (safePageNum - 1) * size;
+  _stmtAllReaderAnnPage ??= db.prepare(`
+    SELECT ra.id, ra.book_id AS bookId, ra.cfi, ra.text, ra.note, ra.color, ra.created_at AS createdAt,
+           b.title AS bookTitle, b.authors, b.ext
+    FROM reader_annotations ra
+    JOIN active_books b ON b.id = ra.book_id
+    WHERE ra.username = ?
+    ORDER BY ra.created_at DESC
+    LIMIT ? OFFSET ?
+  `);
+  _stmtAllReaderAnnCount ??= db.prepare(`
+    SELECT COUNT(*) AS n
+    FROM reader_annotations ra
+    JOIN active_books b ON b.id = ra.book_id
+    WHERE ra.username = ?
+  `);
+  const items = _stmtAllReaderAnnPage.all(username, size, offset);
+  const total = _stmtAllReaderAnnCount.get(username)?.n || 0;
+  return { items, total, page: safePageNum, pageSize: size };
 }
 
 let _stmtAddReaderAnnotation = null;
@@ -3424,7 +3553,14 @@ function _ensureUserStatsStmt() {
   if (!_stmtUserStats) {
     _stmtUserStats = db.prepare(`
       SELECT
-        (SELECT COUNT(*) FROM reading_history rh JOIN active_books b ON b.id = rh.book_id WHERE rh.username = ?) AS readingCount,
+        (SELECT COUNT(*) FROM reading_history rh
+          JOIN active_books b ON b.id = rh.book_id
+          WHERE rh.username = ?
+            AND NOT EXISTS (
+              SELECT 1 FROM read_books rb
+              WHERE rb.username = rh.username AND rb.book_id = rh.book_id
+            )
+        ) AS readingCount,
         (SELECT COUNT(*) FROM bookmarks WHERE username = ?) AS bookmarkCount,
         (SELECT COUNT(*) FROM read_books rb2 JOIN active_books ab2 ON ab2.id = rb2.book_id WHERE rb2.username = ?) AS readBooksCount,
         (SELECT COUNT(*) FROM favorite_authors WHERE username = ?) AS favoriteAuthorsCount,
@@ -3873,6 +4009,17 @@ let _stmtCountSuppressed;
 export function countSuppressedBooks() {
   _stmtCountSuppressed ??= db.prepare('SELECT COUNT(*) AS count FROM suppressed_books');
   return _stmtCountSuppressed.get()?.count || 0;
+}
+
+let _stmtCountIndexedDeleted;
+/** Книги с deleted≠0, не из suppressed (типично INPX DEL=1) — для дашборда. */
+export function countIndexedDeletedBooks() {
+  _stmtCountIndexedDeleted ??= db.prepare(`
+    SELECT COUNT(*) AS count FROM books b
+    WHERE b.deleted != 0
+      AND NOT EXISTS (SELECT 1 FROM suppressed_books sp WHERE sp.book_id = b.id)
+  `);
+  return _stmtCountIndexedDeleted.get()?.count || 0;
 }
 
 /* ── Database size breakdown ───────────────────────────────────────

@@ -34,3 +34,9 @@ test('isDownloadFormatEnabled ignores unknown format codes', () => {
   assert.strictEqual(isDownloadFormatEnabled('epub2'), false);
   setDisabledDownloadFormats([]);
 });
+
+test('ZIP batch limit is high enough for a full author or series', async () => {
+  const { BATCH_DOWNLOAD_MAX, BATCH_ZIP_MAX } = await import('../src/constants.js');
+  assert.ok(BATCH_ZIP_MAX >= 2000);
+  assert.ok(BATCH_ZIP_MAX > BATCH_DOWNLOAD_MAX);
+});

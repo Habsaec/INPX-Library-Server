@@ -40,7 +40,8 @@
   --radius: 10px;
   --radius-lg: 14px;
   --radius-xl: 20px;
-  --radius-button: 999px;
+  /* Match theme-engine RADIUS_PRESETS.rounded (pill = 999px only when admin chooses it) */
+  --radius-button: 10px;
   --radius-card: 6px;
   --select-list-bg: #221c16;
   --select-list-bg-active: #2e261e;
@@ -2010,6 +2011,24 @@ textarea:focus-visible {
   flex-wrap: wrap;
 }
 
+.page-intro-actions .download-menu-popover {
+  left: auto;
+  right: 0;
+}
+
+.page-intro-actions .download-menu-popover--batch {
+  min-width: 248px;
+}
+
+.page-intro-actions .download-menu {
+  display: inline-flex;
+  align-items: stretch;
+}
+
+.page-intro-actions .download-menu > .button {
+  min-height: 0;
+}
+
 /* ?? Home page title + subtitle (persists above quote / hero card) ?? */
 .home-page-intro {
   margin-bottom: 16px;
@@ -2195,7 +2214,7 @@ html[data-theme="light"] .premium-hero-card::after {
   content: '';
   position: absolute;
   inset: 0;
-  border-radius: var(--radius);
+  border-radius: 1px 4px 4px 1px;
   background: linear-gradient(125deg, rgba(255, 255, 255, 0.18) 0%, transparent 42%, transparent 78%, rgba(255, 255, 255, 0.06) 100%);
   box-shadow: inset -3px 0 6px rgba(0, 0, 0, 0.12);
   pointer-events: none;
@@ -2211,7 +2230,7 @@ html[data-theme="light"] .premium-hero-card::after {
   width: 100%;
   aspect-ratio: 2 / 3;
   object-fit: cover;
-  border-radius: var(--radius);
+  border-radius: 1px 4px 4px 1px;
   border: 1px solid var(--card-cover-border);
   box-shadow: var(--card-cover-shadow);
   background: var(--card-cover-bg);
@@ -2471,7 +2490,8 @@ html[data-theme="light"] .premium-hero-card .button-primary:hover {
   aspect-ratio: 2 / 3;
   background: var(--card-cover-bg);
   position: relative;
-  border-radius: var(--radius-card, 6px);
+  /* Корешок слева — лёгкое скругление; справа — чуть мягче обреза */
+  border-radius: 1px 4px 4px 1px;
   display: block;
   isolation: isolate;
   container-type: inline-size;
@@ -3265,6 +3285,40 @@ html[data-theme="light"] .cover-fallback-overlay {
 }
 
 
+/* Deleted (INPX DEL) badge on covers / titles */
+.deleted-badge {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 6;
+  padding: 3px 8px;
+  border-radius: 4px;
+  background: rgba(120, 40, 40, 0.92);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  line-height: 1.2;
+  pointer-events: none;
+  text-transform: uppercase;
+}
+
+.deleted-badge--inline {
+  position: static;
+  display: inline-block;
+  vertical-align: middle;
+  margin-left: 8px;
+  pointer-events: auto;
+  text-transform: none;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.book-deleted-note {
+  margin: 0 0 8px;
+  font-size: 13px;
+}
+
 /* ?? Read badge (large checkmark stamp on covers) ?? */
 .read-badge {
   position: absolute;
@@ -3552,7 +3606,8 @@ body:has(.bottom-nav) .batch-fab {
   white-space: nowrap;
 }
 
-.batch-fab-clear {
+.batch-fab-clear,
+.batch-fab-select-all {
   flex: 0 0 auto;
 }
 
@@ -3871,7 +3926,6 @@ body:has(.bottom-nav) .batch-fab {
   aspect-ratio: auto;
   height: auto;
   min-height: 280px;
-  border-radius: 2px var(--radius-card, 6px) var(--radius-card, 6px) 2px;
 }
 
 /* ?? Table lists (authors, series, genres, bookmarks) ?? */
@@ -5548,7 +5602,6 @@ body:has(.bottom-nav) .batch-fab {
 .book-detail-cover .cover {
   width: 100%;
   aspect-ratio: 2 / 3;
-  border-radius: 2px var(--radius-card, 6px) var(--radius-card, 6px) 2px;
   background: var(--card-cover-bg);
   box-shadow: var(--card-cover-shadow);
 }
@@ -6069,13 +6122,25 @@ body:has(.bottom-nav) .batch-fab {
   gap: 6px;
 }
 
+/* Equal compact chips — must beat .button / .download-menu-trigger(-compact) */
+.author-flibusta-actions .button,
+.author-flibusta-actions button,
+.author-flibusta-actions .download-menu-trigger,
 .author-flibusta-dl .button,
 .author-flibusta-dl .download-menu-trigger,
 .author-flibusta-read,
 .author-flibusta-email {
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 28px;
+  height: 28px;
+  padding: 0 10px;
   font-size: 0.8rem;
-  padding: 2px 8px;
-  min-height: 0;
+  font-weight: 600;
+  line-height: 1;
+  border-radius: var(--radius-button, var(--radius));
 }
 
 .author-facet-standalone-books {
@@ -7451,7 +7516,7 @@ html[data-theme="light"] .cover-fallback-overlay {
 
   /* ?? Card covers: compact ?? */
   .cover {
-    border-radius: 2px 4px 4px 2px;
+    border-radius: 1px 3px 3px 1px;
   }
 
   /* ?? Card metadata: compact ?? */
@@ -7768,6 +7833,7 @@ html[data-theme="light"] .cover-fallback-overlay {
 
   /* Equal-width action row (2 or 3 buttons) — avoid orphan half-width third button */
   .batch-fab-clear,
+  .batch-fab-select-all,
   .batch-fab .download-menu,
   .batch-fab .batch-email-menu {
     flex: 1 1 0;
@@ -7777,7 +7843,8 @@ html[data-theme="light"] .cover-fallback-overlay {
   .batch-fab .batch-fab-btn,
   .batch-fab .download-menu-trigger,
   .batch-fab-download,
-  .batch-fab-clear {
+  .batch-fab-clear,
+  .batch-fab-select-all {
     width: 100%;
     justify-content: center;
     min-height: 40px;
@@ -7804,6 +7871,20 @@ html[data-theme="light"] .cover-fallback-overlay {
   button {
     min-height: 40px;
     padding: 8px 14px;
+  }
+
+  /* List row actions stay equal compact chips (do not inherit 40px/.button padding) */
+  .author-flibusta-actions .button,
+  .author-flibusta-actions button,
+  .author-flibusta-actions .download-menu-trigger,
+  .author-flibusta-dl .button,
+  .author-flibusta-dl .download-menu-trigger,
+  .author-flibusta-read,
+  .author-flibusta-email {
+    min-height: 32px;
+    height: 32px;
+    padding: 0 10px;
+    font-size: 0.8rem;
   }
 
   .page-link {
@@ -7928,7 +8009,7 @@ html[data-theme="light"] .cover-fallback-overlay {
   }
 
   .cover {
-    border-radius: 2px 3px 3px 2px;
+    border-radius: 1px 2px 2px 1px;
   }
 
   .download-menu-trigger-compact {
@@ -10196,7 +10277,8 @@ html[data-eink="1"] .topbar-lang-link.is-active {
     line-clamp: 9;
     padding: 28px 8px 8px;
     border: 0;
-    border-radius: 0 0 var(--radius-card, 4px) var(--radius-card, 4px);
+    /* Совпадает с нижними углами .cover (1px 4px 4px 1px) */
+    border-radius: 0 0 4px 1px;
     background: linear-gradient(to top,
         color-mix(in srgb, #0c0a08 92%, transparent) 0%,
         color-mix(in srgb, #0c0a08 88%, transparent) 45%,

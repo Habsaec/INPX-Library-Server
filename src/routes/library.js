@@ -432,8 +432,11 @@ export function registerLibraryRoutes(app, deps) {
     const pageSize = 24;
     const type = String(req.query.type || '').trim();
     const requestedSort = String(req.query.sort || '');
-    const defaultSort = view === 'recent' ? 'recent' : 'title';
-    const sort = ['recent', 'title', 'author', 'series', 'rating'].includes(requestedSort) ? requestedSort : defaultSort;
+    const defaultSort = view === 'recent' ? 'recent' : view === 'recommended' ? 'relevance' : 'title';
+    const allowedSorts = view === 'recommended'
+      ? ['relevance', 'title', 'rating', 'author', 'recent']
+      : ['recent', 'title', 'author', 'series', 'rating'];
+    const sort = allowedSorts.includes(requestedSort) ? requestedSort : defaultSort;
     const order = String(req.query.order || '');
     const user = req.user || null;
     const listView = isListBrowseView({ username: user?.username || '', queryView: req.query.view, scope: 'catalog' });
@@ -450,12 +453,33 @@ export function registerLibraryRoutes(app, deps) {
       read: t('library.sub.read'),
       recommended: t('library.sub.recommended')
     };
+    const genres = parseGenreList(req.query.genre);
+    const genre = genres.join(',');
+    const lang = String(req.query.lang || '').trim();
+    const format = String(req.query.format || '').trim();
+    const year = Number(req.query.year) || 0;
+    const minRate = Math.min(5, Math.max(0, Math.floor(Number(req.query.minRate) || 0)));
+    const hasSeries = parseHasSeries(req.query.hasSeries);
+    const filterKey = `${genre}:${lang}:${format}:${year}:${minRate}:${hasSeries ?? ''}`;
     const canUseSharedCache = view === 'recent';
+    const libraryOpts = { page, pageSize, sort, order, genre, lang, format, year, minRate, hasSeries };
     const result = canUseSharedCache
-      ? getStaleOrSchedule(`library:${view}:v4:sort:${sort}:${order}:page:${page}:size:${pageSize}`, () => getLibraryView(view, { page, pageSize, sort, order }), PAGE_CACHE_TTL_MS, { total: 0, items: [] })
+      ? getStaleOrSchedule(
+        `library:${view}:v5:sort:${sort}:${order}:f:${filterKey}:page:${page}:size:${pageSize}`,
+        () => getLibraryView(view, libraryOpts),
+        PAGE_CACHE_TTL_MS,
+        { total: 0, items: [] }
+      )
       : view === 'recommended'
-        ? getRecommendedLibraryView({ page, pageSize, username: user?.username || '' })
-        : getStaleOrSchedule(`library:${view}:${user?.username || ''}:sort:${sort}:${order}:p${page}:s${pageSize}`, () => getLibraryView(view, { page, pageSize, username: user?.username || '', type, sort, order }), PAGE_CACHE_TTL_MS, { total: 0, items: [] });
+        ? getRecommendedLibraryView({
+          page, pageSize, username: user?.username || '', genre, format, year, minRate, hasSeries, sort
+        })
+        : getStaleOrSchedule(
+          `library:${view}:${user?.username || ''}:sort:${sort}:${order}:p${page}:s${pageSize}`,
+          () => getLibraryView(view, { ...libraryOpts, username: user?.username || '', type }),
+          PAGE_CACHE_TTL_MS,
+          { total: 0, items: [] }
+        );
     const isReadSeriesList = view === 'read' && result.itemType === 'series';
     const readBookIds = user && !isReadSeriesList ? getReadBookIdSet(user.username) : null;
     const readSeriesNames = user && isReadSeriesList ? getFullyReadSeriesNames(user.username) : null;

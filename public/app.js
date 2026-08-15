@@ -901,6 +901,24 @@ function attachDownloadMenus(scope = document) {
 
     menu.addEventListener('mouseenter', cancelScheduledClose);
     menu.addEventListener('mouseleave', scheduleClose);
+
+    if (menu.hasAttribute('data-scope-download') && menu.dataset.scopePerBookBound !== '1') {
+      menu.dataset.scopePerBookBound = '1';
+      const box = menu.querySelector('[data-scope-per-book-zip]');
+      const sync = () => {
+        const on = Boolean(box?.checked);
+        for (const link of menu.querySelectorAll('[data-scope-download-format]')) {
+          const href = link.getAttribute('href');
+          if (!href) continue;
+          const url = new URL(href, window.location.origin);
+          if (on) url.searchParams.set('perBookZip', '1');
+          else url.searchParams.delete('perBookZip');
+          link.setAttribute('href', `${url.pathname}${url.search}`);
+        }
+      };
+      box?.addEventListener('change', sync);
+      box?.addEventListener('click', (e) => e.stopPropagation());
+    }
   }
 
   if (!attachDownloadMenus._globalBound) {
@@ -2343,6 +2361,7 @@ async function pollOperationsDashboard() {
         statsAuthors: uiCountLabel('author', Number(operations.totalAuthors) || 0),
         statsSeries: uiCountLabel('series', Number(operations.totalSeries) || 0),
         statsSuppressed: uiTp('admin.statsSuppressed', { n: (Number(operations.suppressedCount) || 0).toLocaleString(loc) }),
+        statsDeleted: uiTp('admin.statsDeleted', { n: (Number(operations.deletedCount) || 0).toLocaleString(loc) }),
         statsLastIndex: lastIndexText,
         ftsStatus: ftsStatusText,
         appVersion: 'v' + (operations.appVersion || '?'),
@@ -3106,6 +3125,7 @@ function attachFormSubmitSpinners() {
   const forms = [...document.querySelectorAll('form[action][method="post"], form[action][method="POST"]')];
   for (const form of forms) {
     if (form.hasAttribute('data-confirm') || form.hasAttribute('data-confirm-danger')) continue;
+    if (form.hasAttribute('data-ajax')) continue;
     if (form.id === 'add-source-form') continue; // handled by attachAddSourceForm
     form.addEventListener('submit', (e) => {
       const btn = e.submitter || form.querySelector('button[type="submit"]');
@@ -3462,8 +3482,10 @@ function attachLoadMore() {
   });
 }
 
-/** Должен совпадать с BATCH_DOWNLOAD_MAX в src/constants.js */
-const BATCH_DOWNLOAD_MAX = 20;
+function getBatchZipMax() {
+  const n = Number(document.body?.dataset?.batchZipMax);
+  return Number.isFinite(n) && n > 0 ? n : 2000;
+}
 
 function collectCheckedBatchBookIds(scope) {
   if (!scope) return [];
@@ -3514,8 +3536,7 @@ function updateBatchCountForScope(scopeEl) {
       countEl.hidden = true;
     } else {
       countEl.hidden = false;
-      countEl.textContent =
-        n >= BATCH_DOWNLOAD_MAX ? uiTp('app.batchSelectedMax', { n }) : uiTp('app.batchSelected', { n });
+      countEl.textContent = uiTp('app.batchSelected', { n });
     }
   }
   if (fab) {
@@ -3568,25 +3589,46 @@ function syncAuthorFlibustaSeriesCheckboxes(scopeEl) {
   }
 }
 
-function parseFilenameFromContentDisposition(header) {
-  if (!header) return 'books.zip';
-  const star = /filename\*=UTF-8''([^;]+)/i.exec(header);
-  if (star) {
-    try {
-      return decodeURIComponent(star[1].trim().replace(/^"+|"+$/g, ''));
-    } catch {
-      return 'books.zip';
-    }
+function startNativeBatchZipDownload(body) {
+  const params = new URLSearchParams();
+  if (body.format) params.set('format', String(body.format));
+  if (Array.isArray(body.ids) && body.ids.length) params.set('ids', body.ids.join(','));
+  if (body.shelf != null) params.set('shelf', String(body.shelf));
+  if (body.facet) params.set('facet', String(body.facet));
+  if (body.value != null) params.set('value', String(body.value));
+  if (body.perBookZip) params.set('perBookZip', '1');
+  const qs = params.toString();
+  if (qs.length <= 1800) {
+    const a = document.createElement('a');
+    a.href = `/download/batch?${qs}`;
+    a.rel = 'noopener';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    return;
   }
-  const quoted = /filename="([^"]+)"/i.exec(header);
-  if (quoted) {
-    try {
-      return decodeURIComponent(quoted[1].trim());
-    } catch {
-      return quoted[1].trim();
-    }
-  }
-  return 'books.zip';
+  const form = document.createElement('form');
+  form.method = 'POST';
+  form.action = '/download/batch';
+  form.style.display = 'none';
+  const add = (name, value) => {
+    const input = document.createElement('input');
+    input.type = 'hidden';
+    input.name = name;
+    input.value = String(value);
+    form.appendChild(input);
+  };
+  if (body.format) add('format', body.format);
+  if (Array.isArray(body.ids) && body.ids.length) add('ids', body.ids.join(','));
+  if (body.shelf != null) add('shelf', body.shelf);
+  if (body.facet) add('facet', body.facet);
+  if (body.value != null) add('value', body.value);
+  if (body.perBookZip) add('perBookZip', '1');
+  const csrf = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content');
+  if (csrf) add('_csrf', csrf);
+  document.body.appendChild(form);
+  form.submit();
+  form.remove();
 }
 
 function attachBatchDownloadSelection() {
@@ -3606,6 +3648,23 @@ function attachBatchDownloadSelection() {
       ));
     if (scope) ensureBatchFabOnBody(scope);
 
+    toolbar.querySelector('[data-batch-select-all]')?.addEventListener('click', () => {
+      if (!scope) return;
+      const visible = getVisibleBatchCheckboxesInScope(scope);
+      const zipMax = getBatchZipMax();
+      let k = 0;
+      for (const cb of visible) {
+        if (k >= zipMax) break;
+        cb.checked = true;
+        k++;
+      }
+      if (visible.length > zipMax) {
+        showToast(uiTp('app.batchMarkMax', { n: zipMax }), 'info');
+      }
+      syncAuthorFlibustaSeriesCheckboxes(scope);
+      updateBatchCountForScope(scope);
+    });
+
     toolbar.querySelector('[data-batch-toggle-select]')?.addEventListener('click', () => {
       if (!scope) return;
       const checkedNow = [...scope.querySelectorAll('input.batch-select-cb')].filter((c) => c.checked).length;
@@ -3614,14 +3673,15 @@ function attachBatchDownloadSelection() {
       } else {
         for (const cb of scope.querySelectorAll('input.batch-select-cb')) cb.checked = false;
         const visible = getVisibleBatchCheckboxesInScope(scope);
+        const zipMax = getBatchZipMax();
         let k = 0;
         for (const cb of visible) {
-          if (k >= BATCH_DOWNLOAD_MAX) break;
+          if (k >= zipMax) break;
           cb.checked = true;
           k++;
         }
-        if (visible.length > BATCH_DOWNLOAD_MAX) {
-          showToast(uiTp('app.batchMarkMax', { n: BATCH_DOWNLOAD_MAX }), 'info');
+        if (visible.length > zipMax) {
+          showToast(uiTp('app.batchMarkMax', { n: zipMax }), 'info');
         }
       }
       syncAuthorFlibustaSeriesCheckboxes(scope);
@@ -3635,7 +3695,7 @@ function attachBatchDownloadSelection() {
       updateBatchCountForScope(scope);
     });
 
-    toolbar.addEventListener('click', async (e) => {
+    toolbar.addEventListener('click', (e) => {
       const btn = e.target.closest('[data-batch-download-selected-format]');
       if (!btn) return;
       e.preventDefault();
@@ -3646,8 +3706,9 @@ function attachBatchDownloadSelection() {
         showToast(uiT('app.batchSelectAtLeastOne'), 'error');
         return;
       }
-      if (ids.length > BATCH_DOWNLOAD_MAX) {
-        showToast(uiTp('app.batchDownloadMax', { n: BATCH_DOWNLOAD_MAX }), 'error');
+      const zipMax = getBatchZipMax();
+      if (ids.length > zipMax) {
+        showToast(uiTp('app.batchDownloadMax', { n: zipMax }), 'error');
         return;
       }
       const body = { format, ids };
@@ -3660,41 +3721,8 @@ function attachBatchDownloadSelection() {
       if (toolbar.querySelector('[data-batch-per-book-zip]')?.checked) {
         body.perBookZip = true;
       }
-      const allFmtBtns = [...toolbar.querySelectorAll('[data-batch-download-selected-format]')];
-      const preparingToast = showToast(uiT('app.batchDownloadPreparing'), 'info', { duration: 120000, spinner: true });
-      try {
-        allFmtBtns.forEach((b) => { b.disabled = true; });
-        const params = new URLSearchParams();
-        if (body.format) params.set('format', String(body.format));
-        if (Array.isArray(body.ids) && body.ids.length) params.set('ids', body.ids.join(','));
-        if (body.shelf != null) params.set('shelf', String(body.shelf));
-        if (body.facet) params.set('facet', String(body.facet));
-        if (body.value != null) params.set('value', String(body.value));
-        if (body.perBookZip) params.set('perBookZip', '1');
-        const url = `/download/batch?${params.toString()}`;
-        const resp = await fetch(url, { credentials: 'same-origin' });
-        if (!resp.ok) {
-          const errText = await resp.text().catch(() => '');
-          throw new Error(errText || `HTTP ${resp.status}`);
-        }
-        const blob = await resp.blob();
-        const filename = parseFilenameFromContentDisposition(resp.headers.get('Content-Disposition'));
-        const blobUrl = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = blobUrl;
-        a.download = filename;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        URL.revokeObjectURL(blobUrl);
-        preparingToast.dismiss();
-        showToast(uiT('app.batchDownloadReady'), 'success');
-      } catch (err) {
-        preparingToast.dismiss();
-        showToast(err.message || uiT('app.errorShort'), 'error');
-      } finally {
-        allFmtBtns.forEach((b) => { b.disabled = false; });
-      }
+      startNativeBatchZipDownload(body);
+      showToast(uiT('app.batchDownloadStarted'), 'info');
       const details = btn.closest('details');
       if (details) details.removeAttribute('open');
     });
@@ -3712,7 +3740,7 @@ function attachBatchDownloadSelection() {
       const bookCbs = [...group.querySelectorAll('input.batch-select-cb')];
       const selectedInGroup = bookCbs.filter((c) => c.checked).length;
       /*
-       * Partial select (e.g. series > 20 books) leaves the series box indeterminate.
+       * Partial select (e.g. series over the ZIP cap) leaves the series box indeterminate.
        * A click then becomes checked=true, which used to try selecting again and
        * made it impossible to clear. Any selection in the group → clear; none → select.
        */
@@ -3723,14 +3751,15 @@ function attachBatchDownloadSelection() {
       } else {
         let checkedInScope = [...scope.querySelectorAll('input.batch-select-cb')]
           .filter((c) => c.checked).length;
+        const zipMax = getBatchZipMax();
         let marked = 0;
         for (const cb of bookCbs) {
           if (cb.checked) continue;
-          if (checkedInScope >= BATCH_DOWNLOAD_MAX) {
+          if (checkedInScope >= zipMax) {
             if (marked === 0) {
-              showToast(uiTp('app.batchDownloadMaxShort', { n: BATCH_DOWNLOAD_MAX }), 'error');
+              showToast(uiTp('app.batchDownloadMaxShort', { n: zipMax }), 'error');
             } else {
-              showToast(uiTp('app.batchMarkMax', { n: BATCH_DOWNLOAD_MAX }), 'info');
+              showToast(uiTp('app.batchMarkMax', { n: zipMax }), 'info');
             }
             break;
           }
@@ -3747,9 +3776,10 @@ function attachBatchDownloadSelection() {
     if (!e.target.classList.contains('batch-select-cb')) return;
     if (e.target.checked && scope) {
       const checked = [...scope.querySelectorAll('input.batch-select-cb')].filter((c) => c.checked).length;
-      if (checked > BATCH_DOWNLOAD_MAX) {
+      const zipMax = getBatchZipMax();
+      if (checked > zipMax) {
         e.target.checked = false;
-        showToast(uiTp('app.batchDownloadMaxShort', { n: BATCH_DOWNLOAD_MAX }), 'error');
+        showToast(uiTp('app.batchDownloadMaxShort', { n: zipMax }), 'error');
       }
     }
     syncAuthorFlibustaSeriesCheckboxes(scope);
@@ -4566,8 +4596,9 @@ function attachSendBatchToEreader() {
       showToast(uiT('app.batchSelectAtLeastOne'), 'error');
       return;
     }
-    if (ids.length > BATCH_DOWNLOAD_MAX) {
-      showToast(uiTp('app.batchEmailMax', { n: BATCH_DOWNLOAD_MAX }), 'error');
+    const zipMax = getBatchZipMax();
+    if (ids.length > zipMax) {
+      showToast(uiTp('app.batchEmailMax', { n: zipMax }), 'error');
       return;
     }
 
@@ -5646,6 +5677,112 @@ function attachProfileRemoveActions() {
   }
 }
 
+function registrationInviteShareUrl(token, serverUrl) {
+  const code = String(token || '').trim();
+  const fromServer = String(serverUrl || '').trim();
+  if (/^https?:\/\//i.test(fromServer)) return fromServer;
+  if (fromServer.includes('/register?invite=')) {
+    try {
+      return new URL(fromServer, window.location.origin).href;
+    } catch {
+      /* fall through */
+    }
+  }
+  if (!code) return '';
+  return `${window.location.origin}/register?invite=${encodeURIComponent(code)}`;
+}
+
+function attachRegistrationInviteForm() {
+  const form = document.getElementById('registration-invite-form');
+  if (!form) return;
+  const tokenInput = document.getElementById('registration-invite-token');
+  const linkWrap = document.getElementById('registration-invite-link-wrap');
+  const linkInput = document.getElementById('registration-invite-url');
+  const copyBtn = form.querySelector('[data-copy-invite]');
+  const syncInviteLink = (token, serverUrl) => {
+    const url = registrationInviteShareUrl(token, serverUrl);
+    if (linkInput) linkInput.value = url;
+    if (copyBtn) {
+      if (url) copyBtn.setAttribute('data-copy-text', url);
+      else copyBtn.removeAttribute('data-copy-text');
+    }
+    if (linkWrap) linkWrap.style.display = url ? '' : 'none';
+    return url;
+  };
+  copyBtn?.addEventListener('click', async () => {
+    const text = registrationInviteShareUrl(tokenInput?.value, linkInput?.value || copyBtn.getAttribute('data-copy-text'));
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      showToast(copyBtn.getAttribute('data-copy-done') || uiT('admin.users.inviteCopied'), 'success');
+    } catch {
+      if (linkInput) {
+        linkInput.focus();
+        linkInput.select();
+      }
+    }
+  });
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const btn = event.submitter || form.querySelector('button[type="submit"]');
+    const params = new URLSearchParams(new FormData(form));
+    if (btn?.name) params.set(btn.name, btn.value);
+    const csrfMeta = document.querySelector('meta[name="csrf-token"]');
+    const headers = { Accept: 'application/json' };
+    if (csrfMeta) headers['x-csrf-token'] = csrfMeta.content;
+    const prevHtml = btn ? btn.innerHTML : '';
+    if (btn) {
+      btn.disabled = true;
+      btn.innerHTML = '<span class="btn-spinner"></span>' + escapeHtml(uiT('app.running') || '\u0412\u044b\u043f\u043e\u043b\u043d\u044f\u0435\u0442\u0441\u044f\u2026');
+    }
+    const endpoint = form.getAttribute('action') || '/admin/settings/registration-invite';
+    try {
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers,
+        body: params
+      });
+      const data = await response.json().catch(() => null);
+      if (!data) {
+        showToast(uiT('app.networkError'), 'error');
+        return;
+      }
+      if (!data.ok) {
+        showToast(data.flash || uiT('app.errorPrefix'), 'error');
+        return;
+      }
+      if (tokenInput && typeof data.token === 'string') tokenInput.value = data.token;
+      syncInviteLink(data.token, data.url);
+      if (data.flash) showToast(data.flash, 'success');
+    } catch {
+      showToast(uiT('app.networkError'), 'error');
+    } finally {
+      if (btn) {
+        btn.disabled = false;
+        btn.innerHTML = prevHtml;
+      }
+    }
+  });
+}
+
+function attachCopyButtons() {
+  document.addEventListener('click', async (event) => {
+    const btn = event.target.closest('[data-copy-from], [data-copy-text]');
+    if (!btn || btn.hasAttribute('data-copy-invite')) return;
+    const input = document.querySelector(btn.getAttribute('data-copy-from') || '');
+    const text = String(btn.getAttribute('data-copy-text') || input?.value || '').trim();
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      showToast(btn.getAttribute('data-copy-done') || uiT('admin.users.inviteCopied'), 'success');
+    } catch {
+      input?.focus();
+      input?.select();
+    }
+  });
+}
+
 function attachAdminRecaptchaDisclosure() {
   const details = document.querySelector('.admin-recaptcha-disclosure');
   if (!details) return;
@@ -6361,6 +6498,8 @@ attachUiAppearanceUpload();
 attachProfileRemoveActions();
 attachAccountNavSelect();
 attachAdminRecaptchaDisclosure();
+attachRegistrationInviteForm();
+attachCopyButtons();
 if (document.querySelector('[data-index-status]')) pollIndexStatus();
 if (document.querySelector('[data-admin-index-controls]')) pollAdminIndexControls();
 if (document.querySelector('[data-operations-dashboard]')) pollOperationsDashboard();

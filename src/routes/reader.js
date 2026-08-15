@@ -7,12 +7,14 @@ import { requireApiAuth } from '../middleware/auth.js';
 import { ApiErrorCode, apiFail } from '../api-errors.js';
 import { t } from '../i18n.js';
 import { asyncHandler } from '../utils/async-handler.js';
+import { safePage } from '../utils/safe-int.js';
 import {
   getReadingPosition, migrateReadingPositionToV4, setReadingPositionCas,
   getReaderBookmarks, addReaderBookmark, deleteReaderBookmark,
+  getAllReaderBookmarksPage, getAllReaderAnnotationsPage,
   getReaderAnnotations, addReaderAnnotation, updateReaderAnnotation, deleteReaderAnnotation,
   upsertReadingHistoryEntry, deleteReadingHistoryEntry,
-  getReaderBookSyncMeta, getUserReaderActivitySyncMeta,
+  getReaderBookSyncMeta, getUserReaderActivitySyncMeta, getReaderSyncIndex,
 } from '../db.js';
 import { invalidateUserPageCaches, clearPageDataCache } from '../services/cache.js';
 import {
@@ -63,6 +65,18 @@ export function registerReaderRoutes(app) {
 
   app.get('/api/reader-activity-sync-meta', requireApiAuth, asyncHandler(async (req, res) => {
     res.json(getUserReaderActivitySyncMeta(req.user.username));
+  }));
+
+  /** Bulk dirty-check for silent background sync (activity + per-book revs). */
+  app.get('/api/reader-sync-index', requireApiAuth, asyncHandler(async (req, res) => {
+    const raw = req.query.ids;
+    let ids = [];
+    if (Array.isArray(raw)) {
+      ids = raw.flatMap((v) => String(v || '').split(','));
+    } else if (raw != null) {
+      ids = String(raw).split(',');
+    }
+    res.json(getReaderSyncIndex(req.user.username, ids));
   }));
 
   app.post('/api/books/:id/position', requireApiAuth, asyncHandler(async (req, res) => {
@@ -198,6 +212,16 @@ export function registerReaderRoutes(app) {
 
   /* ── Reader bookmarks ──────────────────────────────────────────── */
 
+  app.get('/api/reader-bookmarks', requireApiAuth, asyncHandler(async (req, res) => {
+    const page = safePage(req.query.page);
+    const pageSizeRaw = Number(req.query.pageSize);
+    const pageSize = Number.isFinite(pageSizeRaw) && pageSizeRaw > 0 && pageSizeRaw <= 500
+      ? Math.floor(pageSizeRaw)
+      : 100;
+    const result = getAllReaderBookmarksPage(req.user.username, { page, pageSize });
+    res.json(result);
+  }));
+
   app.get('/api/books/:id/bookmarks', requireApiAuth, asyncHandler(async (req, res) => {
     res.json(getReaderBookmarks(req.user.username, req.params.id));
   }));
@@ -240,6 +264,16 @@ export function registerReaderRoutes(app) {
   /* ── Reader annotations (выделения и заметки) ──────────────────── */
 
   const ANNOTATION_COLORS = new Set(['yellow', 'green', 'blue', 'pink', 'underline']);
+
+  app.get('/api/reader-annotations', requireApiAuth, asyncHandler(async (req, res) => {
+    const page = safePage(req.query.page);
+    const pageSizeRaw = Number(req.query.pageSize);
+    const pageSize = Number.isFinite(pageSizeRaw) && pageSizeRaw > 0 && pageSizeRaw <= 500
+      ? Math.floor(pageSizeRaw)
+      : 100;
+    const result = getAllReaderAnnotationsPage(req.user.username, { page, pageSize });
+    res.json(result);
+  }));
 
   app.get('/api/books/:id/annotations', requireApiAuth, asyncHandler(async (req, res) => {
     res.json(getReaderAnnotations(req.user.username, req.params.id));

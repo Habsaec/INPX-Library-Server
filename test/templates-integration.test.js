@@ -110,6 +110,19 @@ test('renderRegister with registration disabled', async () => {
   assert.ok(html.includes('<!doctype html>'));
 });
 
+test('renderRegister shows invite field only when required', async () => {
+  const { renderRegister } = await import('../src/templates/auth.js');
+  const open = renderRegister({ registrationEnabled: true });
+  assert.equal(open.includes('name="inviteToken"'), false);
+  const invited = renderRegister({
+    registrationEnabled: true,
+    inviteRequired: true,
+    inviteValue: 'abc-invite'
+  });
+  assert.ok(invited.includes('name="inviteToken"'));
+  assert.ok(invited.includes('value="abc-invite"'));
+});
+
 test('renderForgotPassword returns HTML', async () => {
   const { renderForgotPassword } = await import('../src/templates/auth.js');
   const html = renderForgotPassword();
@@ -191,6 +204,27 @@ test('renderAdminUsers includes password recovery settings', async () => {
   assert.ok(html.includes('https://books.example.com'));
 });
 
+test('renderAdminUsers includes registration invite form', async () => {
+  const { renderAdminUsers } = await import('../src/templates/admin.js');
+  const html = renderAdminUsers({
+    user: { username: 'admin', role: 'admin' },
+    stats: { totalBooks: 0, totalAuthors: 0, totalSeries: 0, totalGenres: 0, totalLanguages: 1 },
+    indexStatus: {},
+    users: [],
+    registrationInviteToken: 'secret-invite',
+    registrationInviteUrl: 'https://books.example.com/register?invite=secret-invite',
+    csrfToken: 'tok'
+  });
+  assert.ok(html.includes('id="registration-invite-form"'));
+  assert.ok(html.includes('data-ajax'));
+  assert.ok(html.includes('action="/admin/settings/registration-invite"'));
+  assert.ok(html.includes('value="secret-invite"'));
+  assert.ok(html.includes('name="inviteAction" value="generate"'));
+  assert.ok(html.includes('https://books.example.com/register?invite=secret-invite'));
+  assert.ok(html.includes('data-copy-invite'));
+  assert.ok(html.includes('data-copy-text="https://books.example.com/register?invite=secret-invite"'));
+});
+
 // ── 6. Library templates ────────────────────────────────────────────
 
 test('renderHome returns home page HTML', async () => {
@@ -259,6 +293,65 @@ test('renderFacetBooks: non-genre facets do not render view tabs', async () => {
     facet: 'series', facetValue: 'Ведьмак'
   });
   assert.ok(!html.includes('facet-view-tabs'), 'series facet should not render tabs');
+});
+
+test('renderScopeDownloadMenu: author and series links omit the 20-book checkbox cap', async () => {
+  const { renderScopeDownloadMenu, batchScopeDownloadPath } = await import('../src/templates/shared.js');
+  const user = { username: 'tester' };
+  const authorHtml = renderScopeDownloadMenu({ facet: 'authors', value: 'Толстой' }, { user });
+  const seriesHtml = renderScopeDownloadMenu({ facet: 'series', value: 'Ведьмак' }, { user });
+  assert.ok(authorHtml.includes('/download/batch?'));
+  assert.ok(authorHtml.includes('facet=authors'));
+  assert.ok(authorHtml.includes('data-scope-per-book-zip'));
+  assert.ok(authorHtml.includes(encodeURIComponent('Толстой')));
+  assert.ok(seriesHtml.includes('facet=series'));
+  assert.ok(seriesHtml.includes(encodeURIComponent('Ведьмак')));
+  assert.strictEqual(
+    batchScopeDownloadPath({ facet: 'series', value: 'Ведьмак', format: 'fb2' }),
+    '/download/batch?facet=series&value=%D0%92%D0%B5%D0%B4%D1%8C%D0%BC%D0%B0%D0%BA&format=fb2'
+  );
+  assert.strictEqual(renderScopeDownloadMenu({ facet: 'authors', value: 'X' }, { user: null }), '');
+});
+
+test('renderAuthorFacetPage: shows download-all for an author with books', async () => {
+  const { renderAuthorFacetPage } = await import('../src/templates/library.js');
+  const html = renderAuthorFacetPage({
+    title: 'Автор: Тест',
+    displayName: 'Тест',
+    series: [{ name: 'Цикл', displayName: 'Цикл', bookCount: 3, books: [] }],
+    standaloneBooks: [],
+    total: 3,
+    user: { username: 'tester' },
+    stats: {},
+    facetPath: '/facet/authors/Тест',
+    indexStatus: {},
+    sort: 'recent',
+    breadcrumbs: [{ label: 'Home', href: '/' }],
+    facetValue: 'Тест'
+  });
+  assert.ok(html.includes('/download/batch?'));
+  assert.ok(html.includes('facet=authors'));
+});
+
+test('renderFacetBooks: series page shows download-all when user can download', async () => {
+  const { renderFacetBooks } = await import('../src/templates/library.js');
+  const html = renderFacetBooks({
+    title: 'Серия: Ведьмак',
+    items: [{ id: '1', title: 'Книга', ext: 'fb2', authors: 'Автор' }],
+    total: 25,
+    page: 1,
+    pageSize: 24,
+    user: { username: 'tester' },
+    stats: {},
+    facetPath: '/facet/series/Ведьмак',
+    indexStatus: {},
+    sort: 'recent',
+    breadcrumbs: [{ label: 'Home', href: '/' }],
+    facet: 'series',
+    facetValue: 'Ведьмак'
+  });
+  assert.ok(html.includes('/download/batch?'));
+  assert.ok(html.includes('facet=series'));
 });
 
 test('renderReader returns standalone reader HTML', async () => {

@@ -133,6 +133,7 @@ function resetInpxPreparedStatements() {
   _stmtLibSections = null;
   _stmtContinueCount = null;
   _stmtContinueItems = null;
+  _stmtHasContinue = null;
   _stmtReadSeriesCount = null;
   _stmtReadSeriesItems = null;
   _stmtReadViewCount = null;
@@ -140,6 +141,7 @@ function resetInpxPreparedStatements() {
   _stmtRecordHistoryUser = null;
   _stmtRecordHistoryUpsert = null;
   _stmtGetReadHistory = null;
+  _stmtGetReadHistoryActive = null;
   _stmtIsFavAuthor = null;
   _stmtIsFavSeries = null;
   _stmtIsBookmarked = null;
@@ -2537,20 +2539,16 @@ export async function rebuildIndex(inpxPath, incremental = false, sourceId = nul
         continue;
       }
       diagnostics.parsedRows += 1;
-      if (row.deleted) {
-        diagnostics.deletedRows += 1;
-        const resolved = resolveInpxRowBookId(row, diagnostics, { respectSuppression: false });
-        if (resolved) {
-          archiveSeenIds.add(resolved.id);
-          purgeInpxBook(resolved.id, diagnostics);
-        }
-        continue;
-      }
+      /* DEL=1 из INPX: оставляем в индексе с deleted=1 (как inpx-web).
+         Показ в каталоге — через настройку show_deleted_books / active_books. */
+      const isDeleted = Boolean(Number(row.deleted));
+      if (isDeleted) diagnostics.deletedRows += 1;
       const resolved = resolveInpxRowBookId(row, diagnostics);
       if (!resolved) continue;
       resolved.sourceId = sourceId;
+      resolved.deleted = isDeleted ? 1 : 0;
       insert.run(resolved);
-      if (incremental && !existingBookIds.has(resolved.id)) bumpIndexNewBooks();
+      if (incremental && !isDeleted && !existingBookIds.has(resolved.id)) bumpIndexNewBooks();
       if (incremental) existingBookIds.add(resolved.id);
       if (!seenUniqueBookIds.has(resolved.id)) {
         seenUniqueBookIds.add(resolved.id);
@@ -2937,6 +2935,7 @@ function mapBookListRow(row) {
   }));
   return {
     ...row,
+    deleted: Number(row.deleted) ? 1 : 0,
     seriesNo: row.seriesNo || '',
     genresList: splitFacetValues(row.genres),
     genresDisplayList: formatGenreList(row.genres),
@@ -3547,7 +3546,7 @@ export function searchBooks({
     const items = db
       .prepare(
         `
-      SELECT b.id, b.title, b.authors, b.genres, b.series, b.series_no AS seriesNo, b.ext, b.lang, b.lib_rate AS libRate, b.archive_name AS archiveName
+      SELECT b.id, b.title, b.authors, b.genres, b.series, b.series_no AS seriesNo, b.ext, b.lang, b.lib_rate AS libRate, b.archive_name AS archiveName, b.deleted
       FROM active_books b
       LEFT JOIN sources s ON s.id = b.source_id
       ${whereSql}
@@ -3643,7 +3642,7 @@ export function searchBooks({
           const items = pageSize > 0
             ? finalizeSearchBookPage(db.prepare(`
               SELECT b.id, b.title, b.authors, b.genres, b.series, b.series_no AS seriesNo, b.ext, b.lang,
-                     b.lib_rate AS libRate, b.archive_name AS archiveName
+                     b.lib_rate AS libRate, b.archive_name AS archiveName, b.deleted
               FROM books_fts
               JOIN active_books b ON b.id = books_fts.id
               WHERE ${whereSql}
@@ -3719,7 +3718,7 @@ export function searchBooks({
       const items = pageSize > 0
         ? finalizeSearchBookPage(db.prepare(`
         SELECT b.id, b.title, b.authors, b.genres, b.series, b.series_no AS seriesNo, b.ext, b.lang,
-               b.lib_rate AS libRate, b.archive_name AS archiveName
+               b.lib_rate AS libRate, b.archive_name AS archiveName, b.deleted
         FROM books_fts
         JOIN active_books b ON b.id = books_fts.id
         WHERE ${whereSql}
@@ -4428,7 +4427,7 @@ export function getBookById(id) {
   _stmtGetBookById ??= db.prepare(`
     SELECT b.id, b.title, b.authors, b.genres, b.series, b.series_no AS seriesNo, b.file_name AS fileName,
            b.archive_name AS archiveName, b.size, b.lib_id AS libId, b.ext, b.date, b.lang, b.keywords,
-           b.lib_rate AS libRate, b.source_id AS sourceId, b.imported_at AS importedAt,
+           b.lib_rate AS libRate, b.source_id AS sourceId, b.imported_at AS importedAt, b.deleted,
            COALESCE(s.flibusta_sidecar, 0) AS sourceFlibusta
     FROM active_books b
     LEFT JOIN sources s ON s.id = b.source_id
@@ -4452,11 +4451,11 @@ export function getBooksByIds(ids) {
   const rows = db.prepare(`
     SELECT b.id, b.title, b.authors, b.genres, b.series, b.series_no AS seriesNo, b.file_name AS fileName,
            b.archive_name AS archiveName, b.size, b.lib_id AS libId, b.ext, b.date, b.lang, b.keywords,
-           b.lib_rate AS libRate, b.source_id AS sourceId, b.imported_at AS importedAt,
+           b.lib_rate AS libRate, b.source_id AS sourceId, b.imported_at AS importedAt, b.deleted,
            COALESCE(s.flibusta_sidecar, 0) AS sourceFlibusta
-    FROM books b
+    FROM active_books b
     LEFT JOIN sources s ON s.id = b.source_id
-    WHERE b.deleted = 0 AND (b.source_id IS NULL OR s.enabled = 1) AND b.id IN (${placeholders})
+    WHERE b.id IN (${placeholders})
   `).all(...ids);
   const books = [];
   const result = new Map();
@@ -5409,11 +5408,11 @@ function _getFacetStmts(facet, sort, order = '', author = '') {
     languages: `SELECT COUNT(*) AS count FROM active_books b WHERE COALESCE(NULLIF(b.lang, ''), 'unknown') = ?`
   };
   const itemsSql = {
-    authors: `SELECT b.id, b.title, b.authors, b.genres, b.series, b.series_no AS seriesNo, b.ext, b.lang, b.lib_rate AS libRate, b.archive_name AS archiveName FROM book_authors ba JOIN authors a ON a.id = ba.author_id JOIN active_books b ON b.id = ba.book_id LEFT JOIN sources s ON s.id = b.source_id WHERE a.name = ? ORDER BY ${sort === 'recent' ? rankOrder : resolveBookAliasSort(sort, 'b', order)} LIMIT ? OFFSET ?`,
+    authors: `SELECT b.id, b.title, b.authors, b.genres, b.series, b.series_no AS seriesNo, b.ext, b.lang, b.lib_rate AS libRate, b.archive_name AS archiveName, b.deleted FROM book_authors ba JOIN authors a ON a.id = ba.author_id JOIN active_books b ON b.id = ba.book_id LEFT JOIN sources s ON s.id = b.source_id WHERE a.name = ? ORDER BY ${sort === 'recent' ? rankOrder : resolveBookAliasSort(sort, 'b', order)} LIMIT ? OFFSET ?`,
     // seriesNo из book_series (bs) — номер в открытой серии, не primary series_no книги
-    series: `SELECT b.id, b.title, b.authors, b.genres, sc.name AS series, bs.series_no AS seriesNo, b.ext, b.lang, b.lib_rate AS libRate, b.archive_name AS archiveName FROM book_series bs JOIN series_catalog sc ON sc.id = bs.series_id JOIN active_books b ON b.id = bs.book_id${seriesJoin} LEFT JOIN sources s ON s.id = b.source_id WHERE sc.name = ?${seriesWhere} ORDER BY ${seriesItemsOrder} LIMIT ? OFFSET ?`,
-    genres: `SELECT b.id, b.title, b.authors, b.genres, b.series, b.series_no AS seriesNo, b.ext, b.lang, b.lib_rate AS libRate, b.archive_name AS archiveName FROM book_genres bg JOIN genres_catalog g ON g.id = bg.genre_id JOIN active_books b ON b.id = bg.book_id LEFT JOIN sources s ON s.id = b.source_id WHERE g.name = ? ORDER BY ${sort === 'recent' ? rankOrder : resolveBookAliasSort(sort, 'b', order)} LIMIT ? OFFSET ?`,
-    languages: `SELECT b.id, b.title, b.authors, b.genres, b.series, b.series_no AS seriesNo, b.ext, b.lang, b.lib_rate AS libRate, b.archive_name AS archiveName FROM active_books b LEFT JOIN sources s ON s.id = b.source_id WHERE COALESCE(NULLIF(b.lang, ''), 'unknown') = ? ORDER BY ${sort === 'recent' ? rankOrder : resolveBookAliasSort(sort, 'b', order)} LIMIT ? OFFSET ?`
+    series: `SELECT b.id, b.title, b.authors, b.genres, sc.name AS series, bs.series_no AS seriesNo, b.ext, b.lang, b.lib_rate AS libRate, b.archive_name AS archiveName, b.deleted FROM book_series bs JOIN series_catalog sc ON sc.id = bs.series_id JOIN active_books b ON b.id = bs.book_id${seriesJoin} LEFT JOIN sources s ON s.id = b.source_id WHERE sc.name = ?${seriesWhere} ORDER BY ${seriesItemsOrder} LIMIT ? OFFSET ?`,
+    genres: `SELECT b.id, b.title, b.authors, b.genres, b.series, b.series_no AS seriesNo, b.ext, b.lang, b.lib_rate AS libRate, b.archive_name AS archiveName, b.deleted FROM book_genres bg JOIN genres_catalog g ON g.id = bg.genre_id JOIN active_books b ON b.id = bg.book_id LEFT JOIN sources s ON s.id = b.source_id WHERE g.name = ? ORDER BY ${sort === 'recent' ? rankOrder : resolveBookAliasSort(sort, 'b', order)} LIMIT ? OFFSET ?`,
+    languages: `SELECT b.id, b.title, b.authors, b.genres, b.series, b.series_no AS seriesNo, b.ext, b.lang, b.lib_rate AS libRate, b.archive_name AS archiveName, b.deleted FROM active_books b LEFT JOIN sources s ON s.id = b.source_id WHERE COALESCE(NULLIF(b.lang, ''), 'unknown') = ? ORDER BY ${sort === 'recent' ? rankOrder : resolveBookAliasSort(sort, 'b', order)} LIMIT ? OFFSET ?`
   };
   entry = {
     total: db.prepare(totalSql[facet]),
@@ -5451,9 +5450,9 @@ export function getBooksByFacetLight(facet, value, limit = 8, sort = 'rating') {
     const recentOrder = "COALESCE(NULLIF(b.date, ''), b.imported_at) DESC, b.imported_at DESC, b.id DESC";
     const orderBy = sort === 'rating' ? ratingOrder : recentOrder;
     const sql = {
-      authors: `SELECT b.id, b.title, b.authors, b.genres, b.series, b.series_no AS seriesNo, b.ext, b.lang, b.lib_rate AS libRate, b.archive_name AS archiveName FROM book_authors ba JOIN authors a ON a.id = ba.author_id JOIN active_books b ON b.id = ba.book_id WHERE a.name = ? ORDER BY ${orderBy} LIMIT ?`,
-      series: `SELECT b.id, b.title, b.authors, b.genres, b.series, b.series_no AS seriesNo, b.ext, b.lang, b.lib_rate AS libRate, b.archive_name AS archiveName FROM book_series bs JOIN series_catalog sc ON sc.id = bs.series_id JOIN active_books b ON b.id = bs.book_id WHERE sc.name = ? ORDER BY ${orderBy} LIMIT ?`,
-      genres: `SELECT b.id, b.title, b.authors, b.genres, b.series, b.series_no AS seriesNo, b.ext, b.lang, b.lib_rate AS libRate, b.archive_name AS archiveName FROM book_genres bg JOIN genres_catalog g ON g.id = bg.genre_id JOIN active_books b ON b.id = bg.book_id WHERE g.name = ? ORDER BY ${orderBy} LIMIT ?`
+      authors: `SELECT b.id, b.title, b.authors, b.genres, b.series, b.series_no AS seriesNo, b.ext, b.lang, b.lib_rate AS libRate, b.archive_name AS archiveName, b.deleted FROM book_authors ba JOIN authors a ON a.id = ba.author_id JOIN active_books b ON b.id = ba.book_id WHERE a.name = ? ORDER BY ${orderBy} LIMIT ?`,
+      series: `SELECT b.id, b.title, b.authors, b.genres, b.series, b.series_no AS seriesNo, b.ext, b.lang, b.lib_rate AS libRate, b.archive_name AS archiveName, b.deleted FROM book_series bs JOIN series_catalog sc ON sc.id = bs.series_id JOIN active_books b ON b.id = bs.book_id WHERE sc.name = ? ORDER BY ${orderBy} LIMIT ?`,
+      genres: `SELECT b.id, b.title, b.authors, b.genres, b.series, b.series_no AS seriesNo, b.ext, b.lang, b.lib_rate AS libRate, b.archive_name AS archiveName, b.deleted FROM book_genres bg JOIN genres_catalog g ON g.id = bg.genre_id JOIN active_books b ON b.id = bg.book_id WHERE g.name = ? ORDER BY ${orderBy} LIMIT ?`
     };
     if (!sql[facet]) return [];
     stmt = db.prepare(sql[facet]);
@@ -5466,16 +5465,112 @@ export function getBooksByFacetLight(facet, value, limit = 8, sort = 'rating') {
   return stmt.all(resolved, limit).map(mapBookListRow);
 }
 
-export function getBooksByFacet({ facet, value, page = 1, pageSize = 24, sort = 'title', order = '', author = '' }) {
+function buildFacetExtraWhere({ lang = '', format = '', year = 0, minRate = 0, hasSeries = null } = {}) {
+  const parts = [];
+  const params = [];
+  for (const ef of buildCatalogExtraFilters({ lang, format, year, minRate, hasSeries })) {
+    parts.push(ef.where.replace(/active_books\./g, 'b.'));
+    params.push(...ef.params);
+  }
+  return {
+    sql: parts.length ? ` AND ${parts.join(' AND ')}` : '',
+    params,
+    active: parts.length > 0
+  };
+}
+
+function getBooksByFacetFiltered({
+  facet, value, page = 1, pageSize = 24, sort = 'title', order = '', author = '',
+  lang = '', format = '', year = 0, minRate = 0, hasSeries = null
+}) {
+  const offset = (page - 1) * pageSize;
+  const extra = buildFacetExtraWhere({ lang, format, year, minRate, hasSeries });
+  const rankOrder = "COALESCE(s.flibusta_sidecar, 0) DESC, COALESCE(NULLIF(b.date, ''), b.imported_at) DESC, b.imported_at DESC, b.id DESC";
+  const listOrder = sort === 'recent'
+    ? rankOrder
+    : facet === 'series' && sort === 'series'
+      ? applyOrder(
+        `CASE WHEN TRIM(COALESCE(bs.series_no, '')) GLOB '[0-9]*' AND TRIM(bs.series_no) != '' THEN CAST(TRIM(bs.series_no) AS INTEGER) ELSE 1000000000 END ASC, TRIM(COALESCE(bs.series_no, '')) ASC, b.title_sort ASC, b.id ASC`,
+        order,
+      )
+      : resolveBookAliasSort(sort, 'b', order);
+
+  let fromSql = '';
+  const baseParams = [value];
+  if (facet === 'authors') {
+    fromSql = `FROM book_authors ba JOIN authors a ON a.id = ba.author_id JOIN active_books b ON b.id = ba.book_id LEFT JOIN sources s ON s.id = b.source_id WHERE a.name = ?`;
+  } else if (facet === 'series') {
+    const seriesJoin = author ? ' JOIN book_authors ba ON ba.book_id = b.id JOIN authors a ON a.id = ba.author_id' : '';
+    const seriesWhere = author ? ' AND a.name = ?' : '';
+    fromSql = `FROM book_series bs JOIN series_catalog sc ON sc.id = bs.series_id JOIN active_books b ON b.id = bs.book_id${seriesJoin} LEFT JOIN sources s ON s.id = b.source_id WHERE sc.name = ?${seriesWhere}`;
+    if (author) baseParams.push(author);
+  } else if (facet === 'genres') {
+    fromSql = `FROM book_genres bg JOIN genres_catalog g ON g.id = bg.genre_id JOIN active_books b ON b.id = bg.book_id LEFT JOIN sources s ON s.id = b.source_id WHERE g.name = ?`;
+  } else if (facet === 'languages') {
+    fromSql = `FROM active_books b LEFT JOIN sources s ON s.id = b.source_id WHERE COALESCE(NULLIF(b.lang, ''), 'unknown') = ?`;
+  } else {
+    return { total: 0, items: [] };
+  }
+
+  const whereParams = [...baseParams, ...extra.params];
+  const total = Number(db.prepare(`SELECT COUNT(*) AS count ${fromSql}${extra.sql}`).get(...whereParams).count) || 0;
+  if (total === 0 || offset >= total) {
+    return { total, items: [] };
+  }
+
+  const selectCols = facet === 'series'
+    ? `b.id, b.title, b.authors, b.genres, sc.name AS series, bs.series_no AS seriesNo, b.ext, b.lang, b.lib_rate AS libRate, b.archive_name AS archiveName, b.deleted`
+    : `b.id, b.title, b.authors, b.genres, b.series, b.series_no AS seriesNo, b.ext, b.lang, b.lib_rate AS libRate, b.archive_name AS archiveName, b.deleted`;
+
+  const items = db.prepare(`
+    SELECT ${selectCols}
+    ${fromSql}${extra.sql}
+    ORDER BY ${listOrder}
+    LIMIT ? OFFSET ?
+  `).all(...whereParams, pageSize, offset).map(mapBookListRow);
+
+  attachSeriesListsToBooks(items);
+  if (facet === 'series') {
+    for (const b of items) {
+      const match = Array.isArray(b.seriesList)
+        ? b.seriesList.find((s) => s.name === value)
+        : null;
+      if (match) {
+        b.series = match.name;
+        b.seriesNo = match.seriesNo || '';
+      } else {
+        b.series = value;
+      }
+    }
+  }
+  return { total, items };
+}
+
+export function getBooksByFacet({
+  facet, value, page = 1, pageSize = 24, sort = 'title', order = '', author = '',
+  lang = '', format = '', year = 0, minRate = 0, hasSeries = null
+} = {}) {
   if (facet === 'series') {
     value = resolveSeriesCatalogName(String(value || ''));
   } else if (facet === 'authors') {
     value = resolveAuthorName(String(value || '')) || String(value || '');
   }
-  const cacheKey = `${facet}|${value}|${sort}|${order}|${page}|${pageSize}|${author}`;
+  const seriesFlag = hasSeries === 0 || hasSeries === 1 ? hasSeries : parseHasSeries(hasSeries);
+  const extra = buildFacetExtraWhere({ lang, format, year, minRate, hasSeries: seriesFlag });
+  const filterKey = `${lang}|${format}|${year}|${minRate}|${seriesFlag ?? ''}`;
+  const cacheKey = `${facet}|${value}|${sort}|${order}|${page}|${pageSize}|${author}|f:${filterKey}`;
   const cached = readTimedCache(facetBooksCache, cacheKey);
   if (cached) return cached;
   const offset = (page - 1) * pageSize;
+
+  if (extra.active) {
+    const result = getBooksByFacetFiltered({
+      facet, value, page, pageSize, sort, order, author,
+      lang, format, year, minRate, hasSeries: seriesFlag
+    });
+    writeTimedCache(facetBooksCache, cacheKey, result, FACET_CACHE_TTL_MS, 120);
+    return result;
+  }
 
   const stmts = _getFacetStmts(facet, sort, order, author);
   if (!stmts.total) return { total: 0, items: [] };
@@ -5520,14 +5615,19 @@ export function getBooksByFacet({ facet, value, page = 1, pageSize = 24, sort = 
 /**
  * Параллельные HTTP-запросы к одной странице фасета (двойной клик, префетч) — один тяжёлый запрос к SQLite.
  */
-export async function getBooksByFacetCoalesced({ facet, value, page = 1, pageSize = 24, sort = 'title', order = '', author = '' }) {
+export async function getBooksByFacetCoalesced({
+  facet, value, page = 1, pageSize = 24, sort = 'title', order = '', author = '',
+  lang = '', format = '', year = 0, minRate = 0, hasSeries = null
+} = {}) {
   let v = String(value || '');
   if (facet === 'series') {
     v = resolveSeriesCatalogName(v);
   } else if (facet === 'authors') {
     v = resolveAuthorName(v) || v;
   }
-  const cacheKey = `${facet}|${v}|${sort}|${order}|${page}|${pageSize}|${author}`;
+  const seriesFlag = hasSeries === 0 || hasSeries === 1 ? hasSeries : parseHasSeries(hasSeries);
+  const filterKey = `${lang}|${format}|${year}|${minRate}|${seriesFlag ?? ''}`;
+  const cacheKey = `${facet}|${v}|${sort}|${order}|${page}|${pageSize}|${author}|f:${filterKey}`;
   const cached = readTimedCache(facetBooksCache, cacheKey);
   if (cached) return cached;
   let shared = facetBooksInflight.get(cacheKey);
@@ -5535,7 +5635,10 @@ export async function getBooksByFacetCoalesced({ facet, value, page = 1, pageSiz
     shared = new Promise((resolve, reject) => {
       setImmediate(() => {
         try {
-          resolve(getBooksByFacet({ facet, value: v, page, pageSize, sort, order, author }));
+          resolve(getBooksByFacet({
+            facet, value: v, page, pageSize, sort, order, author,
+            lang, format, year, minRate, hasSeries: seriesFlag
+          }));
         } catch (err) {
           reject(err);
         } finally {
@@ -5681,7 +5784,7 @@ export function getAuthorBooksGrouped(authorName, sort = 'title', order = '', { 
     SELECT
       b.id, b.title, b.authors, b.genres, b.series,
       COALESCE(NULLIF(bs.series_no, ''), b.series_no) AS seriesNo,
-      b.ext, b.lang, b.lib_rate AS libRate, b.archive_name AS archiveName,
+      b.ext, b.lang, b.lib_rate AS libRate, b.archive_name AS archiveName, b.deleted,
       s.name AS seriesCatalogName,
       COALESCE(s.display_name, s.name) AS seriesDisplayName,
       COALESCE(NULLIF(bs.series_no, ''), b.series_index) AS seriesIndex,
@@ -6086,8 +6189,20 @@ function resolveRecentCatalogCutoff() {
 
 /**
  * Books newly added to the catalog (INPX `date`), not the full library / reindex stamp.
+ * Additive catalog filters: genre (OR), lang, format, year, minRate, hasSeries.
  */
-export function getRecentArrivals({ page = 1, pageSize = 24, sort = 'recent', order = '' } = {}) {
+export function getRecentArrivals({
+  page = 1,
+  pageSize = 24,
+  sort = 'recent',
+  order = '',
+  genre = '',
+  lang = '',
+  format = '',
+  year = 0,
+  minRate = 0,
+  hasSeries = null
+} = {}) {
   const offset = Math.max(0, (Math.max(1, page) - 1) * pageSize);
   const limit = Math.max(1, Math.min(100, Math.floor(Number(pageSize) || 24)));
   const bounds = resolveRecentCatalogCutoff();
@@ -6095,10 +6210,22 @@ export function getRecentArrivals({ page = 1, pageSize = 24, sort = 'recent', or
     return { total: 0, items: [] };
   }
 
-  const windowSql = `${ISO_DATE_PRED('b')} AND SUBSTR(b.date, 1, 10) >= ?`;
+  const whereParts = [`${ISO_DATE_PRED('b')}`, 'SUBSTR(b.date, 1, 10) >= ?'];
+  const whereParams = [bounds.cutoff];
+  const genreFilter = buildGenreFilterSql(genre);
+  if (genreFilter) {
+    whereParts.push(genreFilter.where.replace(/active_books\./g, 'b.'));
+    whereParams.push(...genreFilter.params);
+  }
+  for (const ef of buildCatalogExtraFilters({ lang, format, year, minRate, hasSeries })) {
+    whereParts.push(ef.where.replace(/active_books\./g, 'b.'));
+    whereParams.push(...ef.params);
+  }
+  const whereSql = whereParts.join(' AND ');
+
   const total = Number(db.prepare(`
-    SELECT COUNT(*) AS count FROM active_books b WHERE ${windowSql}
-  `).get(bounds.cutoff).count) || 0;
+    SELECT COUNT(*) AS count FROM active_books b WHERE ${whereSql}
+  `).get(...whereParams).count) || 0;
 
   if (total === 0 || offset >= total) {
     return { total, items: [] };
@@ -6110,12 +6237,12 @@ export function getRecentArrivals({ page = 1, pageSize = 24, sort = 'recent', or
 
   const items = db.prepare(`
     SELECT b.id, b.title, b.authors, b.genres, b.series, b.series_no AS seriesNo, b.ext, b.lang,
-           b.lib_rate AS libRate, b.archive_name AS archiveName
+           b.lib_rate AS libRate, b.archive_name AS archiveName, b.deleted
     FROM active_books b
-    WHERE ${windowSql}
+    WHERE ${whereSql}
     ORDER BY ${listOrderBy}
     LIMIT ? OFFSET ?
-  `).all(bounds.cutoff, limit, offset).map(mapBookListRow);
+  `).all(...whereParams, limit, offset).map(mapBookListRow);
 
   attachSeriesListsToBooks(items);
   attachCachedAnnotationsToBooks(items);
@@ -6148,12 +6275,21 @@ export function getLibrarySections() {
 }
 
 let _stmtHasContinue = null;
-/** Быстрая проверка наличия «продолжить чтение» без тяжёлого COUNT/JOIN. */
+/** Быстрая проверка наличия «продолжить чтение» без тяжёлого COUNT/JOIN.
+ *  Книги со статусом «Прочитано» не считаются — для них есть отдельный раздел. */
 export function hasContinueBooks(username) {
   if (!username) return false;
-  _stmtHasContinue ??= db.prepare(
-    `SELECT 1 FROM reading_history rh JOIN active_books b ON b.id = rh.book_id WHERE rh.username = ? LIMIT 1`
-  );
+  _stmtHasContinue ??= db.prepare(`
+    SELECT 1
+    FROM reading_history rh
+    JOIN active_books b ON b.id = rh.book_id
+    WHERE rh.username = ?
+      AND NOT EXISTS (
+        SELECT 1 FROM read_books rb
+        WHERE rb.username = rh.username AND rb.book_id = rh.book_id
+      )
+    LIMIT 1
+  `);
   return !!_stmtHasContinue.get(username);
 }
 
@@ -6183,7 +6319,20 @@ function attachCachedAnnotationsToBooks(books) {
   return books;
 }
 
-export function getLibraryView(view = 'recent', { page = 1, pageSize = 24, username = '', type = '', sort = 'recent', order = '' } = {}) {
+export function getLibraryView(view = 'recent', {
+  page = 1,
+  pageSize = 24,
+  username = '',
+  type = '',
+  sort = 'recent',
+  order = '',
+  genre = '',
+  lang = '',
+  format = '',
+  year = 0,
+  minRate = 0,
+  hasSeries = null
+} = {}) {
   const offset = (page - 1) * pageSize;
 
   if (view === 'continue') {
@@ -6197,6 +6346,10 @@ export function getLibraryView(view = 'recent', { page = 1, pageSize = 24, usern
       FROM reading_history rh
       JOIN active_books b ON b.id = rh.book_id
       WHERE rh.username = ?
+        AND NOT EXISTS (
+          SELECT 1 FROM read_books rb
+          WHERE rb.username = rh.username AND rb.book_id = rh.book_id
+        )
     `);
     const total = _stmtContinueCount.get(normalizedUsername).count;
 
@@ -6204,12 +6357,16 @@ export function getLibraryView(view = 'recent', { page = 1, pageSize = 24, usern
       ? applyOrder('b.lib_rate DESC, b.title_sort ASC, b.id DESC', order)
       : applyOrder('rh.last_opened_at DESC, rh.open_count DESC, b.id DESC', order);
     const items = db.prepare(`
-      SELECT b.id, b.title, b.authors, b.genres, b.series, b.series_no AS seriesNo, b.ext, b.lang, b.lib_rate AS libRate, b.archive_name AS archiveName,
+      SELECT b.id, b.title, b.authors, b.genres, b.series, b.series_no AS seriesNo, b.ext, b.lang, b.lib_rate AS libRate, b.archive_name AS archiveName, b.deleted,
              COALESCE(rp.progress, 0) AS readProgress
       FROM (
         SELECT rh.book_id, MAX(rh.last_opened_at) AS last_opened_at, SUM(COALESCE(rh.open_count, 0)) AS open_count
         FROM reading_history rh
         WHERE rh.username = ?
+          AND NOT EXISTS (
+            SELECT 1 FROM read_books rb
+            WHERE rb.username = rh.username AND rb.book_id = rh.book_id
+          )
         GROUP BY rh.book_id
       ) rh
       JOIN active_books b ON b.id = rh.book_id
@@ -6268,7 +6425,7 @@ export function getLibraryView(view = 'recent', { page = 1, pageSize = 24, usern
       ? applyOrder('b.lib_rate DESC, b.title_sort ASC, b.id DESC', order)
       : applyOrder('rb.created_at DESC', order);
     const items = db.prepare(`
-      SELECT b.id, b.title, b.authors, b.genres, b.series, b.series_no AS seriesNo, b.ext, b.lang, b.lib_rate AS libRate, b.archive_name AS archiveName
+      SELECT b.id, b.title, b.authors, b.genres, b.series, b.series_no AS seriesNo, b.ext, b.lang, b.lib_rate AS libRate, b.archive_name AS archiveName, b.deleted
       FROM read_books rb
       JOIN active_books b ON b.id = rb.book_id
       WHERE rb.username = ?
@@ -6279,8 +6436,8 @@ export function getLibraryView(view = 'recent', { page = 1, pageSize = 24, usern
     return { total, items };
   }
 
-  // Новинки: только недавние поступления по imported_at (не весь каталог).
-  return getRecentArrivals({ page, pageSize, sort, order });
+  // Новинки: окно по INPX date + те же additive-фильтры, что у /api/catalog.
+  return getRecentArrivals({ page, pageSize, sort, order, genre, lang, format, year, minRate, hasSeries });
 }
 
 export function opdsQuery(facet, prefix = '', depth = 0, genre = '') {
@@ -6658,8 +6815,29 @@ export function recordReadingHistory(username, bookId) {
 }
 
 let _stmtGetReadHistory = null;
-export function getReadingHistory(username, limit = 20) {
-  _stmtGetReadHistory ??= db.prepare(`
+let _stmtGetReadHistoryActive = null;
+/**
+ * История открытий для «Читаю» / профиля.
+ * @param {{ excludeRead?: boolean }} [opts] — по умолчанию скрывает «Прочитано»
+ *   (для рекомендаций передайте excludeRead: false).
+ */
+export function getReadingHistory(username, limit = 20, { excludeRead = true } = {}) {
+  if (!excludeRead) {
+    _stmtGetReadHistory ??= db.prepare(`
+      SELECT b.id, b.title, b.authors, b.ext, b.series, b.series_no AS seriesNo,
+             b.lib_rate AS libRate,
+             rh.last_opened_at AS lastOpenedAt, rh.open_count AS openCount,
+             COALESCE(rp.progress, 0) AS readProgress
+      FROM reading_history rh
+      JOIN active_books b ON b.id = rh.book_id
+      LEFT JOIN reading_positions rp ON rp.book_id = b.id AND rp.username = ?
+      WHERE rh.username = ?
+      ORDER BY rh.last_opened_at DESC
+      LIMIT ?
+    `);
+    return _stmtGetReadHistory.all(username, username, limit);
+  }
+  _stmtGetReadHistoryActive ??= db.prepare(`
     SELECT b.id, b.title, b.authors, b.ext, b.series, b.series_no AS seriesNo,
            b.lib_rate AS libRate,
            rh.last_opened_at AS lastOpenedAt, rh.open_count AS openCount,
@@ -6668,10 +6846,14 @@ export function getReadingHistory(username, limit = 20) {
     JOIN active_books b ON b.id = rh.book_id
     LEFT JOIN reading_positions rp ON rp.book_id = b.id AND rp.username = ?
     WHERE rh.username = ?
+      AND NOT EXISTS (
+        SELECT 1 FROM read_books rb
+        WHERE rb.username = rh.username AND rb.book_id = rh.book_id
+      )
     ORDER BY rh.last_opened_at DESC
     LIMIT ?
   `);
-  return _stmtGetReadHistory.all(username, username, limit);
+  return _stmtGetReadHistoryActive.all(username, username, limit);
 }
 
 export function toggleFavoriteAuthor(username, authorName) {
@@ -6881,7 +7063,7 @@ export function getBookmarksPage(username, { sort = 'date', page = 1, pageSize =
   if (!stmt) {
     stmt = db.prepare(`
       SELECT b.id, b.title, b.authors, b.genres, b.series, b.series_no AS seriesNo,
-             b.ext, b.lib_rate AS libRate, b.archive_name AS archiveName
+             b.ext, b.lib_rate AS libRate, b.archive_name AS archiveName, b.deleted
       FROM bookmarks bm
       JOIN active_books b ON b.id = bm.book_id
       WHERE bm.username = ?
@@ -6903,7 +7085,7 @@ export function getBookmarks(username, sort = 'date', limit = 0) {
     if (!stmt) {
       stmt = db.prepare(`
         SELECT b.id, b.title, b.authors, b.genres, b.series, b.series_no AS seriesNo,
-               b.ext, b.lib_rate AS libRate, b.archive_name AS archiveName
+               b.ext, b.lib_rate AS libRate, b.archive_name AS archiveName, b.deleted
         FROM bookmarks bm
         JOIN active_books b ON b.id = bm.book_id
         WHERE bm.username = ?
@@ -6918,7 +7100,7 @@ export function getBookmarks(username, sort = 'date', limit = 0) {
   if (!stmt) {
     stmt = db.prepare(`
       SELECT b.id, b.title, b.authors, b.genres, b.series, b.series_no AS seriesNo,
-             b.ext, b.lib_rate AS libRate, b.archive_name AS archiveName
+             b.ext, b.lib_rate AS libRate, b.archive_name AS archiveName, b.deleted
       FROM bookmarks bm
       JOIN active_books b ON b.id = bm.book_id
       WHERE bm.username = ?
@@ -7083,7 +7265,7 @@ export function getReadBooksPage(username, { sort = 'date', page = 1, pageSize =
   if (!stmt) {
     stmt = db.prepare(`
       SELECT b.id, b.title, b.authors, b.genres, b.series, b.series_no AS seriesNo,
-             b.ext, b.lib_rate AS libRate, b.archive_name AS archiveName
+             b.ext, b.lib_rate AS libRate, b.archive_name AS archiveName, b.deleted
       FROM read_books rb
       JOIN active_books b ON b.id = rb.book_id
       WHERE rb.username = ?
@@ -7105,7 +7287,7 @@ export function getReadBooks(username, sort = 'date', limit = 0) {
     if (!stmt) {
       stmt = db.prepare(`
         SELECT b.id, b.title, b.authors, b.genres, b.series, b.series_no AS seriesNo,
-               b.ext, b.lib_rate AS libRate, b.archive_name AS archiveName
+               b.ext, b.lib_rate AS libRate, b.archive_name AS archiveName, b.deleted
         FROM read_books rb
         JOIN active_books b ON b.id = rb.book_id
         WHERE rb.username = ?
@@ -7120,7 +7302,7 @@ export function getReadBooks(username, sort = 'date', limit = 0) {
   if (!stmt) {
     stmt = db.prepare(`
       SELECT b.id, b.title, b.authors, b.genres, b.series, b.series_no AS seriesNo,
-             b.ext, b.lib_rate AS libRate, b.archive_name AS archiveName
+             b.ext, b.lib_rate AS libRate, b.archive_name AS archiveName, b.deleted
       FROM read_books rb
       JOIN active_books b ON b.id = rb.book_id
       WHERE rb.username = ?

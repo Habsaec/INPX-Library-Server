@@ -7,6 +7,7 @@ import {
   formatLocaleDateLong,
   downloadBookPath,
   apiBookPath,
+  batchScopeDownloadPath,
   canDownloadInUi,
   formatAuthorLabel,
   formatGenreLabel,
@@ -230,7 +231,7 @@ export function renderLiteBookRow(book, user, { readMark = false } = {}) {
       <img src="${apiBookPath(book.id, 'cover-thumb')}" alt="" loading="lazy" width="72" height="108">
     </span>
     <span class="lite-book-body">
-      <span class="lite-book-title"><strong>${escapeHtml(title)}</strong>${dateSuffix}</span>
+      <span class="lite-book-title"><strong>${escapeHtml(title)}</strong>${Number(book.deleted) ? ` <span class="deleted-badge deleted-badge--inline">${escapeHtml(t('book.deletedBadge'))}</span>` : ''}${dateSuffix}</span>
       <span class="lite-book-meta"><span class="lite-meta-k">${escapeHtml(t('lite.metaAuthors'))}</span> ${escapeHtml(authors)}</span>
       ${genres ? `<span class="lite-book-meta"><span class="lite-meta-k">${escapeHtml(t('lite.metaGenres'))}</span> ${escapeHtml(genres)}</span>` : ''}
       ${series ? `<span class="lite-book-meta"><span class="lite-meta-k">${escapeHtml(t('lite.metaSeries'))}</span> ${escapeHtml(series)}</span>` : ''}
@@ -362,12 +363,19 @@ function browseTotalLite(path, total, query) {
   return `${t('browse.total')}: ${num} ${kind}${filter}`;
 }
 
+function renderLiteScopeDownload(user, scope) {
+  if (!scope || !canDownloadInUi(user) || !(Number(scope.total) > 0)) return '';
+  const href = batchScopeDownloadPath({ facet: scope.facet, value: scope.value, format: 'fb2' });
+  return `<p class="lite-hint"><a class="lite-dl-btn" href="${escapeHtml(href)}" download>${escapeHtml(t('download.all'))}</a></p>`;
+}
+
 export function renderLiteBookListPage({
-  title, items, total, page, pageSize, user, paginationBase, readBookIds = null, hint = '', csrfToken = ''
+  title, items, total, page, pageSize, user, paginationBase, readBookIds = null, hint = '', csrfToken = '', scopeDownload = null
 }) {
   const readSet = readBookIds || new Set();
   const content = `
     ${hint ? `<p class="lite-hint">${escapeHtml(hint)}</p>` : ''}
+    ${renderLiteScopeDownload(user, scopeDownload ? { ...scopeDownload, total } : null)}
     <p class="lite-hint">${escapeHtml(t('browse.total'))}: <strong>${formatLocaleInt(total)}</strong></p>
     <div class="lite-book-list">${items.map((b) => renderLiteBookRow(b, user, { readMark: readSet.has(b.id) })).join('')}</div>
     ${renderPagination(paginationBase, page, pageSize, total)}`;
@@ -375,7 +383,7 @@ export function renderLiteBookListPage({
 }
 
 export function renderLiteAuthorFacetPage({
-  title, displayName, series = [], standaloneBooks = [], facetValue = '', user, csrfToken = ''
+  title, displayName, series = [], standaloneBooks = [], facetValue = '', user, csrfToken = '', total = 0
 }) {
   const authorParam = facetValue ? `?author=${encodeURIComponent(facetValue)}` : '';
   const seriesRows = series.map((s) => {
@@ -383,7 +391,9 @@ export function renderLiteAuthorFacetPage({
     return renderLiteEntityCountRow(`${LITE_BASE}/facet/series/${encodeURIComponent(s.name)}${authorParam}`, s.displayName || s.name, count);
   }).join('');
   const bookRows = standaloneBooks.map((b) => renderLiteBookRow(b, user)).join('');
+  const bookTotal = Number(total) || series.reduce((n, s) => n + (Number(s.bookCount) || 0), 0) + standaloneBooks.length;
   const content = `
+    ${renderLiteScopeDownload(user, facetValue ? { facet: 'authors', value: facetValue, total: bookTotal } : null)}
     ${seriesRows ? `<div class="lite-entity-list">${seriesRows}</div>` : ''}
     ${bookRows ? `<div class="lite-book-list">${bookRows}</div>` : ''}
     ${!seriesRows && !bookRows ? `<p class="lite-empty">${escapeHtml(t('browse.empty'))}</p>` : ''}`;

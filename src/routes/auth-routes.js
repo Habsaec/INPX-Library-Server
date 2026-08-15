@@ -4,7 +4,7 @@
 import { config } from '../config.js';
 import { t, translateKnownErrorMessage } from '../i18n.js';
 import { requireWebAuth, invalidateSessionUserCache } from '../middleware/auth.js';
-import { verifyPassword } from '../auth.js';
+import { verifyPassword, timingSafeStringEqual } from '../auth.js';
 import { createSessionValue } from '../services/session.js';
 import { isRateLimited, registerFailedLogin, clearLoginAttempts, getClientKey, isPasswordResetRateLimited, registerPasswordResetAttempt } from '../services/rate-limiter.js';
 import { DUMMY_PASSWORD_HASH } from '../constants.js';
@@ -303,18 +303,30 @@ export function registerAuthRoutes(app, deps) {
   app.get('/register', (req, res) => {
     const registrationEnabled = getSetting('allow_registration') === '1' && !isOidcRegistrationBlocked();
     const { siteKey } = getRecaptchaKeys();
-    res.send(renderRegister({ registrationEnabled, recaptchaSiteKey: siteKey }));
+    const inviteToken = String(getSetting('registration_invite_token') || '').trim();
+    res.send(renderRegister({
+      registrationEnabled,
+      recaptchaSiteKey: siteKey,
+      inviteRequired: Boolean(inviteToken),
+      inviteValue: String(req.query.invite || '').trim().slice(0, 128)
+    }));
   });
 
   app.post('/register', async (req, res) => {
     const registrationEnabled = getSetting('allow_registration') === '1' && !isOidcRegistrationBlocked();
     const { siteKey, secretKey } = getRecaptchaKeys();
-    const regOpts = { registrationEnabled, recaptchaSiteKey: siteKey };
+    const expectedInvite = String(getSetting('registration_invite_token') || '').trim();
+    const inviteRequired = Boolean(expectedInvite);
+    const inviteValue = String(req.body.inviteToken || '').trim().slice(0, 128);
+    const regOpts = { registrationEnabled, recaptchaSiteKey: siteKey, inviteRequired, inviteValue };
     if (!registrationEnabled) {
       return res.send(renderRegister({ registrationEnabled: false }));
     }
     if (isRateLimited(req)) {
       return res.status(429).send(renderRegister({ ...regOpts, error: t('register.rateLimit') }));
+    }
+    if (inviteRequired && !timingSafeStringEqual(inviteValue, expectedInvite)) {
+      return res.status(403).send(renderRegister({ ...regOpts, error: t('register.inviteInvalid') }));
     }
     if (secretKey) {
       const captchaToken = req.body['g-recaptcha-response'] || '';

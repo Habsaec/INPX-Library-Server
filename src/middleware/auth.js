@@ -179,8 +179,9 @@ export function csrfGuard(req, res, next) {
   if (req.authMethod === 'basic' || req.authMethod === 'device') return next();
 
   if (!verifyCsrfToken(req.user.username, req.user.sessionGen || 0, token)) {
-    if (reqPath.startsWith('/api/')) {
-      return res.status(403).json({ ok: false, code: ApiErrorCode.CSRF_INVALID, error: t('api.auth.csrfInvalid') });
+    const wantsJson = reqPath.startsWith('/api/') || String(req.get('accept') || '').includes('application/json');
+    if (wantsJson) {
+      return res.status(403).json({ ok: false, code: ApiErrorCode.CSRF_INVALID, error: t('api.auth.csrfInvalid'), flash: t('auth.csrfInvalid') });
     }
     return res.status(403).type('text').send(t('auth.csrfInvalid'));
   }

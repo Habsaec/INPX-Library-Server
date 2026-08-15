@@ -8,7 +8,7 @@ import archiver from 'archiver';
 import { t, tp } from '../i18n.js';
 import { ApiErrorCode } from '../api-errors.js';
 import { requireDownloadAuth } from '../middleware/auth.js';
-import { BATCH_DOWNLOAD_MAX } from '../constants.js';
+import { BATCH_ZIP_MAX } from '../constants.js';
 import { getShelfById, getShelfBooks } from '../db.js';
 import { getBookById, getBooksByIds, getAllBookIdsByFacet } from '../inpx.js';
 import { logSystemEvent } from '../services/system-events.js';
@@ -24,7 +24,7 @@ export function normalizeBatchIdsParam(raw) {
   return parts.map((s) => s.trim()).filter(Boolean).map(String);
 }
 
-/** Порядок как в запросе; только существующие книги, без дубликатов, лимит BATCH_DOWNLOAD_MAX. */
+/** Порядок как в запросе; только существующие книги, без дубликатов, лимит BATCH_ZIP_MAX. */
 export function resolveAdhocBookIdsFromClientList(rawIds) {
   const seen = new Set();
   const bookIds = [];
@@ -32,7 +32,7 @@ export function resolveAdhocBookIdsFromClientList(rawIds) {
     const sid = String(id).trim();
     if (!sid || seen.has(sid)) continue;
     seen.add(sid);
-    if (bookIds.length >= BATCH_DOWNLOAD_MAX) break;
+    if (bookIds.length >= BATCH_ZIP_MAX) break;
     const book = getBookById(sid);
     if (book) bookIds.push(book.id);
   }
@@ -113,12 +113,44 @@ function sanitizeZipEntryName(value, fallback = 'book.bin') {
   return `${clippedBase}${clippedExt}`.trim();
 }
 
+const WIN_RESERVED_FOLDER = /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/i;
+
+export function sanitizeZipFolderName(value, fallback = 'series') {
+  const raw = String(value || '').trim();
+  let safe = (raw || fallback)
+    .replace(/[\\/:*?"<>|\u0000-\u001F]+/g, '_')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/[. ]+$/g, '');
+  if (!safe) safe = fallback;
+  if (WIN_RESERVED_FOLDER.test(safe)) safe = `${safe}_`;
+  return safe.slice(0, 80) || fallback;
+}
+
+/** Папка серии в ZIP: displayName / series, иначе «вне серий». */
+export function zipSeriesFolderName(book) {
+  const fromList = book?.seriesList?.[0];
+  const name = String(fromList?.displayName || fromList?.name || book?.series || '').trim();
+  if (name) return sanitizeZipFolderName(name, 'series');
+  return sanitizeZipFolderName(t('authorPage.outsideSeries'), 'outside-series');
+}
+
+function uniqueNameInFolder(used, folder, fileName) {
+  const key = `${folder}/${fileName}`;
+  const count = used.get(key) || 0;
+  used.set(key, count + 1);
+  if (count === 0) return fileName;
+  const ext = path.extname(fileName);
+  const base = fileName.slice(0, fileName.length - ext.length);
+  return `${base} (${count})${ext}`;
+}
+
 async function streamBatchZipArchive(req, res, next, { bookIds, archiveName, format }) {
   const lockKey = req.user?.username || `anon:${req.ip}`;
   const startedAt = Date.now();
   try {
-    if (bookIds.length > BATCH_DOWNLOAD_MAX) {
-      return res.status(400).send(tp('api.batch.downloadMax', { max: BATCH_DOWNLOAD_MAX }));
+    if (bookIds.length > BATCH_ZIP_MAX) {
+      return res.status(400).send(tp('api.batch.downloadMax', { max: BATCH_ZIP_MAX }));
     }
 
     if (batchDownloadLocks.has(lockKey)) {
@@ -144,7 +176,11 @@ async function streamBatchZipArchive(req, res, next, { bookIds, archiveName, for
     res.setHeader('X-Batch-Requested', String(bookIds.length));
     res.type('application/zip');
 
-    const archive = archiver('zip', { store: true, forceZip64: false, forceLocalTime: true });
+    const archive = archiver('zip', {
+      store: true,
+      forceZip64: bookIds.length > 200,
+      forceLocalTime: true
+    });
     let archiveFinalized = false;
     archive.on('error', () => {
       archive.destroy();  // Explicitly destroy to prevent stream leak
@@ -192,14 +228,10 @@ async function streamBatchZipArchive(req, res, next, { bookIds, archiveName, for
           const download = await resolveDownload(book, format || undefined);
           totalResolveMs += Date.now() - tResolve;
 
+          const folder = zipSeriesFolderName(book);
           let fileName = sanitizeZipEntryName(download.fileName, `book-${bookId}.${download.format || 'fb2'}`);
-          const count = usedNames.get(fileName) || 0;
-          if (count > 0) {
-            const ext = path.extname(fileName);
-            const base = fileName.slice(0, fileName.length - ext.length);
-            fileName = `${base} (${count})${ext}`;
-          }
-          usedNames.set(fileName, count + 1);
+          fileName = uniqueNameInFolder(usedNames, folder, fileName);
+          const entryName = `${folder}/${fileName}`;
 
           if (perBookZip) {
             const tRead = Date.now();
@@ -215,14 +247,16 @@ async function streamBatchZipArchive(req, res, next, { bookIds, archiveName, for
             totalPackMs += Date.now() - tPack;
             const ext = path.extname(fileName);
             const stem = fileName.slice(0, fileName.length - ext.length) || 'book';
-            const n = usedOuterZipBase.get(stem) || 0;
-            usedOuterZipBase.set(stem, n + 1);
-            const outerName = sanitizeZipEntryName(n === 0 ? `${stem}.zip` : `${stem} (${n}).zip`, `book-${bookId}.zip`);
-            archive.append(innerBuf, { name: outerName });
+            const outerName = uniqueNameInFolder(
+              usedOuterZipBase,
+              folder,
+              sanitizeZipEntryName(`${stem}.zip`, `book-${bookId}.zip`)
+            );
+            archive.append(innerBuf, { name: `${folder}/${outerName}` });
           } else if (download.filePath) {
-            archive.file(download.filePath, { name: fileName });
+            archive.file(download.filePath, { name: entryName });
           } else {
-            archive.append(download.content, { name: fileName });
+            archive.append(download.content, { name: entryName });
           }
           includedCount++;
         } catch (error) {

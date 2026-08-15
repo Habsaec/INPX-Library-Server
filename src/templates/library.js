@@ -5,7 +5,7 @@ import {
   escapeHtml, sanitizeHtml, csrfHiddenField, pageShell,
   renderBookGrid, renderFavoriteBookGrid, renderEntityGrid, renderCover,
   renderPagination, renderSortControl, renderEmptyState,
-  renderDownloadMenu, renderBatchDownloadToolbar,
+  renderDownloadMenu, renderBatchDownloadToolbar, renderScopeDownloadMenu,
   renderHomeShelf, renderMiniBookList, renderDiscoveryTiles,
   renderStatsRibbon, renderBookMetaList, renderSkeletonGrid,
   renderAuthorFacetSeriesList, renderAuthorFlibustaList, renderBookFlibustaList,
@@ -712,7 +712,8 @@ export function renderBook({
           </div>
         </div>
         <div class="book-detail-content">
-          <h2 class="book-detail-title">${escapeHtml(book.title)}</h2>
+          <h2 class="book-detail-title">${escapeHtml(book.title)}${Number(book.deleted) ? ` <span class="deleted-badge deleted-badge--inline" title="${escapeHtml(t('book.deletedHint'))}">${escapeHtml(t('book.deletedBadge'))}</span>` : ''}</h2>
+          ${Number(book.deleted) ? `<p class="muted book-deleted-note">${escapeHtml(t('book.deletedHint'))}</p>` : ''}
           <div class="author">${book.authors ? renderAuthorLinks(book.authorsList, { limit: 3, bookAuthors: book.authors, inlineExpand: true }) : escapeHtml(t('book.authorUnknown'))}</div>
           ${summaryBits.length ? `<div class="book-detail-summary">${summaryBits.join('<span class="book-detail-sep">·</span>')}</div>` : ''}
           ${
@@ -1016,6 +1017,9 @@ export function renderFacetBooks({ title, items, total, page, pageSize, user, st
     : '';
   const batchCtx = facet === 'series' && facetValue !== '' ? { facet: 'series', value: facetValue } : null;
   const showBatch = !isEntityView && Boolean(batchCtx && items.length && canDownloadInUi(user));
+  const scopeDownload = !isEntityView && Boolean(batchCtx && total > 0)
+    ? renderScopeDownloadMenu(batchCtx, { user })
+    : '';
 
   // View switcher tabs for genre/language pages: Books | By authors | By series
   const viewTabs = (isGenre || isLang) ? (() => {
@@ -1075,6 +1079,7 @@ export function renderFacetBooks({ title, items, total, page, pageSize, user, st
       <div class="page-intro-actions">
         ${facetAction}
         ${markSeriesReadBtn}
+        ${scopeDownload}
         ${renderSortControl({
           action: facetPath,
           sort,
@@ -1168,6 +1173,7 @@ export function renderAuthorFacetPage({
     <section class="page-intro page-intro-slim author-facet-controls">
       <div class="page-intro-actions author-facet-controls-actions">
         ${facetAction}
+        ${total > 0 ? renderScopeDownloadMenu({ facet: 'authors', value: facetValue }, { user }) : ''}
         ${renderSortControl({
           action: facetPath,
           sort,

@@ -11,25 +11,34 @@
 | Sync by `bookId` | Reading position, bookmarks, annotations sync through server APIs; on-disk file path is a download-time snapshot |
 | Restart after routes | Restart the server after adding or changing route handlers |
 | Additive API | Prefer backward-compatible response changes; Android and OPDS depend on stable contracts |
+| INPX DEL=1 | Indexed with `deleted=1` (not purged). Hidden by default via `active_books`; admin **Content → Show deleted books** (`show_deleted_books`) reveals them. Soft-deleted duplicates (`suppressed_books`) stay hidden. Book payloads may include additive `deleted: 0\|1` |
 | Android-only reader | `inpx-book-reader` targets **Android APK only** — do not design API or UX for iOS/desktop/web client |
 
 Key endpoints for reader:
 - `GET /api/books/:id/meta` (`seriesList` from index)
 - `GET /api/books/:id/position` — position fields plus `positionVersion: 4` and monotonic `revision`; rows below v4 are migrated lazily and idempotently
 - `POST /api/books/:id/position` — CAS write; requires `positionVersion: 4` and `baseRevision`, returns a new `revision`; stale writes receive `409 { current }`, legacy clients receive `428`; marks read at `progress >= 99` and clears that status when rereading drops below 95%
-- `GET /api/books/:id/reader-sync-meta` — bookmark/annotation revs and position sync metadata
+- `GET /api/books/:id/reader-sync-meta` — bookmark/annotation revs and position sync metadata (`positionRevision`, `positionUpdatedAt`, counts)
+- `GET /api/reader-sync-index?ids=` — bulk dirty-check for Android silent sync: `{ activity, books[] }` (same fields as per-book meta + `bookId`; max ~200 ids)
 - `GET /api/profile` — user stats, recent books, bookmarks, annotations (Android profile screen)
+- `GET /api/settings/ui` — public library chrome for Android: `siteName`, `logoUrl`, palettes, `radius`/`radiusPreset`/`radiusScale`, `shadows`/`shadowPreset`, `backgroundUrl`, `bgBlur`, `bgOverlayStrength`, `bgSize`, `bgPosition`, `surfaceOpacity` (0–100), `surfaceBlur` (0–24px)
+- `GET /api/reader-bookmarks` — all reader bookmarks for the user (`items`, `total`, `page`, `pageSize`)
+- `GET /api/reader-annotations` — all reader annotations for the user (`items`, `total`, `page`, `pageSize`)
 - `GET /api/favorites` — favorite authors (`name`, `displayName`, `bookCount`, `coverBookId`) and series (`name`, `displayName`, `bookCount`, `previewBookIds`)
 - `GET /api/reader-activity-sync-meta` — read-state and reading-history revs
 - `POST /api/reading-history/:id` — record `lastOpenedAt` when a book is opened
 - `DELETE /api/reading-history/:id` — remove a reading-history entry
+- «Читаю» / «Продолжить чтение» (`reading_history`) не показывают книги из `read_books`; при снятии «Прочитано» (в т.ч. при progress ниже 95%) снова появляются там. Раздел «Прочитано» отдельный.
 - Cross-device reading position uses server revisions/CAS; web reader and Android prompt when both the local position and a newer server revision changed
 - `GET /api/search?q=` — search section totals: `{ query, books:{total, capped?}, authors:{total}, series:{total}, preferredField?, routeField: null }`; book totals capped (≤10k); web `/catalog?q=` always opens books with Авторы/Серии chips (no hub / smart redirect)
 - `GET /api/search/suggest?q=` — typeahead books/authors/series (web dropdown + Android); multi-word book suggest prefers title scope
 - `GET /api/search/genres?q=` — genres among matching books (optional `format` / `year` / `minRate` / `hasSeries`); web loads lazily after HTML for free-text
 - `GET /api/catalog` — lists books even without `q`/filters (paginated browse); additive filters (AND): `genre` (single/CSV/repeated; multi = OR), `lang`, `format`, `year`, `minRate` (1–5), `hasSeries` (`1`/`0`), plus `q` / `letter` / `field` / `sort`; empty/weak may include additive `searchHints` (`tip`, `didYouMean`, `weak?`)
-- `GET /api/library/recent` — novinki by INPX catalog `date` (30 days before the newest dated book in the DB, paginated); not full catalog / not reindex `imported_at` stamps
+- `GET /api/library/recent` — novinki by INPX catalog `date` (30 days before the newest dated book in the DB, paginated); not full catalog / not reindex `imported_at` stamps; additive filters like catalog: `genre` (CSV/repeated, OR), `lang`, `format`, `year`, `minRate`, `hasSeries` (1/0)
+- `GET /api/library/recommended` — personalized pool + same additive filters (`genre`, `format`, `year`, `minRate`, `hasSeries`)
+- `GET /api/facet-books` — books by facet (`authors`/`series`/`genres`/`languages`); additive filters: `format`, `year`, `minRate`, `hasSeries` (1/0), `lang`
 - Web catalog / search / novinki support `?view=list` (Flibusta-style rows) alongside the default cover grid
+- `GET /api/browse/authors/:value/grouped` — author series + `standaloneBooks` + `books[]` per series (Flibusta-style list); `lean=1` omits `books[]` (name/displayName/bookCount only)
 - Book search: SQLite FTS5, stem expand, title boost (exact/ordered/prefix), author+title split, phrase OR, stopword-aware AND, catalog-layer typo retry on miss, page-level edition dedupe, LIKE fallback when dirty/desynced. Dirty/desync auto-rebuild; post-index FTS warmup. Admin/ops: additive `ftsStatus`, `POST /api/operations/fts-rebuild`
 - Details: `docs/architecture/search.md`
 - `POST /api/auth/pairing` — authenticated; creates a one-time 10-minute QR pairing code (`payload` JSON + `svg`) for Android app sign-in; does not include the password

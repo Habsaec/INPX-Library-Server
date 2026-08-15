@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { formatAuthorLabel, formatGenreLabel, formatLanguageLabel, parseGenreCodes } from '../genre-map.js';
 import { getAvailableDownloadFormats, FORMAT_LABELS, isDownloadFormatEnabled } from '../conversion.js';
 import { config } from '../config.js';
+import { BATCH_ZIP_MAX } from '../constants.js';
 import { bookPagePath, readPagePath, apiBookPath, downloadBookPath, liteBookPagePath, liteReadPagePath, encodeBookRef, bookIdNeedsSafeUrl } from '../utils/book-ref.js';
 import { formatSingleAuthorName, splitAuthorValues } from '../inpx.js';
 import {
@@ -148,6 +149,9 @@ export const READ_CHECK_SVG = '<svg viewBox="0 0 24 24"><polyline points="20 6 9
 
 export function renderCover(book, { readBookIds = null } = {}) {
   const readBadge = readBookIds && readBookIds.has(book.id) ? `<span class="read-badge">${READ_CHECK_SVG}</span>` : '';
+  const deletedBadge = Number(book.deleted)
+    ? `<span class="deleted-badge" title="${escapeHtml(t('book.deletedHint'))}">${escapeHtml(t('book.deletedBadge'))}</span>`
+    : '';
   /* Шкала рейтинга — 1..5; клампим на случай легаси-значений в БД (импорт из INPX или старый UI). */
   const _libRateClamped = Math.max(0, Math.min(5, Math.floor(Number(book.libRate) || 0)));
   const coverRating = _libRateClamped
@@ -165,6 +169,7 @@ export function renderCover(book, { readBookIds = null } = {}) {
       </span>
       <img class="cover-image" loading="lazy" draggable="false" src="${apiBookPath(book.id, 'cover-thumb')}" data-cover-src="${apiBookPath(book.id, 'cover-thumb')}" alt="${escapeHtml(book.title)}">
       ${readBadge}
+      ${deletedBadge}
       ${coverRating}
       <div class="card-annotation-preview" hidden data-card-annotation></div>
     </a>`;
@@ -677,6 +682,7 @@ export function renderBatchDownloadToolbar(batchContext, { extraActions = '', us
     <div class="batch-fab" data-batch-fab hidden>
       <div class="batch-fab-inner batch-download-toolbar" data-batch-download-toolbar data-batch-context="${ctxJson}">
         <span class="batch-fab-count" data-batch-selected-count hidden></span>
+        <button type="button" class="button batch-fab-btn batch-fab-select-all" data-batch-select-all>${escapeHtml(t('app.batchSelectAll'))}</button>
         <button type="button" class="button batch-fab-btn batch-fab-clear" data-batch-clear-select>${escapeHtml(t('app.batchDeselectAll'))}</button>
         <details class="download-menu batch-fab-menu">
           <summary class="button batch-fab-btn batch-fab-download download-menu-trigger">${escapeHtml(t('download.label'))}</summary>
@@ -693,6 +699,46 @@ export function renderBatchDownloadToolbar(batchContext, { extraActions = '', us
         ${extraActions}${emailHtml}
       </div>
     </div>`;
+}
+
+export function batchScopeDownloadPath({ facet, value, format, perBookZip = false }) {
+  const params = new URLSearchParams();
+  params.set('facet', String(facet || ''));
+  params.set('value', String(value ?? ''));
+  if (format) params.set('format', String(format));
+  if (perBookZip) params.set('perBookZip', '1');
+  return `/download/batch?${params.toString()}`;
+}
+
+/** One-click ZIP of every book in an author or series (no checkbox selection). */
+export function renderScopeDownloadMenu(batchContext, { user = null } = {}) {
+  if (!canDownloadInUi(user)) return '';
+  const facet = batchContext && String(batchContext.facet || '');
+  const value = batchContext ? String(batchContext.value ?? '') : '';
+  if ((facet !== 'authors' && facet !== 'series') || !value) return '';
+  const formats = batchZipFormatPairs();
+  if (!formats.length) return '';
+  const label = t('download.all');
+  const title = facet === 'authors' ? t('download.allAuthor') : t('download.allSeries');
+  const links = formats
+    .map(
+      ([format, fmtLabel]) =>
+        `<a class="download-format-link" data-scope-download-format href="${escapeHtml(batchScopeDownloadPath({ facet, value, format }))}" download>${escapeHtml(fmtLabel)}</a>`
+    )
+    .join('');
+  return `
+    <details class="download-menu download-menu-compact" data-scope-download>
+      <summary class="button" title="${escapeHtml(title)}">${escapeHtml(label)}</summary>
+      <div class="download-menu-popover download-menu-popover--batch">
+        <label class="batch-per-book-zip-option">
+          <input type="checkbox" name="perBookZip" value="1" data-scope-per-book-zip>
+          <span>${escapeHtml(t('batch.perBookZip'))}</span>
+        </label>
+        <div class="batch-download-format-list" role="group" aria-label="${escapeHtml(t('batch.formatAria'))}">
+          ${links}
+        </div>
+      </div>
+    </details>`;
 }
 
 /* Алфавитный указатель убран — есть фильтрация */
@@ -839,7 +885,7 @@ export function renderBookGrid(items = [], { isAuthenticated = false, lazyDetail
        без прогресса (на каталоге), переиспользуется на /library/continue,
        где прогресс реально присутствует — и полоска не появляется. */
     const progressKey = Math.round(Number(book.readProgress) || 0);
-    const cacheKey = _cardCacheKey(book, `${flags}${isRead ? '1' : '0'}${book.libRate || 0}|p${progressKey}`);
+    const cacheKey = _cardCacheKey(book, `${flags}${isRead ? '1' : '0'}${book.libRate || 0}|p${progressKey}|d${Number(book.deleted) ? 1 : 0}`);
     const cached = getCachedCardHtml(cacheKey);
     if (cached) return cached;
     const cardDl = hideDownloads ? '' : renderDownloadMenu(book, { compact: true, user });
@@ -1025,9 +1071,12 @@ function renderAuthorFlibustaBookRow(book, {
     ? `<button class="button author-flibusta-email" type="button" ${bookIdDataAttr(book.id)} data-send-to-ereader="1">${escapeHtml(t('book.toEmail'))}</button>`
     : '';
   const actions = `<span class="author-flibusta-actions">${readBtn}${dl}${emailBtn}</span>`;
+  const deletedHtml = Number(book.deleted)
+    ? `<span class="deleted-badge deleted-badge--inline" title="${escapeHtml(t('book.deletedHint'))}">${escapeHtml(t('book.deletedBadge'))}</span>`
+    : '';
   return `<li class="author-flibusta-book" ${bookCardDataAttrs(book.id)}>
     ${batchCb}${noHtml}<a class="author-flibusta-title" href="${bookPagePath(book.id)}">${escapeHtml(book.title || '')}</a>
-    ${authorHtml}${rating}${meta}${actions}
+    ${deletedHtml}${authorHtml}${rating}${meta}${actions}
   </li>`;
 }
 
@@ -1472,7 +1521,7 @@ export function pageShell({ title, content, user, query = '', field = 'all', sta
     @keyframes nav-grow{0%{width:0}15%{width:35%}40%{width:65%}65%{width:82%}100%{width:97%}}
   </style>
 </head>
-<body data-download-allowed="${canDownloadInUi(user) ? '1' : '0'}">
+<body data-download-allowed="${canDownloadInUi(user) ? '1' : '0'}" data-batch-zip-max="${BATCH_ZIP_MAX}">
   <div class="nav-progress" id="nav-progress"></div>
   <script>!function(){var b=document.getElementById('nav-progress');if(!b)return;function done(){b.classList.remove('active')}done();window.addEventListener('pageshow',done);window.addEventListener('popstate',done);document.addEventListener('click',function(e){var a=e.target.closest('a[href]');if(!a)return;var h=a.getAttribute('href');if(!h||h.charAt(0)==='#'||a.target==='_blank'||e.ctrlKey||e.metaKey||e.shiftKey)return;b.classList.add('active')});document.addEventListener('submit',function(){b.classList.add('active')})}()</script>
   <script type="application/json" id="ui-i18n-json">${serializeClientI18n()}</script>
@@ -1560,6 +1609,7 @@ export function renderLoginScreen({
   usernameType = 'text',
   usernameAutocomplete = 'username',
   hiddenFieldsHtml = '',
+  extraFieldsHtml = '',
   confirmPasswordField = false,
   passwordLabel
 }) {
@@ -1582,6 +1632,7 @@ export function renderLoginScreen({
           <label for="confirmPassword">${escapeHtml(t('passwordReset.confirmPassword'))}</label>
           <input id="confirmPassword" type="password" name="confirmPassword" autocomplete="new-password">
         </div>` : ''}
+        ${extraFieldsHtml}
         ${hiddenFieldsHtml}
         ${captchaHtml}
         <button type="submit">${escapeHtml(submit)}</button>

@@ -10,9 +10,11 @@ import {
   getFavoriteSeriesLight,
   getBookmarks,
   getReadBooks,
-  splitAuthorValues
+  splitAuthorValues,
+  parseGenreList,
+  parseHasSeries
 } from '../inpx.js';
-import { getReadBookIdSet, onViewRebuild } from '../db.js';
+import { db, getReadBookIdSet, onViewRebuild } from '../db.js';
 import { t } from '../i18n.js';
 
 const RECS_CACHE_TTL_MS = 10 * 60_000;
@@ -152,7 +154,8 @@ function yieldTick() {
  * сокращают количество SQL с ~100 до ~20.
  */
 async function buildRecommendationsAsync(username, limit = 48) {
-  const history = getReadingHistory(username, 24);
+  /* Для вкуса нужны и прочитанные — не фильтруем read_books. */
+  const history = getReadingHistory(username, 24, { excludeRead: false });
   const favoriteAuthors = getFavoriteAuthorsLight(username, 12);
   const favoriteSeries = getFavoriteSeriesLight(username, 12);
   await yieldTick();
@@ -362,7 +365,87 @@ function scheduleRecommendationBuild(username) {
     .finally(() => _computingSet.delete(username));
 }
 
-export function getRecommendedLibraryView({ username = '', page = 1, pageSize = 24 }) {
+/** Additive catalog filters over an in-memory recommendation pool. */
+function filterRecommendedPool(books, { genre = '', format = '', year = 0, minRate = 0, hasSeries = null } = {}) {
+  if (!Array.isArray(books) || books.length === 0) return [];
+  const genres = parseGenreList(genre);
+  const fmt = String(format || '').trim().toLowerCase();
+  const rate = Math.floor(Number(minRate) || 0);
+  const seriesFlag = hasSeries === 0 || hasSeries === 1 ? hasSeries : parseHasSeries(hasSeries);
+  const y = Number(year) || 0;
+  const hasYear = y >= 1800 && y <= 2100;
+
+  let list = books;
+  if (rate >= 1) {
+    list = list.filter((b) => (Number(b?.libRate) || 0) >= rate);
+  }
+  if (fmt) {
+    list = list.filter((b) => String(b?.ext || '').toLowerCase() === fmt);
+  }
+  if (seriesFlag === 1 || seriesFlag === 0) {
+    list = list.filter((b) => {
+      const has = Boolean(
+        (Array.isArray(b?.seriesList) && b.seriesList.length > 0) ||
+        String(b?.series || '').trim()
+      );
+      return seriesFlag === 1 ? has : !has;
+    });
+  }
+  if (genres.length && list.length) {
+    const idPh = list.map(() => '?').join(',');
+    const genrePh = genres.map(() => '?').join(',');
+    const rows = db.prepare(`
+      SELECT DISTINCT bg.book_id AS id
+      FROM book_genres bg
+      JOIN genres_catalog g ON g.id = bg.genre_id
+      WHERE bg.book_id IN (${idPh})
+        AND g.name IN (${genrePh})
+    `).all(...list.map((b) => b.id), ...genres);
+    const ok = new Set(rows.map((r) => r.id));
+    list = list.filter((b) => ok.has(b.id));
+  }
+  if (hasYear && list.length) {
+    const placeholders = list.map(() => '?').join(',');
+    const rows = db.prepare(`
+      SELECT id FROM active_books
+      WHERE id IN (${placeholders})
+        AND CAST(SUBSTR(date, 1, 4) AS INTEGER) = ?
+    `).all(...list.map((b) => b.id), y);
+    const ok = new Set(rows.map((r) => r.id));
+    list = list.filter((b) => ok.has(b.id));
+  }
+  return list;
+}
+
+function sortRecommendedBooks(books, sort = 'relevance') {
+  const mode = String(sort || 'relevance');
+  if (mode === 'title') {
+    return [...books].sort((a, b) =>
+      String(a?.title || '').localeCompare(String(b?.title || ''), 'ru', { sensitivity: 'base' })
+    );
+  }
+  if (mode === 'rating') {
+    return [...books].sort((a, b) => {
+      const rd = (Number(b?.libRate) || 0) - (Number(a?.libRate) || 0);
+      if (rd !== 0) return rd;
+      return String(a?.title || '').localeCompare(String(b?.title || ''), 'ru', { sensitivity: 'base' });
+    });
+  }
+  // relevance — keep recommendation score order from the builder
+  return books;
+}
+
+export function getRecommendedLibraryView({
+  username = '',
+  page = 1,
+  pageSize = 24,
+  genre = '',
+  format = '',
+  year = 0,
+  minRate = 0,
+  hasSeries = null,
+  sort = 'relevance'
+} = {}) {
   const normalizedUsername = String(username || '').trim();
   if (!normalizedUsername) return { total: 0, items: [], computing: false };
   const recommended = readTimedCache(recommendedViewCache, normalizedUsername);
@@ -370,8 +453,10 @@ export function getRecommendedLibraryView({ username = '', page = 1, pageSize = 
     scheduleRecommendationBuild(normalizedUsername);
     return { total: 0, items: [], computing: true };
   }
+  const filtered = filterRecommendedPool(recommended, { genre, format, year, minRate, hasSeries });
+  const sorted = sortRecommendedBooks(filtered, sort);
   const offset = (page - 1) * pageSize;
-  return { total: recommended.length, items: recommended.slice(offset, offset + pageSize), computing: false };
+  return { total: sorted.length, items: sorted.slice(offset, offset + pageSize), computing: false };
 }
 
 export function getHomeRecommendations({ username = '' }) {

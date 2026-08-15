@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import express from 'express';
 import { config } from '../config.js';
@@ -18,6 +19,7 @@ import { requireAdminWeb, requireAdminApi, invalidateSessionUserCache } from '..
 import { getCachedPageData, clearPageDataCache } from '../services/cache.js';
 import { invalidateAllRecommendations } from '../services/recommendations.js';
 import { verifySmtpConnection } from '../services/email.js';
+import { resolvePublicBaseUrl } from '../services/password-reset.js';
 import {
   logSystemEvent, getSystemEventCategories, parseSystemEventsFilters,
   getRecentSystemEvents, retainRecentSystemEvents, clearSystemEventsTable, subscribeSystemEvents
@@ -70,6 +72,28 @@ import {
 
 function lastFormFieldValue(value) {
   return Array.isArray(value) ? value[value.length - 1] : value;
+}
+
+function wantsJson(req) {
+  return String(req.get('accept') || '').includes('application/json');
+}
+
+function buildRegistrationInviteUrl(req, token) {
+  const value = String(token || '').trim();
+  if (!value) return '';
+  return `${resolvePublicBaseUrl(req)}/register?invite=${encodeURIComponent(value)}`;
+}
+
+function respondRegistrationInvite(req, res, { token = '', flash, status = 200 }) {
+  if (wantsJson(req)) {
+    return res.status(status).json({
+      ok: status < 400,
+      token,
+      url: buildRegistrationInviteUrl(req, token),
+      flash
+    });
+  }
+  return res.redirect('/admin/users?flash=' + encodeURIComponent(flash));
 }
 
 function isFormFlagEnabled(value) {
@@ -183,6 +207,40 @@ export function registerAdminRoutes(app, deps) {
       res.redirect('/admin/users');
     } catch (error) {
       res.redirect('/admin/users?flash=' + encodeURIComponent(translateKnownErrorMessage(error.message)));
+    }
+  });
+
+  app.post('/admin/settings/registration-invite', requireAdminWeb, (req, res) => {
+    try {
+      const action = String(lastFormFieldValue(req.body.inviteAction ?? req.body.action) || 'save');
+      if (action === 'generate') {
+        const token = crypto.randomBytes(16).toString('base64url');
+        setSetting('registration_invite_token', token);
+        logSystemEvent('info', 'admin', 'registration invite token generated', { admin: req.user.username });
+        return respondRegistrationInvite(req, res, { token, flash: t('admin.flash.inviteGenerated') });
+      }
+      const token = String(lastFormFieldValue(req.body.token) || '').trim();
+      if (token && (token.length < 4 || token.length > 128 || /\s/.test(token))) {
+        return respondRegistrationInvite(req, res, {
+          token,
+          flash: t('admin.users.inviteInvalid'),
+          status: 400
+        });
+      }
+      setSetting('registration_invite_token', token);
+      logSystemEvent('info', 'admin', token ? 'registration invite token saved' : 'registration invite token cleared', {
+        admin: req.user.username
+      });
+      return respondRegistrationInvite(req, res, {
+        token,
+        flash: token ? t('admin.flash.inviteSaved') : t('admin.flash.inviteCleared')
+      });
+    } catch (error) {
+      return respondRegistrationInvite(req, res, {
+        token: String(lastFormFieldValue(req.body.token) || '').trim(),
+        flash: translateKnownErrorMessage(error.message),
+        status: 400
+      });
     }
   });
 
@@ -607,11 +665,14 @@ export function registerAdminRoutes(app, deps) {
 
   app.get('/admin/users', requireAdminWeb, (req, res) => {
     const stats = getCachedStats();
+    const registrationInviteToken = String(getSetting('registration_invite_token') || '').trim();
+    const registrationInviteUrl = buildRegistrationInviteUrl(req, registrationInviteToken);
     res.send(renderAdminUsers({
       user: req.user, stats, indexStatus: getIndexStatus(),
       users: listUsers(), flash: String(req.query.flash || ''),
       adminCount: countAdminUsers(),
       registrationEnabled: getSetting('allow_registration') === '1',
+      registrationInviteToken,
       recaptchaSiteKey: getSetting('recaptcha_site_key'),
       recaptchaSecretKey: decryptValue(getSetting('recaptcha_secret_key')),
       allowAnonymousBrowse: getSetting('allow_anonymous_browse') === '1',
@@ -619,6 +680,7 @@ export function registerAdminRoutes(app, deps) {
       allowAnonymousOpds: getSetting('allow_anonymous_opds') === '1',
       passwordResetEnabled: isPasswordResetEnabled(),
       publicBaseUrl: getPublicBaseUrlSetting(),
+      registrationInviteUrl,
       oidc: getOidcSettings(),
       csrfToken: req.csrfToken || ''
     }));
@@ -1863,6 +1925,7 @@ export function registerAdminRoutes(app, deps) {
       languages: allLangs, excludedLangSet,
       genres: allGenres, excludedGenreSet,
       disabledDownloadFormatSet,
+      showDeletedBooks: getSetting('show_deleted_books') === '1',
       flash: String(req.query.flash || ''), csrfToken: req.csrfToken || ''
     }));
   });
@@ -1890,6 +1953,7 @@ export function registerAdminRoutes(app, deps) {
     // Сохраняем предыдущие значения, чтобы откатить, если rebuildActiveBooksView() упадёт.
     const prevExcludedLangs = getSetting('excluded_languages') || '';
     const prevExcludedGenres = getSetting('excluded_genres') || '';
+    const prevShowDeleted = getSetting('show_deleted_books') || '0';
     let committed = false;
     try {
       // Languages
@@ -1908,6 +1972,8 @@ export function registerAdminRoutes(app, deps) {
       const excludedGenre = allGenreCodes.filter(code => !enabledGenre.has(code));
       setSetting('excluded_genres', excludedGenre.join(','));
 
+      setSetting('show_deleted_books', req.body.show_deleted_books === '1' ? '1' : '0');
+
       await rebuildActiveBooksView();
       invalidateDuplicatesCache();
       committed = true;
@@ -1916,6 +1982,7 @@ export function registerAdminRoutes(app, deps) {
         admin: req.user.username,
         excludedLangs: excludedLang.join(','),
         excludedGenres: excludedGenre.join(','),
+        showDeletedBooks: getSetting('show_deleted_books') === '1',
         disabledFormats: disabledFmt.join(',')
       });
       res.redirect('/admin/content?flash=' + encodeURIComponent(t('admin.content.saved')));
@@ -1925,6 +1992,7 @@ export function registerAdminRoutes(app, deps) {
         try {
           setSetting('excluded_languages', prevExcludedLangs);
           setSetting('excluded_genres', prevExcludedGenres);
+          setSetting('show_deleted_books', prevShowDeleted);
           // Попытка восстановить view из старых значений (best-effort).
           await rebuildActiveBooksView();
           invalidateDuplicatesCache();

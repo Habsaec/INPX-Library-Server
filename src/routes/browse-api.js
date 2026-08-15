@@ -90,19 +90,41 @@ export function registerBrowseApiRoutes(app) {
       : 24;
     const type = String(req.query.type || '').trim();
     const requestedSort = String(req.query.sort || '');
-    const defaultSort = view === 'recent' ? 'recent' : 'title';
-    const sort = ['recent', 'title', 'author', 'series', 'rating'].includes(requestedSort) ? requestedSort : defaultSort;
+    const defaultSort = view === 'recent' ? 'recent' : view === 'recommended' ? 'relevance' : 'title';
+    const allowedSorts = view === 'recommended'
+      ? ['relevance', 'title', 'rating', 'author', 'recent']
+      : ['recent', 'title', 'author', 'series', 'rating'];
+    const sort = allowedSorts.includes(requestedSort) ? requestedSort : defaultSort;
     const order = String(req.query.order || '');
+    const genres = parseGenreList(req.query.genre);
+    const genre = genres.join(',');
+    const lang = String(req.query.lang || '').trim();
+    const format = String(req.query.format || '').trim();
+    const year = Number(req.query.year) || 0;
+    const minRate = Math.min(5, Math.max(0, Math.floor(Number(req.query.minRate) || 0)));
+    const hasSeries = parseHasSeries(req.query.hasSeries);
+    const filterKey = `${genre}:${lang}:${format}:${year}:${minRate}:${hasSeries ?? ''}`;
     const user = req.user || null;
     const canUseSharedCache = view === 'recent';
     const username = user?.username || '';
+    const libraryOpts = { page, pageSize, sort, order, genre, lang, format, year, minRate, hasSeries };
     const result = canUseSharedCache
-      ? getStaleOrSchedule(`library:${view}:v4:sort:${sort}:${order}:page:${page}:size:${pageSize}`, () => getLibraryView(view, { page, pageSize, sort, order }), PAGE_CACHE_TTL_MS, { total: 0, items: [] })
+      ? getStaleOrSchedule(
+        `library:${view}:v5:sort:${sort}:${order}:f:${filterKey}:page:${page}:size:${pageSize}`,
+        () => getLibraryView(view, libraryOpts),
+        PAGE_CACHE_TTL_MS,
+        { total: 0, items: [] }
+      )
       : view === 'recommended'
-        ? getRecommendedLibraryView({ page, pageSize, username })
+        ? getRecommendedLibraryView({ page, pageSize, username, genre, format, year, minRate, hasSeries, sort })
         : view === 'continue' || view === 'read'
-          ? getStaleOrSchedule(`library:${view}:${username}:sort:${sort}:${order}:p${page}:s${pageSize}`, () => getLibraryView(view, { page, pageSize, username, type, sort, order }), PAGE_CACHE_TTL_MS, { total: 0, items: [] })
-          : getLibraryView(view, { page, pageSize, username, type, sort, order });
+          ? getStaleOrSchedule(
+            `library:${view}:${username}:sort:${sort}:${order}:p${page}:s${pageSize}`,
+            () => getLibraryView(view, { ...libraryOpts, username, type }),
+            PAGE_CACHE_TTL_MS,
+            { total: 0, items: [] }
+          )
+          : getLibraryView(view, { ...libraryOpts, username, type });
     const json = { items: result.items, total: result.total, page, pageSize };
     if (result.computing) json.computing = true;
     res.json(json);
@@ -199,12 +221,15 @@ export function registerBrowseApiRoutes(app) {
           ? readFlibustaAuthorPortraitForAuthorName(value, facetRoot).catch(() => null)
           : Promise.resolve(null),
       ]);
-      /* Keep series summaries lean for Android; full book rows stay on web list view. */
+      /* Always include books[] per series — Android/list UI groups titles under series (Flibusta-style).
+         lean=1 keeps summaries only (name/displayName/bookCount) for lightweight callers. */
+      const lean = String(req.query.lean || '') === '1';
       res.json({
         series: (grouped.series || []).map((s) => ({
           name: s.name,
           displayName: s.displayName || s.name,
-          bookCount: s.bookCount
+          bookCount: s.bookCount,
+          ...(lean ? {} : { books: Array.isArray(s.books) ? s.books : [] })
         })),
         standaloneBooks: grouped.standaloneBooks,
         total: grouped.total,
@@ -225,6 +250,11 @@ export function registerBrowseApiRoutes(app) {
       const order = String(req.query.order || '');
       const page = safePage(req.query.page);
       const pageSize = 24;
+      const lang = String(req.query.lang || '').trim();
+      const format = String(req.query.format || '').trim();
+      const year = Number(req.query.year) || 0;
+      const minRate = Math.min(5, Math.max(0, Math.floor(Number(req.query.minRate) || 0)));
+      const hasSeries = parseHasSeries(req.query.hasSeries);
       const allowed = new Set(['authors', 'series', 'genres', 'languages']);
       if (!allowed.has(facet) || !value) {
         return apiFail(res, 400, ApiErrorCode.FACET_INVALID, t('api.facet.invalid'), { items: [], total: 0, page, pageSize });
@@ -234,7 +264,10 @@ export function registerBrowseApiRoutes(app) {
         const canonical = resolveAuthorName(author);
         author = canonical ?? author.toLowerCase();
       }
-      const result = await getBooksByFacetCoalesced({ facet, value, page, pageSize, sort, order, author });
+      const result = await getBooksByFacetCoalesced({
+        facet, value, page, pageSize, sort, order, author,
+        lang, format, year, minRate, hasSeries
+      });
       res.json({ items: result.items, total: result.total, page, pageSize });
     } catch (error) {
       next(error);
