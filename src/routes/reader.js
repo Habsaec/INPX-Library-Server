@@ -2,6 +2,7 @@ import {
   fractionToProgress,
   normalizeReadingFraction,
   progressToFraction,
+  shouldIdleSteal,
 } from '../../public/position-sync.js';
 import { requireApiAuth } from '../middleware/auth.js';
 import { ApiErrorCode, apiFail } from '../api-errors.js';
@@ -9,7 +10,7 @@ import { t } from '../i18n.js';
 import { asyncHandler } from '../utils/async-handler.js';
 import { safePage } from '../utils/safe-int.js';
 import {
-  getReadingPosition, migrateReadingPositionToV4, setReadingPositionCas,
+  getReadingPosition, migrateReadingPositionToV4, setReadingPositionCas, setReadingPositionIdleSteal,
   getReaderBookmarks, addReaderBookmark, deleteReaderBookmark,
   getAllReaderBookmarksPage, getAllReaderAnnotationsPage,
   getReaderAnnotations, addReaderAnnotation, updateReaderAnnotation, deleteReaderAnnotation,
@@ -56,6 +57,9 @@ export function registerReaderRoutes(app) {
       updatedAt: null,
       positionVersion: 4,
       revision: 0,
+      sessionId: null,
+      lastUserActivityAt: null,
+      sessionStatus: 'idle',
     });
   }));
 
@@ -95,6 +99,7 @@ export function registerReaderRoutes(app) {
       textSectionLength,
       positionVersion,
       baseRevision,
+      sessionId,
     } = req.body;
     const bookId = req.params.id;
     const username = req.user.username;
@@ -152,7 +157,7 @@ export function registerReaderRoutes(app) {
       const number = Number(value);
       return Number.isFinite(number) ? number : null;
     };
-    const saved = setReadingPositionCas(username, bookId, normalizedBaseRevision, posStr, progressNum, fractionNum, fb2HrefStr, {
+    const anchors = {
       sectionIndex: finite(sectionIndex),
       sectionPageFraction: finite(sectionPageFraction),
       paginatorPage: finite(paginatorPage),
@@ -161,7 +166,19 @@ export function registerReaderRoutes(app) {
       textOffset: textOffsetValue,
       textQuote: textQuoteValue,
       textSectionLength: textSectionLengthValue,
-    });
+      sessionId,
+    };
+    let saved = setReadingPositionCas(
+      username, bookId, normalizedBaseRevision, posStr, progressNum, fractionNum, fb2HrefStr, anchors,
+    );
+    if (!saved) {
+      const current = getReadingPosition(username, bookId);
+      if (shouldIdleSteal(current, sessionId)) {
+        saved = setReadingPositionIdleSteal(
+          username, bookId, current.sessionId, posStr, progressNum, fractionNum, fb2HrefStr, anchors,
+        );
+      }
+    }
     if (!saved) {
       return apiFail(
         res,

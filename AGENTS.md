@@ -16,8 +16,8 @@
 
 Key endpoints for reader:
 - `GET /api/books/:id/meta` (`seriesList` from index)
-- `GET /api/books/:id/position` — position fields plus `positionVersion: 4` and monotonic `revision`; rows below v4 are migrated lazily and idempotently
-- `POST /api/books/:id/position` — CAS write; requires `positionVersion: 4` and `baseRevision`, returns a new `revision`; stale writes receive `409 { current }`, legacy clients receive `428`; marks read at `progress >= 99` and clears that status when rereading drops below 95%
+- `GET /api/books/:id/position` — position fields plus `positionVersion: 4`, monotonic `revision`, and holder `sessionId` / `lastUserActivityAt` / `sessionStatus` (`active` if user activity within 4 minutes); rows below v4 are migrated lazily and idempotently
+- `POST /api/books/:id/position` — CAS write; requires `positionVersion: 4` and `baseRevision`, optional `sessionId`; returns a new `revision`; a different *active* session cannot overwrite even with a matching revision; stale writes receive `409 { current }` unless the holder session is idle (>4 min) and the writer is a different `sessionId` (idle-steal); clients that omit `sessionId` keep revision-only CAS; legacy protocol clients receive `428`; marks read at `progress >= 99` and clears that status when rereading drops below 95%
 - `GET /api/books/:id/reader-sync-meta` — bookmark/annotation revs and position sync metadata (`positionRevision`, `positionUpdatedAt`, counts)
 - `GET /api/reader-sync-index?ids=` — bulk dirty-check for Android silent sync: `{ activity, books[] }` (same fields as per-book meta + `bookId`; max ~200 ids)
 - `GET /api/profile` — user stats, recent books, bookmarks, annotations (Android profile screen)
@@ -29,7 +29,7 @@ Key endpoints for reader:
 - `POST /api/reading-history/:id` — record `lastOpenedAt` when a book is opened
 - `DELETE /api/reading-history/:id` — remove a reading-history entry
 - «Читаю» / «Продолжить чтение» (`reading_history`) не показывают книги из `read_books`; при снятии «Прочитано» (в т.ч. при progress ниже 95%) снова появляются там. Раздел «Прочитано» отдельный.
-- Cross-device reading position uses server revisions/CAS; web reader and Android prompt when both the local position and a newer server revision changed
+- Cross-device reading position uses server revisions/CAS plus per-open `sessionId`; an idle holder (>4 min without page turns) can be stolen; a different active session cannot take over via matching-revision CAS; an open reader prompts on a live coordinate conflict (never silent jump); «stay here» is bound to that holder `sessionId` until the holder changes
 - `GET /api/search?q=` — search section totals: `{ query, books:{total, capped?}, authors:{total}, series:{total}, preferredField?, routeField: null }`; book totals capped (≤10k); web `/catalog?q=` always opens books with Авторы/Серии chips (no hub / smart redirect)
 - `GET /api/search/suggest?q=` — typeahead books/authors/series (web dropdown + Android); multi-word book suggest prefers title scope
 - `GET /api/search/genres?q=` — genres among matching books (optional `format` / `year` / `minRate` / `hasSeries`); web loads lazily after HTML for free-text
@@ -61,6 +61,8 @@ Shared logic lives in `public/position-sync.js` (copied to Android `public/inpx-
 | `position` | EPUB CFI / paginator token; empty for FB2 when `fb2Href` is set |
 | `positionVersion` | Coordinate contract version; rows below v4 migrate lazily: FB2/FBZ coordinates and anchors reset, while EPUB keeps only its CFI |
 | `revision` / `baseRevision` | Server CAS token; only a write based on the current revision is accepted |
+| `sessionId` | Per-open-reader UUID; a different holder with differing coordinates always shows a dialog (including when the holder omitted `sessionId`) |
+| `lastUserActivityAt` / idle 4 min | Open readers stop POSTing after 4 minutes without page/snap/scroll/navigation; another session may idle-steal or take over with the current revision only while the holder is idle |
 
 Cursor rule: `.cursor/rules/unified-ecosystem.mdc` (always apply).
 

@@ -7,6 +7,7 @@ import { config } from './config.js';
 import { appendIndexDiaryLine } from './services/file-log.js';
 import { hashPassword } from './auth.js';
 import { runMigrations } from './services/migrations.js';
+import { IDLE_MS, sessionStatusFromActivityAt } from '../public/position-sync.js';
 
 function deriveEncKey() {
   return crypto.scryptSync(config.sessionSecret, 'smtp-enc-salt', 32);
@@ -2529,6 +2530,7 @@ export function resetDbPreparedStatements() {
   _stmtCountAdmins = null;
   _stmtGetReadPos = null;
   _stmtSetReadPosCas = null;
+  _stmtSetReadPosIdleSteal = null;
   _stmtMigrateReadPos = null;
   _stmtResetAndMigrateReadPos = null;
   _stmtDeleteReadPos = null;
@@ -2890,6 +2892,12 @@ function ensureReadingPositionsSchema() {
   if (!names.has('revision')) {
     db.exec(`ALTER TABLE reading_positions ADD COLUMN revision INTEGER NOT NULL DEFAULT 1`);
   }
+  if (!names.has('holder_session_id')) {
+    db.exec(`ALTER TABLE reading_positions ADD COLUMN holder_session_id TEXT`);
+  }
+  if (!names.has('last_user_activity_at')) {
+    db.exec(`ALTER TABLE reading_positions ADD COLUMN last_user_activity_at TEXT`);
+  }
 }
 ensureReadingPositionsSchema();
 
@@ -3045,6 +3053,12 @@ function nullableFiniteNumber(value) {
   return Number.isFinite(number) ? number : null;
 }
 
+function normalizeHolderSessionId(value) {
+  const id = String(value ?? '').trim();
+  if (!id || id.length > 128) return null;
+  return id;
+}
+
 export function getReadingPosition(username, bookId) {
   _stmtGetReadPos ??= db.prepare(
     `SELECT position, progress, fraction, fb2_href AS fb2Href, updated_at AS updatedAt,
@@ -3052,11 +3066,14 @@ export function getReadingPosition(username, bookId) {
             paginator_page AS paginatorPage, paginator_pages AS paginatorPages,
             layout_mode AS layoutMode, text_offset AS textOffset, text_quote AS textQuote,
             text_section_length AS textSectionLength,
-            position_version AS positionVersion, revision
+            position_version AS positionVersion, revision,
+            holder_session_id AS sessionId, last_user_activity_at AS lastUserActivityAt
      FROM reading_positions WHERE username = ? AND book_id = ?`,
   );
   const row = _stmtGetReadPos.get(username, bookId);
   if (!row) return null;
+  const sessionId = row.sessionId ? String(row.sessionId) : null;
+  const lastUserActivityAt = row.lastUserActivityAt || null;
   return {
     position: row.position || '',
     progress: Number(row.progress) || 0,
@@ -3073,6 +3090,9 @@ export function getReadingPosition(username, bookId) {
     updatedAt: row.updatedAt || null,
     positionVersion: Number(row.positionVersion) || 1,
     revision: Math.max(1, Number(row.revision) || 1),
+    sessionId,
+    lastUserActivityAt,
+    sessionStatus: sessionStatusFromActivityAt(lastUserActivityAt),
   };
 }
 
@@ -3124,6 +3144,33 @@ export function migrateReadingPositionToV4(username, bookId, { reset = false } =
 }
 
 let _stmtSetReadPosCas = null;
+let _stmtSetReadPosIdleSteal = null;
+const IDLE_SQL_MODIFIER = `-${Math.round(IDLE_MS / 1000)} seconds`;
+
+function readingPositionWriteFields(position, progress, fraction, fb2Href, anchors = {}) {
+  const fractionVal = Number.isFinite(Number(fraction)) ? Math.max(0, Math.min(1, Number(fraction))) : null;
+  const fb2HrefVal = fb2Href != null && String(fb2Href).trim() ? String(fb2Href).trim() : null;
+  const layoutMode =
+    anchors?.layoutMode != null && String(anchors.layoutMode).trim()
+      ? String(anchors.layoutMode).trim()
+      : null;
+  return {
+    position: String(position),
+    progress: Number(progress) || 0,
+    fractionVal,
+    fb2HrefVal,
+    sectionIndex: nullableFiniteNumber(anchors?.sectionIndex),
+    sectionPageFraction: nullableFiniteNumber(anchors?.sectionPageFraction),
+    paginatorPage: nullableFiniteNumber(anchors?.paginatorPage),
+    paginatorPages: nullableFiniteNumber(anchors?.paginatorPages),
+    layoutMode,
+    textOffset: nullableFiniteNumber(anchors?.textOffset),
+    textQuote: anchors?.textQuote != null ? String(anchors.textQuote) : null,
+    textSectionLength: nullableFiniteNumber(anchors?.textSectionLength),
+    sessionId: normalizeHolderSessionId(anchors?.sessionId),
+  };
+}
+
 export function setReadingPositionCas(
   username,
   bookId,
@@ -3138,9 +3185,10 @@ export function setReadingPositionCas(
       username, book_id, position, progress, fraction, fb2_href,
       section_index, section_page_fraction, paginator_page, paginator_pages, layout_mode,
       text_offset, text_quote, text_section_length,
+      holder_session_id, last_user_activity_at,
       position_version, revision, updated_at
     )
-    SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 4, 1, datetime('now')
+    SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), 4, 1, datetime('now')
     WHERE ? = 0 OR EXISTS (
       SELECT 1 FROM reading_positions
       WHERE username = ? AND book_id = ? AND revision = ?
@@ -3158,45 +3206,108 @@ export function setReadingPositionCas(
       text_offset = excluded.text_offset,
       text_quote = excluded.text_quote,
       text_section_length = excluded.text_section_length,
+      holder_session_id = excluded.holder_session_id,
+      last_user_activity_at = excluded.last_user_activity_at,
       position_version = 4,
       revision = reading_positions.revision + 1,
       updated_at = excluded.updated_at
     WHERE reading_positions.revision = ?
+      AND (
+        ? IS NULL
+        OR reading_positions.holder_session_id IS NULL
+        OR reading_positions.holder_session_id = ?
+        OR reading_positions.last_user_activity_at IS NULL
+        OR datetime(reading_positions.last_user_activity_at) <= datetime('now', ?)
+      )
     RETURNING revision`);
-  const fractionVal = Number.isFinite(Number(fraction)) ? Math.max(0, Math.min(1, Number(fraction))) : null;
-  const fb2HrefVal = fb2Href != null && String(fb2Href).trim() ? String(fb2Href).trim() : null;
-  const sectionIndex = nullableFiniteNumber(anchors?.sectionIndex);
-  const sectionPageFraction = nullableFiniteNumber(anchors?.sectionPageFraction);
-  const paginatorPage = nullableFiniteNumber(anchors?.paginatorPage);
-  const paginatorPages = nullableFiniteNumber(anchors?.paginatorPages);
-  const layoutMode =
-    anchors?.layoutMode != null && String(anchors.layoutMode).trim()
-      ? String(anchors.layoutMode).trim()
-      : null;
-  const textOffset = nullableFiniteNumber(anchors?.textOffset);
-  const textQuote = anchors?.textQuote != null ? String(anchors.textQuote) : null;
-  const textSectionLength = nullableFiniteNumber(anchors?.textSectionLength);
+  const fields = readingPositionWriteFields(position, progress, fraction, fb2Href, anchors);
   const normalizedBaseRevision = Number(baseRevision);
   const saved = _stmtSetReadPosCas.get(
     username,
     bookId,
-    String(position),
-    Number(progress) || 0,
-    fractionVal,
-    fb2HrefVal,
-    sectionIndex,
-    sectionPageFraction,
-    paginatorPage,
-    paginatorPages,
-    layoutMode,
-    textOffset,
-    textQuote,
-    textSectionLength,
+    fields.position,
+    fields.progress,
+    fields.fractionVal,
+    fields.fb2HrefVal,
+    fields.sectionIndex,
+    fields.sectionPageFraction,
+    fields.paginatorPage,
+    fields.paginatorPages,
+    fields.layoutMode,
+    fields.textOffset,
+    fields.textQuote,
+    fields.textSectionLength,
+    fields.sessionId,
     normalizedBaseRevision,
     username,
     bookId,
     normalizedBaseRevision,
     normalizedBaseRevision,
+    fields.sessionId,
+    fields.sessionId,
+    IDLE_SQL_MODIFIER,
+  );
+  return saved ? getReadingPosition(username, bookId) : null;
+}
+
+export function setReadingPositionIdleSteal(
+  username,
+  bookId,
+  expectedHolderSessionId,
+  position,
+  progress,
+  fraction = null,
+  fb2Href = null,
+  anchors = {},
+) {
+  const holder = normalizeHolderSessionId(expectedHolderSessionId);
+  const incoming = normalizeHolderSessionId(anchors?.sessionId);
+  if (!holder || !incoming || holder === incoming) return null;
+  _stmtSetReadPosIdleSteal ??= db.prepare(`UPDATE reading_positions SET
+      position = ?,
+      progress = ?,
+      fraction = ?,
+      fb2_href = ?,
+      section_index = ?,
+      section_page_fraction = ?,
+      paginator_page = ?,
+      paginator_pages = ?,
+      layout_mode = ?,
+      text_offset = ?,
+      text_quote = ?,
+      text_section_length = ?,
+      holder_session_id = ?,
+      last_user_activity_at = datetime('now'),
+      position_version = 4,
+      revision = revision + 1,
+      updated_at = datetime('now')
+    WHERE username = ?
+      AND book_id = ?
+      AND holder_session_id = ?
+      AND (
+        last_user_activity_at IS NULL
+        OR datetime(last_user_activity_at) <= datetime('now', ?)
+      )
+    RETURNING revision`);
+  const fields = readingPositionWriteFields(position, progress, fraction, fb2Href, anchors);
+  const saved = _stmtSetReadPosIdleSteal.get(
+    fields.position,
+    fields.progress,
+    fields.fractionVal,
+    fields.fb2HrefVal,
+    fields.sectionIndex,
+    fields.sectionPageFraction,
+    fields.paginatorPage,
+    fields.paginatorPages,
+    fields.layoutMode,
+    fields.textOffset,
+    fields.textQuote,
+    fields.textSectionLength,
+    incoming,
+    username,
+    bookId,
+    holder,
+    IDLE_SQL_MODIFIER,
   );
   return saved ? getReadingPosition(username, bookId) : null;
 }

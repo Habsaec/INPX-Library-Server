@@ -14,6 +14,8 @@ import {
   positionsMeaningfullyDiffer,
   shouldShowCrossDevicePositionPrompt,
   shouldUseServerPosition,
+  shouldIdleSteal,
+  canOverwriteHolder,
 } from '../public/position-sync.js';
 
 describe('position-sync', () => {
@@ -332,5 +334,35 @@ describe('position-sync', () => {
     );
     assert.equal(lines.localLine, '95% · Глава 10. Место под солнцем');
     assert.equal(lines.serverLine, '95% · Глава 4. И даже не Фили');
+  });
+});
+
+describe('session idle-steal helpers', () => {
+  it('idle-steals only a different idle holder', () => {
+    const idle = {
+      sessionId: 'tablet',
+      lastUserActivityAt: '2026-07-12T10:00:00.000Z',
+    };
+    const now = Date.parse('2026-07-12T10:05:00.000Z');
+    assert.equal(shouldIdleSteal(idle, 'phone', now), true);
+    assert.equal(shouldIdleSteal(idle, 'tablet', now), false);
+    assert.equal(shouldIdleSteal(idle, '', now), false);
+    assert.equal(shouldIdleSteal({ sessionId: 'tablet', lastUserActivityAt: '2026-07-12T10:04:30.000Z' }, 'phone', now), false);
+  });
+
+  it('blocks matching-revision take-over while another session is active', () => {
+    const now = Date.parse('2026-07-12T10:01:00.000Z');
+    const active = {
+      sessionId: 'tablet',
+      lastUserActivityAt: '2026-07-12T10:00:00.000Z',
+    };
+    assert.equal(canOverwriteHolder(active, 'phone', now), false);
+    assert.equal(canOverwriteHolder(active, 'tablet', now), true);
+    assert.equal(canOverwriteHolder(active, '', now), true);
+    const idle = {
+      sessionId: 'tablet',
+      lastUserActivityAt: '2026-07-12T09:50:00.000Z',
+    };
+    assert.equal(canOverwriteHolder(idle, 'phone', now), true);
   });
 });

@@ -465,4 +465,151 @@ describe('reading position v4 API', () => {
       undefined,
     );
   });
+
+  it('idle-steals a stale revision from another session and GET reports holder metadata', async () => {
+    clearPosition(BOOK_IDS.apiCas);
+    const created = await request('POST', BOOK_IDS.apiCas, {
+      positionVersion: 4,
+      baseRevision: 0,
+      sessionId: 'tablet-session',
+      position: 'epubcfi(/6/2)',
+      progress: 12,
+      fraction: 0.12,
+    });
+    assert.equal(created.status, 200);
+    assert.equal(created.body.revision, 1);
+    db.prepare(`
+      UPDATE reading_positions
+      SET last_user_activity_at = datetime('now', '-5 minutes')
+      WHERE username = ? AND book_id = ?
+    `).run(USERNAME, BOOK_IDS.apiCas);
+
+    const stolen = await request('POST', BOOK_IDS.apiCas, {
+      positionVersion: 4,
+      baseRevision: 0,
+      sessionId: 'phone-session',
+      position: 'epubcfi(/6/14)',
+      progress: 60,
+      fraction: 0.6,
+    });
+    assert.equal(stolen.status, 200);
+    assert.equal(stolen.body.revision, 2);
+
+    const roundtrip = await request('GET', BOOK_IDS.apiCas);
+    assert.equal(roundtrip.body.sessionId, 'phone-session');
+    assert.equal(roundtrip.body.sessionStatus, 'active');
+    assert.equal(roundtrip.body.progress, 60);
+  });
+
+  it('rejects a stale write from another session while the holder is active', async () => {
+    clearPosition(BOOK_IDS.apiCas);
+    const created = await request('POST', BOOK_IDS.apiCas, {
+      positionVersion: 4,
+      baseRevision: 0,
+      sessionId: 'tablet-session',
+      position: 'epubcfi(/6/2)',
+      progress: 12,
+      fraction: 0.12,
+    });
+    assert.equal(created.status, 200);
+
+    const conflict = await request('POST', BOOK_IDS.apiCas, {
+      positionVersion: 4,
+      baseRevision: 0,
+      sessionId: 'phone-session',
+      position: 'epubcfi(/6/14)',
+      progress: 60,
+      fraction: 0.6,
+    });
+    assert.equal(conflict.status, 409);
+    assert.equal(conflict.body.current.sessionId, 'tablet-session');
+    assert.equal(conflict.body.current.sessionStatus, 'active');
+    assert.equal(conflict.body.current.revision, 1);
+  });
+
+  it('keeps strict CAS when the client omits sessionId', async () => {
+    clearPosition(BOOK_IDS.apiCas);
+    const created = await request('POST', BOOK_IDS.apiCas, {
+      positionVersion: 4,
+      baseRevision: 0,
+      sessionId: 'tablet-session',
+      position: 'epubcfi(/6/2)',
+      progress: 12,
+      fraction: 0.12,
+    });
+    assert.equal(created.status, 200);
+    db.prepare(`
+      UPDATE reading_positions
+      SET last_user_activity_at = datetime('now', '-5 minutes')
+      WHERE username = ? AND book_id = ?
+    `).run(USERNAME, BOOK_IDS.apiCas);
+
+    const conflict = await request('POST', BOOK_IDS.apiCas, {
+      positionVersion: 4,
+      baseRevision: 0,
+      position: 'epubcfi(/6/14)',
+      progress: 60,
+      fraction: 0.6,
+    });
+    assert.equal(conflict.status, 409);
+    assert.equal(conflict.body.current.sessionId, 'tablet-session');
+  });
+
+  it('rejects a matching-revision write from another active session', async () => {
+    clearPosition(BOOK_IDS.apiCas);
+    const created = await request('POST', BOOK_IDS.apiCas, {
+      positionVersion: 4,
+      baseRevision: 0,
+      sessionId: 'tablet-session',
+      position: 'epubcfi(/6/2)',
+      progress: 12,
+      fraction: 0.12,
+    });
+    assert.equal(created.status, 200);
+    assert.equal(created.body.revision, 1);
+
+    const conflict = await request('POST', BOOK_IDS.apiCas, {
+      positionVersion: 4,
+      baseRevision: 1,
+      sessionId: 'phone-session',
+      position: 'epubcfi(/6/14)',
+      progress: 60,
+      fraction: 0.6,
+    });
+    assert.equal(conflict.status, 409);
+    assert.equal(conflict.body.current.sessionId, 'tablet-session');
+    assert.equal(conflict.body.current.revision, 1);
+  });
+
+  it('allows a matching-revision take-over when the holder is idle', async () => {
+    clearPosition(BOOK_IDS.apiCas);
+    const created = await request('POST', BOOK_IDS.apiCas, {
+      positionVersion: 4,
+      baseRevision: 0,
+      sessionId: 'tablet-session',
+      position: 'epubcfi(/6/2)',
+      progress: 12,
+      fraction: 0.12,
+    });
+    assert.equal(created.status, 200);
+    db.prepare(`
+      UPDATE reading_positions
+      SET last_user_activity_at = datetime('now', '-5 minutes')
+      WHERE username = ? AND book_id = ?
+    `).run(USERNAME, BOOK_IDS.apiCas);
+
+    const taken = await request('POST', BOOK_IDS.apiCas, {
+      positionVersion: 4,
+      baseRevision: 1,
+      sessionId: 'phone-session',
+      position: 'epubcfi(/6/14)',
+      progress: 60,
+      fraction: 0.6,
+    });
+    assert.equal(taken.status, 200);
+    assert.equal(taken.body.revision, 2);
+    const roundtrip = await request('GET', BOOK_IDS.apiCas);
+    assert.equal(roundtrip.body.sessionId, 'phone-session');
+    assert.equal(roundtrip.body.progress, 60);
+  });
 });

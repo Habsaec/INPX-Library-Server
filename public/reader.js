@@ -8,6 +8,8 @@ import {
 import {
   buildCrossDevicePromptLines,
   savedFraction as sharedSavedFraction,
+  IDLE_MS,
+  isUserPositionSaveReason,
 } from '/position-sync.js';
 import {
   normalizeFraction,
@@ -28,6 +30,9 @@ import {
   observeServerConflict,
   POSITION_VERSION,
   positionFields,
+  shouldPromptLiveCrossDevice,
+  shouldRetryPositionConflict,
+  adoptConflictBaseRevision,
 } from '/reader-shared/position-revision.js';
 import {
   TAP_ZONE_IDS,
@@ -105,6 +110,14 @@ import {
   let effectiveBookExt = bookExt;
   const READER_LITE = Boolean(window.__READER_LITE);
   const SETTINGS_STORAGE_KEY = READER_LITE ? 'reader-settings-lite' : 'reader-settings';
+  const readerSessionId = (() => {
+    try {
+      return crypto.randomUUID();
+    } catch {
+      return `s-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    }
+  })();
+  let lastUserActivityAt = Date.now();
 
   function readerBookPagePath() {
     if (window.__READER_BOOK_PAGE_PATH) return window.__READER_BOOK_PAGE_PATH;
@@ -1605,10 +1618,21 @@ import {
     return {
       ...positionFields({ ...payload, fraction: f, progress: fractionToProgress(f) }),
       positionVersion: POSITION_VERSION,
+      sessionId: readerSessionId,
     };
   }
 
-  async function postPositionPayload(body, changedAt, baseRevision) {
+  function isReaderSessionIdle(nowMs = Date.now()) {
+    return (nowMs - lastUserActivityAt) > IDLE_MS;
+  }
+
+  function noteUserPositionActivity(reason) {
+    if (isUserPositionSaveReason(reason)) {
+      lastUserActivityAt = Date.now();
+    }
+  }
+
+  async function postPositionPayload(body, changedAt, baseRevision, allowRetry = true) {
     const requestBody = { ...body, baseRevision };
     try {
       const response = await api('POST', '/position', requestBody);
@@ -1619,29 +1643,40 @@ import {
       }
     } catch (error) {
       if (error?.status === 409 && error?.data?.current) {
-        positionSaveEpoch += 1;
-        clearTimeout(syncTimer);
-        syncTimer = null;
         const current = error.data.current;
         const localCtx = readPosSeenCtx();
-        writePosSeenCtx(observeServerConflict(localCtx, current));
-        pendingCrossDevicePrompt = { saved: current, localCtx };
-        await positionSaveSuppression.run(() => maybeShowDeferredCrossDevicePrompt());
+        if (shouldPromptLiveCrossDevice(readerSessionId, localCtx, current)) {
+          positionSaveEpoch += 1;
+          clearTimeout(syncTimer);
+          syncTimer = null;
+          writePosSeenCtx(observeServerConflict(localCtx, current));
+          pendingCrossDevicePrompt = { saved: current, localCtx };
+          await positionSaveSuppression.run(() => maybeShowDeferredCrossDevicePrompt());
+          return;
+        }
+        const adopted = adoptConflictBaseRevision(localCtx, current);
+        writePosSeenCtx(adopted);
+        if (allowRetry && shouldRetryPositionConflict(readerSessionId, current)) {
+          return postPositionPayload(body, changedAt, adopted.baseRevision, false);
+        }
       }
     }
   }
 
-  function savePositionPayload(payload) {
+  function savePositionPayload(payload, reason) {
     if (positionSaveSuppression.isSuppressed()) return;
+    noteUserPositionActivity(reason);
     clearTimeout(syncTimer);
     const body = buildPositionBody(payload);
     const changedAt = new Date().toISOString();
     const epoch = positionSaveEpoch;
     const dirty = markPositionDirty(readPosSeenCtx(), body, changedAt);
-    const baseRevision = dirty.baseRevision;
     writePosSeenCtx(dirty);
+    if (isReaderSessionIdle()) return;
+    const baseRevision = dirty.baseRevision;
     syncTimer = setTimeout(() => {
       syncTimer = null;
+      if (isReaderSessionIdle()) return;
       positionSaveChain = positionSaveChain
         .then(() => {
           if (epoch !== positionSaveEpoch) return undefined;
@@ -4045,6 +4080,7 @@ import {
     view.addEventListener('relocate', ({ detail }) => {
       const loc = view.lastLocation || detail;
       const payload = positionFromLocation(loc);
+      const why = detail.reason;
       if (!seekBarUserActive) {
         setProgressFromFraction(payload.fraction, loc.tocItem ?? detail.tocItem);
       }
@@ -4058,9 +4094,8 @@ import {
           || Number.isFinite(Number(payload.sectionIndex))
         )
       ) {
-        savePositionPayload(payload);
+        savePositionPayload(payload, why);
       }
-      const why = detail.reason;
       if (why === 'snap' || why === 'page' || why === 'navigation') {
         try { view.deselect?.(); } catch { /* */ }
         hideSelMenu();
@@ -4102,6 +4137,29 @@ import {
 
   /* ===== Boot ===== */
   applySettings();
+
+  async function pollOpenBookPosition() {
+    if (document.visibilityState === 'hidden') return;
+    if (crossDevicePromptPromise || pendingCrossDevicePrompt) return;
+    if (!view) return;
+    try {
+      const saved = await loadSavedPosition();
+      if (!saved) return;
+      const localCtx = readPosSeenCtx();
+      if (!shouldPromptLiveCrossDevice(readerSessionId, localCtx, saved)) return;
+      writePosSeenCtx(observeServerConflict(localCtx, saved));
+      pendingCrossDevicePrompt = { saved, localCtx };
+      await positionSaveSuppression.run(() => maybeShowDeferredCrossDevicePrompt());
+    } catch {
+      /* ignore poll errors */
+    }
+  }
+
+  const OPEN_BOOK_POSITION_POLL_MS = 15_000;
+  setInterval(() => { void pollOpenBookPosition(); }, OPEN_BOOK_POSITION_POLL_MS);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') void pollOpenBookPosition();
+  });
   (async () => {
     try {
       await loadBookmarks(); renderBmTab();

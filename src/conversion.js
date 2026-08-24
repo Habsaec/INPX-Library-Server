@@ -237,7 +237,8 @@ function getBookCacheKey(book, format) {
         format,
         String(book.size ?? ''),
         String(book.date ?? ''),
-        String(book.importedAt ?? '')
+        String(book.importedAt ?? ''),
+        'sidecar-images-v1'
       ].join(':')
     )
     .digest('hex');

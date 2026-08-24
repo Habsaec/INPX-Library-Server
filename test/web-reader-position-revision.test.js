@@ -9,6 +9,8 @@ import {
   normalizeSeenContext,
   observeServerConflict,
   positionFields,
+  shouldPromptLiveCrossDevice,
+  shouldRetryPositionConflict,
 } from '../public/reader-shared/position-revision.js';
 import { createSuppressionCounter } from '../public/reader-shared/suppression-counter.js';
 
@@ -135,6 +137,7 @@ describe('web reader position revision state', () => {
         serverUpdatedAt: null,
         dismissedUpdatedAt: null,
         dismissedServerRevision: null,
+        dismissedServerSessionId: null,
       },
     );
     const migratedEpub = normalizeSeenContext(legacy, { isFb2: false });
@@ -191,6 +194,7 @@ describe('web reader position revision state', () => {
     assert.equal(dismissed.serverRevision, 3);
     assert.equal(dismissed.positionDirty, false);
     assert.equal(dismissed.dismissedServerRevision, 3);
+    assert.equal(dismissed.dismissedServerSessionId, '');
     assert.equal(decidePositionOnOpen(dismissed, server()), 'local');
 
     const moved = markPositionDirty(
@@ -201,6 +205,7 @@ describe('web reader position revision state', () => {
     assert.equal(moved.baseRevision, 3);
     assert.equal(moved.positionDirty, true);
     assert.equal(moved.dismissedServerRevision, null);
+    assert.equal(moved.dismissedServerSessionId, '');
   });
 
   it('falls back to progress for null and empty fractions', () => {
@@ -220,5 +225,58 @@ describe('web reader position revision state', () => {
       assert.equal(suppression.isSuppressed(), true);
     });
     assert.equal(suppression.isSuppressed(), false);
+  });
+
+  it('prompts live only for another session with different coordinates', () => {
+    const localPos = local({ dismissedServerRevision: null, pendingCrossDevicePrompt: false });
+    const other = server({ sessionId: 'phone', fraction: 0.6, progress: 60, position: 'epubcfi(/6/10)' });
+    assert.equal(shouldPromptLiveCrossDevice('tablet', localPos, other), true);
+    assert.equal(shouldPromptLiveCrossDevice('phone', localPos, other), false);
+    assert.equal(shouldPromptLiveCrossDevice('tablet', localPos, { ...other, sessionId: null }), true);
+    assert.equal(shouldPromptLiveCrossDevice('tablet', { ...localPos, dismissedServerRevision: 3 }, other), false);
+    assert.equal(
+      shouldPromptLiveCrossDevice('tablet', { ...localPos, pendingCrossDevicePrompt: true, serverRevision: 3 }, other),
+      false,
+    );
+    assert.equal(shouldPromptLiveCrossDevice('tablet', localPos, {
+      ...other,
+      position: localPos.position,
+      fraction: localPos.fraction,
+      progress: localPos.progress,
+      sectionIndex: localPos.sectionIndex,
+      textOffset: localPos.textOffset,
+    }), false);
+  });
+
+  it('keeps live dismiss bound to the holder session across relocates and new revisions', () => {
+    const localPos = local({ dismissedServerRevision: null, pendingCrossDevicePrompt: false });
+    const phone = server({ sessionId: 'phone', revision: 3 });
+    const dismissed = dismissServerPosition(localPos, phone);
+    assert.equal(dismissed.dismissedServerSessionId, 'phone');
+    const moved = markPositionDirty(dismissed, { ...localPos, fraction: 0.25 }, '2026-07-12T12:30:00.000Z');
+    assert.equal(moved.dismissedServerSessionId, 'phone');
+    assert.equal(shouldPromptLiveCrossDevice('tablet', moved, {
+      ...phone,
+      revision: 12,
+      fraction: 0.9,
+      progress: 90,
+      position: 'epubcfi(/6/99)',
+      textOffset: 900,
+    }), false);
+    assert.equal(shouldPromptLiveCrossDevice('tablet', moved, server({ sessionId: 'other-phone', revision: 13 })), true);
+    assert.equal(
+      shouldPromptLiveCrossDevice(
+        'tablet',
+        dismissServerPosition(localPos, server({ sessionId: null })),
+        server({ sessionId: null, revision: 8 }),
+      ),
+      false,
+    );
+  });
+
+  it('retries 409 only for the same session or a legacy holder', () => {
+    assert.equal(shouldRetryPositionConflict('tablet', { sessionId: 'tablet' }), true);
+    assert.equal(shouldRetryPositionConflict('tablet', { sessionId: null }), true);
+    assert.equal(shouldRetryPositionConflict('tablet', { sessionId: 'phone' }), false);
   });
 });

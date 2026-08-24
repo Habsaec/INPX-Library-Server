@@ -247,7 +247,7 @@ export async function readBookBufferForDelivery(book) {
   let buffer = await readBookBuffer(book);
   const ext = String(book?.ext || 'fb2').toLowerCase();
   if (ext === 'epub') {
-    buffer = await ensureEpubZipFromBookBuffer(buffer, book);
+    buffer = await ensureEpubZipFromBookBuffer(buffer, book, getSourceRoot(book.sourceId));
   }
   if (ext !== 'fb2' || !shouldTryFlibustaCoverPaths(book)) {
     return buffer;
