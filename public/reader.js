@@ -721,29 +721,13 @@ import {
       pre { white-space: pre-wrap !important; }
       aside[epub|type~="endnote"],aside[epub|type~="footnote"],aside[epub|type~="note"],aside[epub|type~="rearnote"] { display: none; }
       a { color: ${link} !important; }
-      /* EPUB / residual in-document chapter starts (FB2 chapters are split in fb2.js). */
-      body:not(.notesBodyType) h1 {
-        break-before: column !important;
-        -webkit-column-break-before: always !important;
-        page-break-before: always !important;
-      }
+      /* Paper-book flow: next chapter continues on the same page. */
+      body:not(.notesBodyType) h1,
       body:not(.notesBodyType) section[epub|type~="chapter"],
       body:not(.notesBodyType) div[epub|type~="chapter"],
       body:not(.notesBodyType) article[epub|type~="chapter"],
       body:not(.notesBodyType) section.chapter,
       body:not(.notesBodyType) div.chapter {
-        break-before: column !important;
-        -webkit-column-break-before: always !important;
-        page-break-before: always !important;
-      }
-      body > h1:first-child,
-      body > header:first-child,
-      body > section:first-child > h1:first-child,
-      body > section.chapter:first-child,
-      body > div.chapter:first-child,
-      body > section[epub|type~="chapter"]:first-child,
-      body > div[epub|type~="chapter"]:first-child,
-      body > article[epub|type~="chapter"]:first-child {
         break-before: auto !important;
         -webkit-column-break-before: auto !important;
         page-break-before: auto !important;
@@ -1801,12 +1785,15 @@ import {
         // book-wide display/fallback coordinate; fb2Href is the coarsest fallback.
         const sectionIndex = Number(saved.sectionIndex);
         const textOffset = Number(saved.textOffset);
+        const linearCount = (view?.book?.sections || []).filter((s) => s?.linear !== 'no').length;
+        const staleExplodedSection = linearCount <= 1 && sectionIndex > 0;
         let restoredByTextAnchor = false;
         if (
           Number.isInteger(sectionIndex)
           && sectionIndex >= 0
           && Number.isInteger(textOffset)
           && textOffset >= 0
+          && !staleExplodedSection
           && typeof view.goToTextAnchor === 'function'
         ) {
           try {

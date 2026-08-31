@@ -13,6 +13,7 @@ import { getShelfById, getShelfBooks } from '../db.js';
 import { getBookById, getBooksByIds, getAllBookIdsByFacet } from '../inpx.js';
 import { logSystemEvent } from '../services/system-events.js';
 import { resolveDownload } from '../conversion.js';
+import { contentDispositionAttachment } from '../download-filename.js';
 
 const batchDownloadLocks = new Set();
 
@@ -172,7 +173,7 @@ async function streamBatchZipArchive(req, res, next, { bookIds, archiveName, for
     const safeName = String(archiveName || 'books').replace(/[\\/:*?"<>|]+/g, '_').replace(/\s+/g, ' ').trim().slice(0, 100) || 'books';
     const zipFileName = `${safeName}.zip`;
 
-    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(zipFileName)}"`);
+    res.setHeader('Content-Disposition', contentDispositionAttachment(zipFileName));
     res.setHeader('X-Batch-Requested', String(bookIds.length));
     res.type('application/zip');
 
@@ -414,7 +415,7 @@ export function registerDownloadRoutes(app) {
       }
 
       const download = await resolveDownload(book, req.query.format);
-      res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(download.fileName)}"`);
+      res.setHeader('Content-Disposition', contentDispositionAttachment(download.fileName));
       res.type(download.mimeType);
       if (download.filePath) {
         const buf = await fs.promises.readFile(download.filePath);

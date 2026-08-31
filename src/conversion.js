@@ -11,6 +11,7 @@ import {
   FORMAT_LABELS,
   getAvailableDownloadFormats
 } from './download-formats.js';
+import { buildDownloadBaseName } from './download-filename.js';
 const MIME_TYPES = {
   fb2: 'application/octet-stream',
   epub: 'application/epub+zip',
@@ -170,47 +171,6 @@ function releaseConverterSlot() {
  * Маршруты скачивания/email отвечают 503 с понятным текстом.
  */
 
-const TRANSLIT_MAP = {
-  'А':'A','Б':'B','В':'V','Г':'G','Д':'D','Е':'E','Ё':'Yo','Ж':'Zh','З':'Z','И':'I','Й':'Y','К':'K','Л':'L','М':'M','Н':'N','О':'O','П':'P','Р':'R','С':'S','Т':'T','У':'U','Ф':'F','Х':'Kh','Ц':'Ts','Ч':'Ch','Ш':'Sh','Щ':'Shch','Ъ':'','Ы':'Y','Ь':'','Э':'E','Ю':'Yu','Я':'Ya',
-  'а':'a','б':'b','в':'v','г':'g','д':'d','е':'e','ё':'yo','ж':'zh','з':'z','и':'i','й':'y','к':'k','л':'l','м':'m','н':'n','о':'o','п':'p','р':'r','с':'s','т':'t','у':'u','ф':'f','х':'kh','ц':'ts','ч':'ch','ш':'sh','щ':'shch','ъ':'','ы':'y','ь':'','э':'e','ю':'yu','я':'ya',
-  'І':'I','і':'i','Ї':'Yi','ї':'yi','Є':'Ye','є':'ye','Ґ':'G','ґ':'g'
-};
-
-function transliterate(value) {
-  return String(value || '').replace(/[\u0400-\u04FF\u0490\u0491]/g, ch => TRANSLIT_MAP[ch] ?? ch);
-}
-
-function sanitizeBaseName(value = '') {
-  const normalized = String(value || '').trim() || 'book';
-  return (normalized.replace(/[\\/:*?"<>|]+/g, '_').replace(/\s+/g, ' ').trim() || 'book').slice(0, 200);
-}
-
-function formatAuthorFileName(value = '') {
-  const raw = String(value || '').trim();
-  if (!raw) {
-    return '';
-  }
-  const authors = raw
-    .split(':')
-    .map((author) => author.split(',').map((part) => part.trim()).filter(Boolean).join(' '))
-    .filter(Boolean);
-  if (!authors.length) {
-    return raw;
-  }
-  return authors.join(', ');
-}
-
-function getBookBaseName(book) {
-  const parts = [
-    formatAuthorFileName(book.authors),
-    String(book.title || '').trim(),
-    String(book.series || '').trim(),
-    String(book.seriesNo || '').trim()
-  ].filter(Boolean);
-  const raw = sanitizeBaseName(parts.join(' ')) || sanitizeBaseName(book.fileName || book.title || book.id || 'book');
-  return transliterate(raw);
-}
-
 function getFormatExtension(format) {
   return FILE_EXTENSIONS[format] || format;
 }
@@ -220,7 +180,7 @@ function getFormatMimeType(format) {
 }
 
 function getBookFormatFileName(book, format) {
-  return `${getBookBaseName(book)}.${getFormatExtension(format)}`;
+  return `${buildDownloadBaseName(book)}.${getFormatExtension(format)}`;
 }
 
 function ensureDir(dirPath) {
@@ -340,7 +300,7 @@ async function convertFb2Book(book, format) {
       slotAcquired = true;
       const sessionDir = await fs.promises.mkdtemp(path.join(config.conversionTempDir, 'job-'));
       try {
-        const sourcePath = path.join(sessionDir, `${getBookBaseName(book)}.fb2`);
+        const sourcePath = path.join(sessionDir, 'source.fb2');
         const outputDir = path.join(sessionDir, 'out');
         ensureDir(outputDir);
         const rawBuffer = await readBookBufferForDelivery(book);

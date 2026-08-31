@@ -2815,7 +2815,7 @@ function attachSearchHistory() {
       const authorRows = (lastApi.authors || []).slice(0, 4).map((row) => {
         const itemId = `search-suggest-author-${seq++}`;
         const label = row.displayName || row.name || '';
-        const href = `/catalog?${new URLSearchParams({ q: label, field: 'authors' }).toString()}`;
+        const href = `/facet/authors/${encodeURIComponent(row.name || label)}`;
         return `<button type="button" class="suggest-item" id="${itemId}" data-suggest-item data-suggest-href="${escapeHtml(href)}" data-suggest-query="${escapeHtml(label)}" role="option">
           <span class="suggest-item-title">${escapeHtml(label)}</span>
           <span class="suggest-item-sub">${escapeHtml(String(row.bookCount || ''))}</span>
@@ -2824,7 +2824,7 @@ function attachSearchHistory() {
       const seriesRows = (lastApi.series || []).slice(0, 4).map((row) => {
         const itemId = `search-suggest-series-${seq++}`;
         const label = row.displayName || row.name || '';
-        const href = `/catalog?${new URLSearchParams({ q: label, field: 'series' }).toString()}`;
+        const href = `/facet/series/${encodeURIComponent(row.name || label)}`;
         return `<button type="button" class="suggest-item" id="${itemId}" data-suggest-item data-suggest-href="${escapeHtml(href)}" data-suggest-query="${escapeHtml(label)}" role="option">
           <span class="suggest-item-title">${escapeHtml(label)}</span>
           <span class="suggest-item-sub">${escapeHtml(String(row.bookCount || ''))}</span>

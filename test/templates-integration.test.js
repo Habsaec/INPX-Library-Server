@@ -189,6 +189,25 @@ test('renderAdminSmtp returns SMTP config page', async () => {
   assert.equal(html.includes('action="/admin/settings/password-reset"'), false);
 });
 
+test('renderAdminContent includes download filename template select', async () => {
+  const { renderAdminContent } = await import('../src/templates/admin.js');
+  const html = renderAdminContent({
+    user: { username: 'admin', role: 'admin' },
+    stats: { totalBooks: 0, totalAuthors: 0, totalSeries: 0, totalGenres: 0, totalLanguages: 1 },
+    indexStatus: {},
+    languages: [],
+    excludedLangSet: new Set(),
+    genres: [],
+    excludedGenreSet: new Set(),
+    disabledDownloadFormatSet: new Set(),
+    downloadFilenameStyle: 'title',
+    csrfToken: 'tok'
+  });
+  assert.ok(html.includes('name="download_filename_style"'));
+  assert.ok(html.includes('value="title" selected'));
+  assert.ok(html.includes('value="translit-full"'));
+});
+
 test('renderAdminUsers includes password recovery settings', async () => {
   const { renderAdminUsers } = await import('../src/templates/admin.js');
   const html = renderAdminUsers({

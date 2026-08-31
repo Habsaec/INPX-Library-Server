@@ -13,6 +13,7 @@ function normalizeNewBooksAnnounceTemplate(template = '') {
     .slice(0, 4096);
 }
 import { getConfiguredDownloadFormats, setDisabledDownloadFormats } from '../download-formats.js';
+import { normalizeDownloadFilenameStyle, setDownloadFilenameStyle } from '../download-filename.js';
 import { runWithLocaleLang, resolveLocale, t, tp, countLabel, translateKnownErrorMessage, setDefaultLocale } from '../i18n.js';
 import { ApiErrorCode, apiFail } from '../api-errors.js';
 import { requireAdminWeb, requireAdminApi, invalidateSessionUserCache } from '../middleware/auth.js';
@@ -1925,6 +1926,7 @@ export function registerAdminRoutes(app, deps) {
       languages: allLangs, excludedLangSet,
       genres: allGenres, excludedGenreSet,
       disabledDownloadFormatSet,
+      downloadFilenameStyle: normalizeDownloadFilenameStyle(getSetting('download_filename_style')),
       showDeletedBooks: getSetting('show_deleted_books') === '1',
       flash: String(req.query.flash || ''), csrfToken: req.csrfToken || ''
     }));
@@ -1937,6 +1939,9 @@ export function registerAdminRoutes(app, deps) {
     const disabledFmt = allFmt.filter(code => !enabledFmt.has(code));
     setSetting('disabled_download_formats', disabledFmt.join(','));
     setDisabledDownloadFormats(disabledFmt);
+    const filenameStyle = normalizeDownloadFilenameStyle(req.body.download_filename_style);
+    setSetting('download_filename_style', filenameStyle);
+    setDownloadFilenameStyle(filenameStyle);
 
     // Пока идёт индексация, не трогаем excluded_* и не делаем DROP/CREATE VIEW:
     // SQLite может заблокировать или оставить active_books в полусогласованном состоянии.
@@ -1944,7 +1949,8 @@ export function registerAdminRoutes(app, deps) {
       clearPageDataCache();
       logSystemEvent('info', 'admin', 'download formats updated during indexing', {
         admin: req.user.username,
-        disabledFormats: disabledFmt.join(',')
+        disabledFormats: disabledFmt.join(','),
+        downloadFilenameStyle: filenameStyle
       });
       return res.redirect('/admin/content?flash=' + encodeURIComponent(
         t('admin.content.savedFormatsDuringIndexing')
@@ -1983,7 +1989,8 @@ export function registerAdminRoutes(app, deps) {
         excludedLangs: excludedLang.join(','),
         excludedGenres: excludedGenre.join(','),
         showDeletedBooks: getSetting('show_deleted_books') === '1',
-        disabledFormats: disabledFmt.join(',')
+        disabledFormats: disabledFmt.join(','),
+        downloadFilenameStyle: filenameStyle
       });
       res.redirect('/admin/content?flash=' + encodeURIComponent(t('admin.content.saved')));
     } catch (error) {

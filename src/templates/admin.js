@@ -15,6 +15,7 @@ import {
   getConfiguredDownloadFormats,
   setDisabledDownloadFormats
 } from '../download-formats.js';
+import { DOWNLOAD_FILENAME_STYLES } from '../download-filename.js';
 import {
   TELEGRAM_DEFAULT_PROFILE_DESCRIPTION,
   TELEGRAM_DEFAULT_PROFILE_SHORT,
@@ -773,6 +774,7 @@ export function renderAdminContent({
   genres = [],
   excludedGenreSet = new Set(),
   disabledDownloadFormatSet = new Set(),
+  downloadFilenameStyle = 'translit-full',
   showDeletedBooks = false,
   flash = '',
   csrfToken = ''
@@ -944,6 +946,18 @@ export function renderAdminContent({
           </thead>
           <tbody>${downloadFormatRows}</tbody>
         </table>
+      </div>
+      <div class="admin-card" style="margin-bottom:16px">
+        <div class="admin-card-title">${escapeHtml(t('admin.content.filenameSection'))}</div>
+        <p class="muted admin-compact-btn" style="margin:4px 0 12px;">${escapeHtml(t('admin.content.filenameHint'))}</p>
+        <div class="admin-field-group">
+          <label for="download-filename-style">${escapeHtml(t('admin.content.filenameLabel'))}</label>
+          <select id="download-filename-style" name="download_filename_style" style="max-width:420px">
+            ${DOWNLOAD_FILENAME_STYLES.map((style) => `
+              <option value="${escapeHtml(style)}" ${downloadFilenameStyle === style ? 'selected' : ''}>${escapeHtml(t(`admin.content.filename.${style}`))}</option>
+            `).join('')}
+          </select>
+        </div>
       </div>
       <div class="admin-card" style="margin-bottom:16px">
         <div class="admin-card-title" style="display:flex;align-items:center;gap:12px">

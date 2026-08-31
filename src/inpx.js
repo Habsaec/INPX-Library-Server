@@ -1156,6 +1156,7 @@ function ensureAuthorStmts() {
       SELECT name
       FROM authors
       WHERE display_name = ? OR search_name = ? OR sort_name = ?
+      ORDER BY book_count DESC
       LIMIT 1
     `);
     _authorsBySortPrefix = db.prepare(`
@@ -1457,6 +1458,25 @@ function resolveAuthorSeriesQuerySplits(tokens = []) {
   return splits;
 }
 
+let _stmtPreferredAuthorAlias = null;
+/** Same search_name, more books — Flibusta often has a weak Cyrillic duplicate and a linked INPX row. */
+function preferredAuthorAlias(name) {
+  const found = String(name || '').trim();
+  if (!found) return found;
+  _stmtPreferredAuthorAlias ??= db.prepare(`
+    SELECT a2.name AS name
+    FROM authors a
+    JOIN authors a2 ON a2.search_name = a.search_name
+    WHERE a.name = ?
+      AND a.search_name IS NOT NULL
+      AND TRIM(a.search_name) != ''
+      AND a2.book_count > 0
+    ORDER BY a2.book_count DESC, length(a2.name) DESC
+    LIMIT 1
+  `);
+  return _stmtPreferredAuthorAlias.get(found)?.name || found;
+}
+
 export function resolveAuthorName(value) {
   const normalized = normalizeText(value);
   const candidates = new Set([
@@ -1470,7 +1490,7 @@ export function resolveAuthorName(value) {
   for (const candidate of candidates) {
     const author = _authorByName.get(candidate.toLowerCase());
     if (author?.name) {
-      return author.name;
+      return preferredAuthorAlias(author.name);
     }
   }
 
@@ -1481,7 +1501,7 @@ export function resolveAuthorName(value) {
       createSortKey(authorSortKey(candidate))
     );
     if (displayMatch?.name) {
-      return displayMatch.name;
+      return preferredAuthorAlias(displayMatch.name);
     }
   }
 
@@ -5814,7 +5834,6 @@ export function getAuthorBooksGrouped(authorName, sort = 'title', order = '', { 
     WHERE a.name = ?
     GROUP BY s.id, s.name, s.display_name, s.sort_name
     ORDER BY seriesSortMin ASC, COALESCE(s.sort_name, s.name) ASC
-    LIMIT 50
   `).all(authorName);
 
   const bySeries = new Map();
