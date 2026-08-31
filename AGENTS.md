@@ -388,15 +388,15 @@ For performance-sensitive changes:
 
 ## Git and Branch Workflow
 
-Default integration branch for all agent work: **`dev`**.
+Default integration branch for all agent work: **`master`**.
 
 Unless the user **explicitly** asks for a new branch, a pull request branch, or a release merge:
 
 * **Do not** run `git checkout -b`, especially not `cursor/*` branches
-* **Do not** follow diff-tab / UI actions that auto-create branches (e.g. “create branch and commit”) — commit on the current branch instead, usually `dev`
+* **Do not** follow diff-tab / UI actions that auto-create branches (e.g. “create branch and commit”) — commit on the current branch instead, usually `master`
 * **Do not** switch branches while there are uncommitted changes; commit or stash first (use `git stash push -u` if there are untracked files)
 
-After a logical chunk of work (or when the user ends a session), offer to commit on `dev` if there are uncommitted changes. Do not push unless asked.
+After a logical chunk of work (or when the user ends a session), offer to commit on `master` if there are uncommitted changes. Do not push unless asked.
 
 Do **not** modify `install.cmd`, `start-server.cmd`, or other Windows launcher scripts unless the user explicitly requests it or the task is specifically about startup/install.
 
@@ -409,4 +409,4 @@ Production startup uses **`runtime\node.exe`** (Node 24) via `start-server.cmd` 
 
 ### Recovering work
 
-Before assuming work is lost, check: `git branch -a`, `git stash list`, `git reflog`, and uncommitted files on `dev`.
+Before assuming work is lost, check: `git branch -a`, `git stash list`, `git reflog`, and uncommitted files on `master`.
