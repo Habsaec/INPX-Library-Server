@@ -1183,12 +1183,12 @@ function renderScanScheduleForm({ csrfToken, scanSchedule, scanScheduleNextRunAt
 
             <div class="admin-field-group" data-scan-schedule-when="daily" ${mode === 'daily' ? '' : 'hidden'}>
               <label for="scan-schedule-time-daily">${escapeHtml(t('admin.schedule.timeLabel'))}</label>
-              <input id="scan-schedule-time-daily" type="time" name="time" value="${escapeHtml(time)}" class="admin-input-sm" data-scan-schedule-time>
+              <input id="scan-schedule-time-daily" type="time" name="time_daily" value="${escapeHtml(time)}" class="admin-input-sm" data-scan-schedule-time>
             </div>
 
             <div class="admin-field-group" data-scan-schedule-when="weekly" ${mode === 'weekly' ? '' : 'hidden'}>
               <label for="scan-schedule-time-weekly">${escapeHtml(t('admin.schedule.timeLabel'))}</label>
-              <input id="scan-schedule-time-weekly" type="time" name="time" value="${escapeHtml(time)}" class="admin-input-sm" data-scan-schedule-time>
+              <input id="scan-schedule-time-weekly" type="time" name="time_weekly" value="${escapeHtml(time)}" class="admin-input-sm" data-scan-schedule-time>
               <div class="admin-dow-row" style="margin-top:6px">${dowCheckboxes}</div>
               <span class="admin-field-hint">${escapeHtml(t('admin.schedule.weeklyHint'))}</span>
             </div>

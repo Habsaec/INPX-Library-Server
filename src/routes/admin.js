@@ -26,7 +26,7 @@ import {
   getRecentSystemEvents, retainRecentSystemEvents, clearSystemEventsTable, subscribeSystemEvents
 } from '../services/system-events.js';
 import { getRecentRuntimeLogs, subscribeRuntimeLogs, getRuntimeLogFilePath } from '../services/runtime-logs.js';
-import { restartScanScheduler, getSchedulerIntervalHours, getScheduleConfig, getNextRunAt } from '../services/scheduler.js';
+import { restartScanScheduler, getSchedulerIntervalHours, getScheduleConfig, getNextRunAt, parseScheduleForm } from '../services/scheduler.js';
 import {
   getUpdateState, isUpdateTimedOut, readUpdateLog, appendUpdateLog,
   beginUpdate, endUpdate, runUpdateFromZip
@@ -296,29 +296,7 @@ export function registerAdminRoutes(app, deps) {
   /* Новая, богатая форма расписания: режимы off/interval/daily/weekly + full/incremental. */
   app.post('/admin/settings/scan-schedule', requireAdminWeb, (req, res) => {
     try {
-      const VALID_MODES = ['off', 'interval', 'daily', 'weekly'];
-      let mode = String(req.body.mode || '').toLowerCase().trim();
-      if (!VALID_MODES.includes(mode)) mode = 'off';
-
-      const hours = Math.max(0, Math.min(8760, Math.floor(Number(req.body.hours) || 0)));
-      const timeRaw = String(req.body.time || '').trim();
-      const time = /^([01]?\d|2[0-3]):([0-5]\d)$/.test(timeRaw) ? timeRaw : '';
-      /* DOW приходит как массив значений (или одиночное) от чекбоксов. */
-      const dowField = req.body.dow;
-      const dowArr = Array.isArray(dowField) ? dowField : (dowField ? [dowField] : []);
-      const dow = dowArr
-        .map((v) => Number(v))
-        .filter((n) => Number.isInteger(n) && n >= 0 && n <= 6)
-        .filter((n, i, a) => a.indexOf(n) === i)
-        .sort((a, b) => a - b)
-        .join(',');
-      const full = String(req.body.full || '') === '1';
-
-      /* Валидация согласованности: если параметры режима не заданы — переключаем в off,
-         чтобы не было «выбран daily без времени» и таймер встал на None. */
-      if (mode === 'interval' && hours <= 0) mode = 'off';
-      if ((mode === 'daily' || mode === 'weekly') && !time) mode = 'off';
-      if (mode === 'weekly' && !dow) mode = 'off';
+      const { mode, hours, time, dow, full } = parseScheduleForm(req.body);
 
       setSetting('scan_schedule_mode', mode);
       setSetting('scan_schedule_hours', String(hours));

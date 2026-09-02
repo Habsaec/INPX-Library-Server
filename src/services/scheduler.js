@@ -72,6 +72,38 @@ async function gcCoverThumbDiskCache() {
 const VALID_MODES = new Set(['off', 'interval', 'daily', 'weekly']);
 const HH_MM_RE = /^([01]?\d|2[0-3]):([0-5]\d)$/;
 
+/** Нормализовать поля формы расписания, включая старую форму с двумя name="time". */
+export function parseScheduleForm(body = {}) {
+  let mode = String(body.mode || '').toLowerCase().trim();
+  if (!VALID_MODES.has(mode)) mode = 'off';
+
+  const hours = Math.max(0, Math.min(8760, Math.floor(Number(body.hours) || 0)));
+  let timeField = mode === 'weekly'
+    ? (body.time_weekly ?? body.time)
+    : (body.time_daily ?? body.time);
+  if (Array.isArray(timeField)) {
+    timeField = mode === 'weekly' ? timeField.at(-1) : timeField[0];
+  }
+  const timeRaw = String(timeField || '').trim();
+  const time = HH_MM_RE.test(timeRaw) ? timeRaw : '';
+
+  const dowField = body.dow;
+  const dowArr = Array.isArray(dowField) ? dowField : (dowField ? [dowField] : []);
+  const dow = dowArr
+    .map((v) => Number(v))
+    .filter((n) => Number.isInteger(n) && n >= 0 && n <= 6)
+    .filter((n, i, values) => values.indexOf(n) === i)
+    .sort((a, b) => a - b)
+    .join(',');
+  const full = String(body.full || '') === '1';
+
+  if (mode === 'interval' && hours <= 0) mode = 'off';
+  if ((mode === 'daily' || mode === 'weekly') && !time) mode = 'off';
+  if (mode === 'weekly' && !dow) mode = 'off';
+
+  return { mode, hours, time, dow, full };
+}
+
 /** Извлечь все настройки расписания с легаси-fallback и валидацией. */
 export function getScheduleConfig() {
   let mode = String(getSetting('scan_schedule_mode') || '').toLowerCase().trim();
