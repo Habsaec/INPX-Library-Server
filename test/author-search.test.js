@@ -34,4 +34,9 @@ test('resolveAuthorName prefers the alias with more books', () => {
   insert.run('uolles,devid foster', 'Uolles Devid Foster', search, search, 80);
   assert.equal(resolveAuthorName('уоллес,дэвид'), 'uolles,devid foster');
   assert.equal(resolveAuthorName('Уоллес Дэвид'), 'uolles,devid foster');
+  const listed = listAuthors({ query: 'uolles devid foster', page: 1, pageSize: 24, sort: 'count' });
+  assert.equal(listed.total, 1);
+  assert.equal(listed.items.length, 1);
+  assert.equal(listed.items[0].name, 'uolles,devid foster');
+  assert.equal(listed.items[0].bookCount, 82);
 });

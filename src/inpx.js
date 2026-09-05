@@ -153,6 +153,12 @@ function resetInpxPreparedStatements() {
   _stmtBookmarksLimitedBySort.clear();
   _stmtReadBooksBySort.clear();
   _stmtReadBooksLimitedBySort.clear();
+  _stmtPreferredAuthorAlias = null;
+  _stmtAuthorGroupedRowCount = null;
+  _stmtAuthorGroupedTotal = null;
+  _stmtAuthorAliasBookCount = null;
+  _stmtAuthorFlibustaSourceId = null;
+  _stmtFacetCountAuthor = null;
   _recStmtCache.clear();
   clearRuntimeQueryCaches();
 }
@@ -1321,7 +1327,7 @@ function findAuthorsMatchingTokenSubset(value = '', { requireBooks = true } = {}
 }
 
 function paginateAuthorSearchMatches(matched, { offset, pageSize, sort, order, letterNorm, scoreKey }) {
-  let rows = matched;
+  let rows = collapsePreferredAuthorRows(matched);
   if (letterNorm) {
     rows = rows.filter((row) => String(row.sortKey || '').startsWith(letterNorm));
   }
@@ -1459,6 +1465,7 @@ function resolveAuthorSeriesQuerySplits(tokens = []) {
 }
 
 let _stmtPreferredAuthorAlias = null;
+let _stmtAuthorAliasBookCount = null;
 /** Same search_name, more books — Flibusta often has a weak Cyrillic duplicate and a linked INPX row. */
 function preferredAuthorAlias(name) {
   const found = String(name || '').trim();
@@ -1475,6 +1482,69 @@ function preferredAuthorAlias(name) {
     LIMIT 1
   `);
   return _stmtPreferredAuthorAlias.get(found)?.name || found;
+}
+
+/** This author or aliases sharing a non-empty search_name. One bound `?` = authors.name */
+function authorAliasMatchSql(table = 'a') {
+  return `${table}.id IN (
+    SELECT a_alias.id
+    FROM authors a_key
+    JOIN authors a_alias ON (
+      a_alias.id = a_key.id
+      OR (
+        a_key.search_name IS NOT NULL AND TRIM(a_key.search_name) != ''
+        AND a_alias.search_name = a_key.search_name
+      )
+    )
+    WHERE a_key.name = ?
+  )`;
+}
+
+/** Keep one row per search_name — the alias with more books (same order as preferredAuthorAlias). */
+function preferredAuthorRowSql(table = 'a') {
+  return `${table}.name = (
+    SELECT a_pref.name
+    FROM authors a_pref
+    WHERE a_pref.book_count > 0
+      AND (
+        a_pref.id = ${table}.id
+        OR (
+          ${table}.search_name IS NOT NULL AND TRIM(${table}.search_name) != ''
+          AND a_pref.search_name = ${table}.search_name
+        )
+      )
+    ORDER BY a_pref.book_count DESC, length(a_pref.name) DESC
+    LIMIT 1
+  )`;
+}
+
+function authorAliasBookCountSql(table = 'a') {
+  return `CASE
+    WHEN ${table}.search_name IS NOT NULL AND TRIM(${table}.search_name) != ''
+    THEN COALESCE((
+      SELECT SUM(a_sum.book_count) FROM authors a_sum
+      WHERE a_sum.search_name = ${table}.search_name AND a_sum.book_count > 0
+    ), 0)
+    ELSE ${table}.book_count
+  END`;
+}
+
+function collapsePreferredAuthorRows(rows) {
+  const groups = new Map();
+  for (const row of rows) {
+    const canon = preferredAuthorAlias(row.name);
+    const existing = groups.get(canon);
+    if (!existing) {
+      groups.set(canon, { ...row, name: canon, bookCount: row.bookCount || 0 });
+      continue;
+    }
+    existing.bookCount += row.bookCount || 0;
+    if (row.name === canon) {
+      existing.displayName = row.displayName;
+      existing.sortKey = row.sortKey;
+    }
+  }
+  return [...groups.values()];
 }
 
 export function resolveAuthorName(value) {
@@ -4908,8 +4978,8 @@ export function listAuthors({ page = 1, pageSize = 50, query = '', sort = 'name'
   if (!needleTokens.length) {
     const orderBy = sort === 'name'
       ? applyOrder('COALESCE(a.sort_name, LOWER(a.name)) ASC', order)
-      : applyOrder('a.book_count DESC, COALESCE(a.sort_name, LOWER(a.name)) ASC', order);
-    const whereParts = ['a.book_count > 0'];
+      : applyOrder('bookCount DESC, COALESCE(a.sort_name, LOWER(a.name)) ASC', order);
+    const whereParts = ['a.book_count > 0', preferredAuthorRowSql('a')];
     const whereParams = [];
     if (letterNorm) {
       whereParts.push('COALESCE(a.sort_name, LOWER(a.name)) LIKE ?');
@@ -4923,7 +4993,7 @@ export function listAuthors({ page = 1, pageSize = 50, query = '', sort = 'name'
       SELECT a.name AS name,
              COALESCE(a.display_name, a.name) AS displayName,
              COALESCE(a.sort_name, LOWER(a.name)) AS sortKey,
-             a.book_count AS bookCount
+             ${authorAliasBookCountSql('a')} AS bookCount
       FROM authors a
       ${whereClause}
       ORDER BY ${orderBy}
@@ -4981,15 +5051,15 @@ export function listAuthors({ page = 1, pageSize = 50, query = '', sort = 'name'
 
   const orderBy = sort === 'name'
     ? applyOrder(`${rankSQL} ASC, COALESCE(a.sort_name, LOWER(a.name)) ASC`, order)
-    : applyOrder(`${rankSQL} ASC, a.book_count DESC, COALESCE(a.sort_name, LOWER(a.name)) ASC`, order);
+    : applyOrder(`${rankSQL} ASC, bookCount DESC, COALESCE(a.sort_name, LOWER(a.name)) ASC`, order);
 
   const items = db.prepare(`
     SELECT a.name AS name,
            COALESCE(a.display_name, a.name) AS displayName,
            COALESCE(a.sort_name, LOWER(a.name)) AS sortKey,
-           a.book_count AS bookCount
+           ${authorAliasBookCountSql('a')} AS bookCount
     FROM authors a
-    WHERE (${whereSQL}) AND a.book_count > 0
+    WHERE (${whereSQL}) AND a.book_count > 0 AND ${preferredAuthorRowSql('a')}
     ORDER BY ${orderBy}
     LIMIT ? OFFSET ?
   `).all(...whereParams, ...rankParams, pageSize, offset);
@@ -4998,7 +5068,7 @@ export function listAuthors({ page = 1, pageSize = 50, query = '', sort = 'name'
 
   const total = db.prepare(`
     SELECT COUNT(*) AS count FROM authors a
-    WHERE (${whereSQL}) AND a.book_count > 0
+    WHERE (${whereSQL}) AND a.book_count > 0 AND ${preferredAuthorRowSql('a')}
   `).get(...whereParams).count;
 
   return { total, items };
@@ -5412,7 +5482,7 @@ function _getFacetStmts(facet, sort, order = '', author = '') {
 
   const rankOrder = "COALESCE(s.flibusta_sidecar, 0) DESC, COALESCE(NULLIF(b.date, ''), b.imported_at) DESC, b.imported_at DESC, b.id DESC";
   const seriesJoin = author ? ' JOIN book_authors ba ON ba.book_id = b.id JOIN authors a ON a.id = ba.author_id' : '';
-  const seriesWhere = author ? ' AND a.name = ?' : '';
+  const seriesWhere = author ? ` AND ${authorAliasMatchSql('a')}` : '';
   const seriesItemsOrder = sort === 'series'
     ? applyOrder(
       // Числовой номер тома; пустые/нечисловые — в конец
@@ -5421,14 +5491,13 @@ function _getFacetStmts(facet, sort, order = '', author = '') {
     )
     : sort === 'recent' ? rankOrder : resolveBookAliasSort(sort, 'b', order);
   const totalSql = {
-    // Junction PK (book_id, author_id) гарантирует уникальность книги на автора → COUNT(*) достаточно.
-    authors: `SELECT COUNT(*) AS count FROM book_authors ba JOIN authors a ON a.id = ba.author_id JOIN active_books b ON b.id = ba.book_id WHERE a.name = ?`,
-    series: `SELECT COUNT(*) AS count FROM book_series bs JOIN series_catalog s ON s.id = bs.series_id JOIN active_books b ON b.id = bs.book_id${seriesJoin} WHERE s.name = ?${seriesWhere}`,
+    authors: `SELECT COUNT(DISTINCT b.id) AS count FROM book_authors ba JOIN authors a ON a.id = ba.author_id JOIN active_books b ON b.id = ba.book_id WHERE ${authorAliasMatchSql('a')}`,
+    series: `SELECT COUNT(DISTINCT b.id) AS count FROM book_series bs JOIN series_catalog s ON s.id = bs.series_id JOIN active_books b ON b.id = bs.book_id${seriesJoin} WHERE s.name = ?${seriesWhere}`,
     genres: `SELECT COUNT(*) AS count FROM book_genres bg JOIN genres_catalog g ON g.id = bg.genre_id JOIN active_books b ON b.id = bg.book_id WHERE g.name = ?`,
     languages: `SELECT COUNT(*) AS count FROM active_books b WHERE COALESCE(NULLIF(b.lang, ''), 'unknown') = ?`
   };
   const itemsSql = {
-    authors: `SELECT b.id, b.title, b.authors, b.genres, b.series, b.series_no AS seriesNo, b.ext, b.lang, b.lib_rate AS libRate, b.archive_name AS archiveName, b.deleted FROM book_authors ba JOIN authors a ON a.id = ba.author_id JOIN active_books b ON b.id = ba.book_id LEFT JOIN sources s ON s.id = b.source_id WHERE a.name = ? ORDER BY ${sort === 'recent' ? rankOrder : resolveBookAliasSort(sort, 'b', order)} LIMIT ? OFFSET ?`,
+    authors: `SELECT b.id, b.title, b.authors, b.genres, b.series, b.series_no AS seriesNo, b.ext, b.lang, b.lib_rate AS libRate, b.archive_name AS archiveName, b.deleted FROM book_authors ba JOIN authors a ON a.id = ba.author_id JOIN active_books b ON b.id = ba.book_id LEFT JOIN sources s ON s.id = b.source_id WHERE ${authorAliasMatchSql('a')} GROUP BY b.id ORDER BY ${sort === 'recent' ? rankOrder : resolveBookAliasSort(sort, 'b', order)} LIMIT ? OFFSET ?`,
     // seriesNo из book_series (bs) — номер в открытой серии, не primary series_no книги
     series: `SELECT b.id, b.title, b.authors, b.genres, sc.name AS series, bs.series_no AS seriesNo, b.ext, b.lang, b.lib_rate AS libRate, b.archive_name AS archiveName, b.deleted FROM book_series bs JOIN series_catalog sc ON sc.id = bs.series_id JOIN active_books b ON b.id = bs.book_id${seriesJoin} LEFT JOIN sources s ON s.id = b.source_id WHERE sc.name = ?${seriesWhere} ORDER BY ${seriesItemsOrder} LIMIT ? OFFSET ?`,
     genres: `SELECT b.id, b.title, b.authors, b.genres, b.series, b.series_no AS seriesNo, b.ext, b.lang, b.lib_rate AS libRate, b.archive_name AS archiveName, b.deleted FROM book_genres bg JOIN genres_catalog g ON g.id = bg.genre_id JOIN active_books b ON b.id = bg.book_id LEFT JOIN sources s ON s.id = b.source_id WHERE g.name = ? ORDER BY ${sort === 'recent' ? rankOrder : resolveBookAliasSort(sort, 'b', order)} LIMIT ? OFFSET ?`,
@@ -5470,7 +5539,7 @@ export function getBooksByFacetLight(facet, value, limit = 8, sort = 'rating') {
     const recentOrder = "COALESCE(NULLIF(b.date, ''), b.imported_at) DESC, b.imported_at DESC, b.id DESC";
     const orderBy = sort === 'rating' ? ratingOrder : recentOrder;
     const sql = {
-      authors: `SELECT b.id, b.title, b.authors, b.genres, b.series, b.series_no AS seriesNo, b.ext, b.lang, b.lib_rate AS libRate, b.archive_name AS archiveName, b.deleted FROM book_authors ba JOIN authors a ON a.id = ba.author_id JOIN active_books b ON b.id = ba.book_id WHERE a.name = ? ORDER BY ${orderBy} LIMIT ?`,
+      authors: `SELECT b.id, b.title, b.authors, b.genres, b.series, b.series_no AS seriesNo, b.ext, b.lang, b.lib_rate AS libRate, b.archive_name AS archiveName, b.deleted FROM book_authors ba JOIN authors a ON a.id = ba.author_id JOIN active_books b ON b.id = ba.book_id WHERE ${authorAliasMatchSql('a')} GROUP BY b.id ORDER BY ${orderBy} LIMIT ?`,
       series: `SELECT b.id, b.title, b.authors, b.genres, b.series, b.series_no AS seriesNo, b.ext, b.lang, b.lib_rate AS libRate, b.archive_name AS archiveName, b.deleted FROM book_series bs JOIN series_catalog sc ON sc.id = bs.series_id JOIN active_books b ON b.id = bs.book_id WHERE sc.name = ? ORDER BY ${orderBy} LIMIT ?`,
       genres: `SELECT b.id, b.title, b.authors, b.genres, b.series, b.series_no AS seriesNo, b.ext, b.lang, b.lib_rate AS libRate, b.archive_name AS archiveName, b.deleted FROM book_genres bg JOIN genres_catalog g ON g.id = bg.genre_id JOIN active_books b ON b.id = bg.book_id WHERE g.name = ? ORDER BY ${orderBy} LIMIT ?`
     };
@@ -5518,10 +5587,10 @@ function getBooksByFacetFiltered({
   let fromSql = '';
   const baseParams = [value];
   if (facet === 'authors') {
-    fromSql = `FROM book_authors ba JOIN authors a ON a.id = ba.author_id JOIN active_books b ON b.id = ba.book_id LEFT JOIN sources s ON s.id = b.source_id WHERE a.name = ?`;
+    fromSql = `FROM book_authors ba JOIN authors a ON a.id = ba.author_id JOIN active_books b ON b.id = ba.book_id LEFT JOIN sources s ON s.id = b.source_id WHERE ${authorAliasMatchSql('a')}`;
   } else if (facet === 'series') {
     const seriesJoin = author ? ' JOIN book_authors ba ON ba.book_id = b.id JOIN authors a ON a.id = ba.author_id' : '';
-    const seriesWhere = author ? ' AND a.name = ?' : '';
+    const seriesWhere = author ? ` AND ${authorAliasMatchSql('a')}` : '';
     fromSql = `FROM book_series bs JOIN series_catalog sc ON sc.id = bs.series_id JOIN active_books b ON b.id = bs.book_id${seriesJoin} LEFT JOIN sources s ON s.id = b.source_id WHERE sc.name = ?${seriesWhere}`;
     if (author) baseParams.push(author);
   } else if (facet === 'genres') {
@@ -5533,7 +5602,7 @@ function getBooksByFacetFiltered({
   }
 
   const whereParams = [...baseParams, ...extra.params];
-  const total = Number(db.prepare(`SELECT COUNT(*) AS count ${fromSql}${extra.sql}`).get(...whereParams).count) || 0;
+  const total = Number(db.prepare(`SELECT COUNT(DISTINCT b.id) AS count ${fromSql}${extra.sql}`).get(...whereParams).count) || 0;
   if (total === 0 || offset >= total) {
     return { total, items: [] };
   }
@@ -5600,10 +5669,11 @@ export function getBooksByFacet({
   if (total == null || !Number.isFinite(Number(total))) {
     // book_count в catalog-таблицах — предрассчитанный COUNT по active_books.
     // Для authors/genres/series без доп. фильтра — мгновенный PK-lookup.
-    if (!author && (facet === 'authors' || facet === 'genres' || facet === 'series')) {
-      const catalogTable = facet === 'authors' ? 'authors' : facet === 'genres' ? 'genres_catalog' : 'series_catalog';
-      const countCol = facet === 'authors' ? 'name' : 'name';
-      total = db.prepare(`SELECT book_count AS c FROM ${catalogTable} WHERE ${countCol} = ?`).get(value)?.c ?? 0;
+    if (!author && facet === 'authors') {
+      total = stmts.total.get(value).count;
+    } else if (!author && (facet === 'genres' || facet === 'series')) {
+      const catalogTable = facet === 'genres' ? 'genres_catalog' : 'series_catalog';
+      total = db.prepare(`SELECT book_count AS c FROM ${catalogTable} WHERE name = ?`).get(value)?.c ?? 0;
     } else {
       total = author ? stmts.total.get(value, author).count : stmts.total.get(value).count;
     }
@@ -5739,6 +5809,7 @@ function buildAuthorSeriesGroupEntry(name, displayNameFromOrder, g, sort) {
 }
 
 let _stmtAuthorGroupedRowCount = null;
+let _stmtAuthorGroupedTotal = null;
 function getAuthorGroupedFetchLimit(authorName, totalBooks) {
   if (totalBooks <= 0) return 0;
   _stmtAuthorGroupedRowCount ??= db.prepare(`
@@ -5747,7 +5818,7 @@ function getAuthorGroupedFetchLimit(authorName, totalBooks) {
     JOIN authors a ON a.id = ba.author_id
     JOIN active_books b ON b.id = ba.book_id
     LEFT JOIN book_series bs ON bs.book_id = b.id
-    WHERE a.name = ?
+    WHERE ${authorAliasMatchSql('a')}
   `);
   const expanded = _stmtAuthorGroupedRowCount.get(authorName)?.c ?? totalBooks;
   return Math.min(AUTHOR_GROUPED_FETCH_CAP, Math.max(expanded, totalBooks, 1));
@@ -5781,7 +5852,14 @@ export function getAuthorBooksGrouped(authorName, sort = 'title', order = '', { 
   const cacheKey = `${authorName}|${sort}|${order}`;
   const cached = readTimedCache(authorGroupedCache, cacheKey);
   if (cached) return cached;
-  const totalBooks = db.prepare('SELECT book_count AS c FROM authors WHERE name = ?').get(authorName)?.c ?? 0;
+  _stmtAuthorGroupedTotal ??= db.prepare(`
+    SELECT COUNT(DISTINCT ba.book_id) AS c
+    FROM book_authors ba
+    JOIN authors a ON a.id = ba.author_id
+    JOIN active_books b ON b.id = ba.book_id
+    WHERE ${authorAliasMatchSql('a')}
+  `);
+  const totalBooks = _stmtAuthorGroupedTotal.get(authorName)?.c ?? 0;
   // Guard: если у автора нет книг — не гоняем тяжёлые SQL-запросы через active_books VIEW.
   if (totalBooks === 0) {
     const empty = { series: [], standaloneBooks: [], total: 0 };
@@ -5795,7 +5873,7 @@ export function getAuthorBooksGrouped(authorName, sort = 'title', order = '', { 
       LEFT JOIN book_series bs ON bs.book_id = b.id
       LEFT JOIN series_catalog s ON s.id = bs.series_id
       LEFT JOIN sources src ON src.id = b.source_id
-      WHERE a.name = ?
+      WHERE ${authorAliasMatchSql('a')}
   `;
 
   const fetchLimit = getAuthorGroupedFetchLimit(authorName, totalBooks);
@@ -5831,7 +5909,7 @@ export function getAuthorBooksGrouped(authorName, sort = 'title', order = '', { 
     JOIN active_books b ON b.id = ba.book_id
     JOIN book_series bs ON bs.book_id = b.id
     JOIN series_catalog s ON s.id = bs.series_id
-    WHERE a.name = ?
+    WHERE ${authorAliasMatchSql('a')}
     GROUP BY s.id, s.name, s.display_name, s.sort_name
     ORDER BY seriesSortMin ASC, COALESCE(s.sort_name, s.name) ASC
   `).all(authorName);
@@ -5925,7 +6003,7 @@ export function getAuthorFlibustaSourceId(authorName) {
     JOIN authors a ON a.id = ba.author_id
     JOIN active_books b ON b.id = ba.book_id
     JOIN sources s ON s.id = b.source_id
-    WHERE a.name = ?
+    WHERE ${authorAliasMatchSql('a')}
     ORDER BY COALESCE(s.flibusta_sidecar, 0) DESC, b.id
     LIMIT 1
   `);
@@ -5936,14 +6014,17 @@ export function getAuthorFlibustaSourceId(authorName) {
 export function getAllBookIdsByFacet(facet, value) {
   if (facet === 'series') {
     value = resolveSeriesCatalogName(String(value || ''));
+  } else if (facet === 'authors') {
+    value = resolveAuthorName(String(value || '')) || String(value || '');
   }
   const queries = {
     authors: `
       SELECT b.id FROM book_authors ba
       JOIN authors a ON a.id = ba.author_id
       JOIN active_books b ON b.id = ba.book_id
-      WHERE a.name = ?
-      ORDER BY b.series_sort ASC, CAST(b.series_index AS INTEGER) ASC, b.title_sort ASC`,
+      WHERE ${authorAliasMatchSql('a')}
+      GROUP BY b.id
+      ORDER BY MIN(b.series_sort) ASC, CAST(MIN(b.series_index) AS INTEGER) ASC, MIN(b.title_sort) ASC`,
     series: `
       SELECT b.id FROM book_series bs
       JOIN series_catalog s ON s.id = bs.series_id
@@ -5977,8 +6058,12 @@ let _stmtFacetCountLang = null;
 function facetEntityBookCount(facet, v) {
   try {
     if (facet === 'authors') {
-      _stmtFacetCountAuthor ??= db.prepare('SELECT book_count AS c FROM authors WHERE name = ?');
-      return _stmtFacetCountAuthor.get(v)?.c ?? 0;
+      _stmtAuthorAliasBookCount ??= db.prepare(`
+        SELECT COALESCE(SUM(a.book_count), 0) AS c
+        FROM authors a
+        WHERE ${authorAliasMatchSql('a')}
+      `);
+      return _stmtAuthorAliasBookCount.get(v)?.c ?? 0;
     }
     if (facet === 'series') {
       _stmtFacetCountSeries ??= db.prepare('SELECT book_count AS c FROM series_catalog WHERE name = ?');
@@ -6028,7 +6113,7 @@ export function getFacetSummary(facet, value) {
       JOIN active_books b ON b.id = ba.book_id
       JOIN book_series bs ON bs.book_id = b.id
       JOIN series_catalog s ON s.id = bs.series_id
-      WHERE a.name = ?
+      WHERE ${authorAliasMatchSql('a')}
       GROUP BY s.id, s.name
       ORDER BY bookCount DESC, MIN(b.series_sort) ASC, COALESCE(s.sort_name, s.name) ASC
       LIMIT 8
@@ -6041,7 +6126,7 @@ export function getFacetSummary(facet, value) {
       JOIN active_books b ON b.id = ba.book_id
       JOIN book_genres bg ON bg.book_id = b.id
       JOIN genres_catalog g ON g.id = bg.genre_id
-      WHERE a.name = ?
+      WHERE ${authorAliasMatchSql('a')}
       GROUP BY g.id, g.name, g.display_name
       ORDER BY bookCount DESC, COALESCE(g.sort_name, g.name) ASC
       LIMIT 8
@@ -6724,7 +6809,7 @@ export function getAuthorBooksOpds(authorName, genre = '') {
              dc.annotation
       FROM active_books b
       JOIN book_authors ba ON ba.book_id = b.id
-      JOIN authors a ON a.id = ba.author_id AND a.name = ?
+      JOIN authors a ON a.id = ba.author_id AND ${authorAliasMatchSql('a')}
       JOIN book_genres bg ON bg.book_id = b.id
       JOIN genres_catalog gc ON gc.id = bg.genre_id AND gc.name IN (${genreParams.map(() => '?').join(',')})
       LEFT JOIN sources s ON s.id = b.source_id
@@ -6741,7 +6826,7 @@ export function getAuthorBooksOpds(authorName, genre = '') {
              dc.annotation
       FROM active_books b
       JOIN book_authors ba ON ba.book_id = b.id
-      JOIN authors a ON a.id = ba.author_id AND a.name = ?
+      JOIN authors a ON a.id = ba.author_id AND ${authorAliasMatchSql('a')}
       LEFT JOIN sources s ON s.id = b.source_id
       LEFT JOIN book_details_cache dc ON dc.book_id = b.id
       ORDER BY ${rankOrder}
@@ -6764,7 +6849,7 @@ export function getAuthorSeriesBooksOpds(authorName, seriesName, genre = '') {
              dc.annotation
       FROM active_books b
       JOIN book_authors ba ON ba.book_id = b.id
-      JOIN authors a ON a.id = ba.author_id AND a.name = ?
+      JOIN authors a ON a.id = ba.author_id AND ${authorAliasMatchSql('a')}
       JOIN book_genres bg ON bg.book_id = b.id
       JOIN genres_catalog gc ON gc.id = bg.genre_id AND gc.name IN (${genreParams.map(() => '?').join(',')})
       LEFT JOIN sources s ON s.id = b.source_id
@@ -6782,7 +6867,7 @@ export function getAuthorSeriesBooksOpds(authorName, seriesName, genre = '') {
              dc.annotation
       FROM active_books b
       JOIN book_authors ba ON ba.book_id = b.id
-      JOIN authors a ON a.id = ba.author_id AND a.name = ?
+      JOIN authors a ON a.id = ba.author_id AND ${authorAliasMatchSql('a')}
       LEFT JOIN sources s ON s.id = b.source_id
       LEFT JOIN book_details_cache dc ON dc.book_id = b.id
       WHERE b.series = ?
