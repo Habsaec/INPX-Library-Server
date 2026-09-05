@@ -255,6 +255,15 @@ test('renderHome returns home page HTML', async () => {
     sections: {}
   });
   assert.ok(html.includes('<!doctype html>'));
+  const withContinue = renderHome({
+    user: { username: 'tester' },
+    stats: { totalBooks: 100, totalAuthors: 50, totalSeries: 20, totalGenres: 10, totalLanguages: 2 },
+    indexStatus: {},
+    sections: {},
+    hasContinueData: true
+  });
+  assert.ok(withContinue.includes('data-home-continue'));
+  assert.ok(!withContinue.includes('data-home-continue-grid'));
 });
 
 test('renderBook returns book detail page', async () => {
@@ -262,12 +271,17 @@ test('renderBook returns book detail page', async () => {
   const html = renderBook({
     book: { id: '42', title: 'Test Book', authors: 'Test Author', ext: 'fb2', lang: 'ru' },
     details: {},
-    user: null,
+    user: { username: 'tester' },
     stats: { totalBooks: 1, totalAuthors: 1, totalSeries: 0, totalGenres: 0, totalLanguages: 1 },
     indexStatus: {}
   });
   assert.ok(html.includes('Test Book'));
   assert.ok(html.includes('Test Author'));
+  const actionsStart = html.indexOf('class="actions actions-primary"');
+  const actions = actionsStart >= 0 ? html.slice(actionsStart, actionsStart + 2500) : '';
+  const readAt = actions.search(/class="button"[^>]*>[^<]*(Читать|Read)/);
+  const downloadAt = actions.indexOf('download-menu-trigger');
+  assert.ok(readAt >= 0 && downloadAt >= 0 && readAt < downloadAt, 'Read should come before Download');
 });
 
 test('renderFacetBooks: genre page renders view tabs', async () => {

@@ -78,59 +78,26 @@ async function loadHomeRecommendationsProgressively(attempt = 0) {
 }
 
 async function loadHomeContinueProgressively() {
-  const section = document.querySelector('[data-home-continue]');
-  if (!section || section.dataset.loaded === '1') return;
-  const welcomeBanner = document.querySelector('.welcome-hero-banner');
-  const gridMount = section?.querySelector('[data-home-continue-grid]');
+  const mount = document.querySelector('[data-home-continue]');
+  if (!mount || mount.dataset.loaded === '1') return;
   try {
-    const r = await fetch('/api/library/continue?page=1&pageSize=6', { credentials: 'same-origin' });
-    if (!r.ok) {
-      section?.remove();
-      return;
-    }
+    const r = await fetch('/api/library/continue?page=1&pageSize=24', { credentials: 'same-origin' });
+    if (!r.ok) return;
     const data = await r.json();
     const items = Array.isArray(data?.items) ? data.items : [];
-    if (!items.length) {
-      section?.remove();
-      return;
-    }
-    const featuredBook = items[0];
-    const remainingItems = items.slice(1);
-    if (featuredBook && welcomeBanner) {
-      const heroTmp = document.createElement('div');
-      heroTmp.innerHTML = renderPremiumHeroCardHtml(featuredBook);
-      const heroCard = heroTmp.firstElementChild;
-      if (heroCard) {
-        heroCard.classList.add('home-reveal');
-        welcomeBanner.replaceWith(heroCard);
-        attachCoverErrorFallback(heroCard);
-        applyHeroBookAnnotation(featuredBook);
-        revealHomeBlock(heroCard);
-      }
-    }
-    if (!section) return;
-    if (!remainingItems.length) {
-      section.remove();
-      return;
-    }
-    if (!gridMount) return;
-    const listMode = section.dataset.homeView === 'list';
-    const tmp = document.createElement('div');
-    tmp.innerHTML = listMode
-      ? `<div class="author-flibusta-list catalog-book-list home-reveal"><section class="author-flibusta-group catalog-book-list-group"><ul class="author-flibusta-books catalog-book-list-ul">${remainingItems.map((b) => renderListRowHtml(b)).join('')}</ul></section></div>`
-      : `<div class="grid home-reveal">${remainingItems.map((b) => renderCardHtml(b)).join('')}</div>`;
-    const grid = tmp.firstElementChild;
-    if (!grid) return;
-    gridMount.replaceWith(grid);
-    attachCoverErrorFallback(grid);
-    attachDownloadMenus(grid);
-    if (!listMode) loadCardDetails(grid.querySelectorAll('.card'));
-    revealHomeBlock(grid);
-    revealHomeBlock(section);
-    section.dataset.loaded = '1';
-  } catch {
-    section?.remove();
-  }
+    if (!items.length) return;
+    const total = Number(data?.total) || items.length;
+    const heroTmp = document.createElement('div');
+    heroTmp.innerHTML = renderPremiumHeroCarouselHtml(items, total);
+    const heroCard = heroTmp.firstElementChild;
+    if (!heroCard) return;
+    heroCard.classList.add('home-reveal');
+    mount.replaceWith(heroCard);
+    attachCoverErrorFallback(heroCard);
+    if (items.length > 1) initHeroCarousel(heroCard, items);
+    else applyHeroBookAnnotation(items[0], heroCard);
+    revealHomeBlock(heroCard);
+  } catch { /* keep the welcome quote */ }
 }
 
 function revealHomeBlock(el) {
@@ -152,15 +119,19 @@ function renderCoverRatingBadgeHtml(libRate) {
   return `<span class="cover-rating-wrapper"><span class="cover-rating-badge cover-rating-${n}">${Array.from({ length: n }, () => '<span>★</span>').join('')}</span></span>`;
 }
 
-function renderPremiumHeroCardHtml(book) {
+function renderHeroSlideInnerHtml(book, { eager = false, heading = 'h1', showKicker = false } = {}) {
   const title = escapeHtml(book.title || '');
   const progress = Math.max(0, Math.min(100, Math.round(Number(book.readProgress) || 0)));
   const coverSrc = apiBookPath(book.id, 'cover-thumb');
   const coverRating = renderCoverRatingBadgeHtml(book.libRate);
-  return `<section class="premium-hero-card">
+  const headingTag = heading === 'h1' ? 'h1' : 'h2';
+  const kicker = showKicker
+    ? `<div class="hero-card-kicker">${escapeHtml(uiT('home.heroKicker'))}</div>`
+    : '';
+  return `
     <div class="hero-card-cover-side">
       <a class="hero-cover-link cover" href="${bookPagePath(book.id)}">
-        <img class="cover-image hero-cover-image" loading="eager" draggable="false" src="${coverSrc}" data-cover-src="${coverSrc}" alt="${title}">
+        <img class="cover-image hero-cover-image" loading="${eager ? 'eager' : 'lazy'}" draggable="false" src="${coverSrc}" data-cover-src="${coverSrc}" alt="${title}">
         <span class="cover-fallback hero-cover-fallback" hidden>
           <img class="cover-fallback-image" draggable="false" src="/book-fallback.png" alt="">
           <span class="cover-fallback-overlay"></span>
@@ -170,9 +141,9 @@ function renderPremiumHeroCardHtml(book) {
       </a>
     </div>
     <div class="hero-card-info-side">
-      <div class="hero-card-kicker">${escapeHtml(uiT('home.heroKicker'))}</div>
-      <h1 class="hero-card-title">${title}</h1>
-      <div class="hero-card-author">${book.authors ? uiRenderAuthorLinks(book.authorsList, book.authors, `hero-a-${book.id}`) : escapeHtml(uiT('book.authorUnknown'))}</div>
+      ${kicker}
+      <${headingTag} class="hero-card-title">${title}</${headingTag}>
+      <div class="hero-card-author">${book.authors ? uiRenderAuthorLinks(book.authorsList, book.authors, `hero-a-${safeDomIdPart(book.id)}`) : escapeHtml(uiT('book.authorUnknown'))}</div>
       <p class="hero-card-annotation" data-hero-annotation hidden></p>
       <div class="hero-card-progress">
         <div class="hero-card-progress-bar" role="progressbar" aria-valuenow="${progress}" aria-valuemin="0" aria-valuemax="100"><div class="hero-card-progress-fill" style="width:${progress}%"></div></div>
@@ -182,7 +153,46 @@ function renderPremiumHeroCardHtml(book) {
         <a class="button button-primary hero-read-btn" href="${readPagePath(book.id)}">${escapeHtml(uiT('home.heroReadBook'))}</a>
         <a class="button button-secondary hero-about-btn" href="${bookPagePath(book.id)}">${escapeHtml(uiT('home.heroAboutBook'))}</a>
       </div>
+    </div>`;
+}
+
+function renderPremiumHeroCardHtml(book) {
+  return `<section class="premium-hero-card">
+    ${renderHeroSlideInnerHtml(book, { eager: true, heading: 'h1', showKicker: true })}
+  </section>`;
+}
+
+function renderHeroChevronSvg(dir) {
+  const points = dir === 'prev' ? 'M10.5 3.5 6 8l4.5 4.5' : 'M5.5 3.5 10 8 5.5 12.5';
+  return `<svg viewBox="0 0 16 16" width="18" height="18" aria-hidden="true"><path d="${points}" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+}
+
+function renderPremiumHeroCarouselHtml(books, total) {
+  if (!books.length) return '';
+  if (books.length === 1) return renderPremiumHeroCardHtml(books[0]);
+  const slides = books.map((book, index) => `
+    <article class="hero-carousel-slide" data-hero-slide="${index}" ${index === 0 ? '' : 'aria-hidden="true"'}>
+      ${renderHeroSlideInnerHtml(book, { eager: index === 0, heading: 'h2' })}
+    </article>`).join('');
+  const dots = books.map((_, index) => `
+    <button type="button" class="hero-carousel-dot${index === 0 ? ' is-active' : ''}" data-hero-dot="${index}" aria-label="${escapeHtml(uiTp('home.heroGoTo', { n: index + 1 }))}" ${index === 0 ? 'aria-current="true"' : ''}></button>`).join('');
+  const more = total > books.length
+    ? `<a class="hero-carousel-all" href="/library/continue">${escapeHtml(uiT('home.showAll'))}</a>`
+    : '';
+  return `<section class="premium-hero-card hero-carousel" data-hero-carousel aria-roledescription="carousel" aria-label="${escapeHtml(uiT('home.shelfContinue'))}">
+    <div class="hero-carousel-head">
+      <div class="hero-card-kicker">${escapeHtml(uiT('home.heroKicker'))}</div>
+      <p class="hero-carousel-status" data-hero-status aria-live="polite">${escapeHtml(uiTp('home.heroSlide', { current: 1, total: books.length }))}</p>
+      ${more}
     </div>
+    <div class="hero-carousel-frame">
+      <button type="button" class="hero-carousel-nav hero-carousel-prev" data-hero-prev aria-label="${escapeHtml(uiT('home.heroPrev'))}">${renderHeroChevronSvg('prev')}</button>
+      <div class="hero-carousel-viewport" data-hero-viewport tabindex="0">
+        <div class="hero-carousel-track" data-hero-track>${slides}</div>
+      </div>
+      <button type="button" class="hero-carousel-nav hero-carousel-next" data-hero-next aria-label="${escapeHtml(uiT('home.heroNext'))}">${renderHeroChevronSvg('next')}</button>
+    </div>
+    <div class="hero-carousel-dots" data-hero-dots>${dots}</div>
   </section>`;
 }
 
@@ -199,8 +209,8 @@ function formatHeroAnnotationText(raw, isHtml) {
   return text;
 }
 
-function applyHeroBookAnnotation(book) {
-  const slot = document.querySelector('[data-hero-annotation]');
+function applyHeroBookAnnotation(book, root = document) {
+  const slot = root.querySelector('[data-hero-annotation]');
   if (!slot || !book) return;
   const text = formatHeroAnnotationText(book.annotation, book.annotationIsHtml);
   if (text) {
@@ -208,11 +218,11 @@ function applyHeroBookAnnotation(book) {
     slot.hidden = false;
     return;
   }
-  void fetchHeroBookAnnotation(book.id);
+  void fetchHeroBookAnnotation(book.id, slot);
 }
 
-async function fetchHeroBookAnnotation(bookId) {
-  const slot = document.querySelector('[data-hero-annotation]');
+async function fetchHeroBookAnnotation(bookId, slotEl) {
+  const slot = slotEl || document.querySelector('[data-hero-annotation]');
   if (!slot || !bookId) return;
   try {
     const r = await fetch(apiBookPath(bookId, 'details'), { credentials: 'same-origin' });
@@ -223,6 +233,108 @@ async function fetchHeroBookAnnotation(bookId) {
     slot.textContent = text;
     slot.hidden = false;
   } catch { /* ignore */ }
+}
+
+function initHeroCarousel(root, books) {
+  const track = root.querySelector('[data-hero-track]');
+  const slides = [...root.querySelectorAll('[data-hero-slide]')];
+  const dots = [...root.querySelectorAll('[data-hero-dot]')];
+  const status = root.querySelector('[data-hero-status]');
+  const viewport = root.querySelector('[data-hero-viewport]');
+  if (!track || slides.length < 2) {
+    applyHeroBookAnnotation(books[0], root);
+    return;
+  }
+  let index = 0;
+  let pointerStartX = 0;
+  let pointerDelta = 0;
+  let pointerActive = false;
+  let timer = 0;
+  const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const AUTO_MS = 6500;
+
+  const stopAuto = () => {
+    if (timer) {
+      clearInterval(timer);
+      timer = 0;
+    }
+  };
+  const startAuto = () => {
+    if (reduceMotion || document.hidden || root.matches(':hover, :focus-within')) return;
+    stopAuto();
+    timer = window.setInterval(() => go(index + 1, { fromAuto: true }), AUTO_MS);
+  };
+
+  const go = (next, { fromAuto = false } = {}) => {
+    const count = books.length;
+    index = ((next % count) + count) % count;
+    track.style.transform = `translateX(-${index * 100}%)`;
+    slides.forEach((slide, i) => {
+      if (i === index) slide.removeAttribute('aria-hidden');
+      else slide.setAttribute('aria-hidden', 'true');
+    });
+    dots.forEach((dot, i) => {
+      const on = i === index;
+      dot.classList.toggle('is-active', on);
+      if (on) dot.setAttribute('aria-current', 'true');
+      else dot.removeAttribute('aria-current');
+    });
+    if (status) status.textContent = uiTp('home.heroSlide', { current: index + 1, total: count });
+    applyHeroBookAnnotation(books[index], slides[index]);
+    const neighbor = books[index + 1] || books[0];
+    if (neighbor && neighbor !== books[index]) applyHeroBookAnnotation(neighbor, slides[(index + 1) % count]);
+    if (!fromAuto) {
+      stopAuto();
+      startAuto();
+    }
+  };
+
+  root.querySelector('[data-hero-prev]')?.addEventListener('click', () => go(index - 1));
+  root.querySelector('[data-hero-next]')?.addEventListener('click', () => go(index + 1));
+  dots.forEach((dot) => {
+    dot.addEventListener('click', () => go(Number(dot.dataset.heroDot) || 0));
+  });
+  viewport?.addEventListener('keydown', (event) => {
+    if (event.key === 'ArrowLeft') {
+      event.preventDefault();
+      go(index - 1);
+    } else if (event.key === 'ArrowRight') {
+      event.preventDefault();
+      go(index + 1);
+    }
+  });
+  viewport?.addEventListener('pointerdown', (event) => {
+    if (event.pointerType === 'mouse' && event.button !== 0) return;
+    pointerActive = true;
+    pointerStartX = event.clientX;
+    pointerDelta = 0;
+    stopAuto();
+  });
+  viewport?.addEventListener('pointerup', (event) => {
+    if (!pointerActive) return;
+    pointerActive = false;
+    pointerDelta = event.clientX - pointerStartX;
+    if (pointerDelta > 48) go(index - 1);
+    else if (pointerDelta < -48) go(index + 1);
+    else startAuto();
+  });
+  viewport?.addEventListener('pointercancel', () => {
+    pointerActive = false;
+    startAuto();
+  });
+  root.addEventListener('mouseenter', stopAuto);
+  root.addEventListener('mouseleave', startAuto);
+  root.addEventListener('focusin', stopAuto);
+  root.addEventListener('focusout', (event) => {
+    if (!root.contains(event.relatedTarget)) startAuto();
+  });
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) stopAuto();
+    else startAuto();
+  });
+  window.addEventListener('pagehide', stopAuto);
+  go(0);
+  startAuto();
 }
 
 function safeDomIdPart(value) {

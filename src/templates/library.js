@@ -42,18 +42,10 @@ export function renderHome({ user, stats, indexStatus, history = [], favoriteAut
       <div data-home-recommendations-grid>${renderSkeletonGrid(8)}</div>
     </section>`)
     : '';
-  const continueShelf = isAuthenticated && hasContinueData
-    ? `<section class="library-shelf" data-home-continue data-home-view="${homeViewAttr}" data-loaded="0">
-      <div class="section-title">
-        <h2>${escapeHtml(t('home.shelfContinue'))}</h2>
-        <div class="actions"><a class="shelf-link" href="/library/continue">${escapeHtml(t('home.showAll'))}</a></div>
-      </div>
-      <div data-home-continue-grid>${renderSkeletonGrid(6)}</div>
-    </section>`
-    : '';
+  const continueAttr = isAuthenticated && hasContinueData ? ' data-home-continue' : '';
   const content = `
     ${subtitleText ? `<header class="home-page-intro"><p class="home-page-subtitle">${escapeHtml(subtitleText)}</p></header>` : ''}
-    <section class="welcome-hero-banner home-reveal">
+    <section class="welcome-hero-banner home-reveal"${continueAttr}>
       <div class="welcome-hero-overlay"></div>
       <div class="welcome-hero-content">
         <blockquote class="welcome-hero-quote">${escapeHtml(welcomeQuote.quote)}</blockquote>
@@ -63,7 +55,6 @@ export function renderHome({ user, stats, indexStatus, history = [], favoriteAut
     ${!isAuthenticated ? `<div class="home-inline-note">${loginHint}</div>` : ''}
     ${renderHomeShelf({ title: t('home.shelfNew'), href: '/library/recent', items: sections.newest || [], type: 'books', isAuthenticated, showBatch: false, user, readBookIds, listView })}
     ${recommendationsShelf}
-    ${continueShelf}
     `;
   return pageShell({ title: t('home.title'), content, user, stats, indexStatus, breadcrumbs: [{ label: t('nav.home') }], currentPath: '/', csrfToken, readBookIds });
 }
@@ -728,8 +719,8 @@ export function renderBook({
               : ''
           }
           <div class="actions actions-primary">
-            ${renderDownloadMenu(book, { accent: true, user })}
             <a href="${readPagePath(book.id)}" class="button" target="_blank" rel="noopener noreferrer">${escapeHtml(t('book.read'))}</a>
+            ${renderDownloadMenu(book, { accent: true, user })}
             ${isAuthenticated && canSendToEmailInUi(user) ? `<button class="button" type="button" ${bookIdDataAttr(book.id)} data-send-to-ereader="1">${escapeHtml(t('book.toEmail'))}</button>` : ''}
           </div>
         </div>

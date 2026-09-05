@@ -2220,8 +2220,161 @@ html[data-theme="light"] .premium-hero-card::after {
   pointer-events: none;
 }
 
-.premium-hero-card:hover .hero-cover-link {
+.premium-hero-card:not(.hero-carousel):hover .hero-cover-link {
   transform: translateY(-6px) rotateY(-5deg) scale(1.02);
+}
+
+.premium-hero-card.hero-carousel {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 18px;
+}
+
+.hero-carousel-head {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 10px 16px;
+}
+
+.hero-carousel-status {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.hero-carousel-all {
+  margin-left: auto;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--link);
+  text-decoration: none;
+}
+
+.hero-carousel-all:hover {
+  color: var(--link-hover);
+  text-decoration: underline;
+}
+
+.hero-carousel-frame {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.hero-carousel-viewport {
+  overflow: hidden;
+  min-width: 0;
+  outline: none;
+  padding: 8px 0 20px;
+}
+
+.hero-carousel-viewport:focus-visible {
+  box-shadow: var(--focus-ring);
+  border-radius: var(--radius-lg);
+}
+
+.hero-carousel-track {
+  display: flex;
+  transition: transform 0.45s var(--ease-premium);
+}
+
+.hero-carousel-slide {
+  flex: 0 0 100%;
+  display: grid;
+  grid-template-columns: 200px 1fr;
+  gap: 40px;
+  align-items: center;
+  min-width: 0;
+  padding: 8px 16px 48px;
+  clip-path: inset(-8px 0 -48px 0);
+}
+
+.hero-carousel .hero-cover-link {
+  z-index: 1;
+  transform-style: flat;
+  perspective: none;
+}
+
+.hero-carousel .hero-cover-link.cover {
+  box-shadow: var(--card-cover-shadow);
+}
+
+.hero-carousel .hero-cover-link::before {
+  display: none;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .hero-carousel-slide:hover .hero-cover-link.cover {
+    transform: translateY(-8px);
+    box-shadow: var(--card-cover-shadow-hover);
+  }
+}
+
+.hero-carousel-nav {
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface) 88%, var(--bg) 12%);
+  color: var(--text);
+  box-shadow: var(--shadow-sm);
+  cursor: pointer;
+}
+
+.hero-carousel-nav:hover {
+  border-color: var(--button-border-hover);
+  background: var(--ui-glass-active-bg, var(--button-bg-hover));
+}
+
+.hero-carousel-nav:focus-visible {
+  box-shadow: var(--focus-ring);
+}
+
+.hero-carousel-dots {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 7px;
+}
+
+.hero-carousel-dot {
+  width: 7px;
+  height: 7px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--muted) 45%, transparent);
+  cursor: pointer;
+}
+
+.hero-carousel-dot.is-active {
+  width: 18px;
+  background: var(--accent);
+}
+
+.hero-carousel-dot:focus-visible {
+  box-shadow: var(--focus-ring);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hero-carousel-track {
+    transition: none;
+  }
 }
 
 .hero-cover-image,
@@ -2232,7 +2385,7 @@ html[data-theme="light"] .premium-hero-card::after {
   object-fit: cover;
   border-radius: 1px 4px 4px 1px;
   border: 1px solid var(--card-cover-border);
-  box-shadow: var(--card-cover-shadow);
+  box-shadow: none;
   background: var(--card-cover-bg);
 }
 
@@ -7387,6 +7540,44 @@ html[data-theme="light"] .cover-fallback-overlay {
     gap: 24px;
     padding: 24px 20px;
     text-align: center;
+  }
+
+  .hero-carousel-slide {
+    grid-template-columns: 1fr;
+    gap: 24px;
+    text-align: center;
+  }
+
+  .hero-carousel-frame {
+    grid-template-columns: 1fr 1fr;
+    grid-template-areas:
+      "view view"
+      "prev next";
+    gap: 12px 10px;
+  }
+
+  .hero-carousel-viewport {
+    grid-area: view;
+  }
+
+  .hero-carousel-prev {
+    grid-area: prev;
+    justify-self: end;
+  }
+
+  .hero-carousel-next {
+    grid-area: next;
+    justify-self: start;
+  }
+
+  .hero-carousel-head {
+    justify-content: center;
+    text-align: center;
+  }
+
+  .hero-carousel-all {
+    margin-left: 0;
+    width: 100%;
   }
 
   .hero-card-info-side {
