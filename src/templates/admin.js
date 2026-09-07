@@ -364,6 +364,16 @@ export function renderAdminUpdate({ user, stats = {}, indexStatus = {}, operatio
       </div>
     </div>
     <div class="admin-card" style="margin-top:20px;">
+      <div class="admin-card-title">${escapeHtml(t('admin.update.checkTitle'))}</div>
+      <div class="admin-card-subtitle">${escapeHtml(t('admin.update.checkSubtitle'))}</div>
+      <div class="admin-inline-row" style="flex-wrap:wrap;">
+        <button type="button" id="update-check-btn">${escapeHtml(t('admin.update.checkBtn'))}</button>
+        <button type="button" id="update-apply-btn" style="display:none;"></button>
+        <span class="muted">${escapeHtml(t('admin.update.currentVersion'))}: v${escapeHtml(String(operations.appVersion || '?'))}</span>
+      </div>
+      <div id="update-check-status" class="muted" style="margin-top:10px;"></div>
+    </div>
+    <div class="admin-card" style="margin-top:20px;">
       <div class="admin-card-title">${escapeHtml(t('admin.update.uploadTitle'))}</div>
       <div class="admin-card-subtitle">${escapeHtml(t('admin.update.uploadSubtitle'))}</div>
       <div class="admin-inline-row" style="flex-wrap:wrap;">

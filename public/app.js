@@ -4869,7 +4869,7 @@ function attachUpdateUpload() {
     }
   });
 
-  async function pollUpdateLog() {
+  async function pollUpdateLog(activeBtn = startBtn) {
     let finished = false;
     for (let i = 0; i < 120; i++) {
       if (i > 0) await new Promise((r) => setTimeout(r, 800));
@@ -4898,7 +4898,7 @@ function attachUpdateUpload() {
 
     if (finished && logPre && logPre.textContent.includes('[update:done] restart')) {
       if (progressBar) progressBar.style.width = '100%';
-      startBtn.textContent = uiT('app.restarting');
+      activeBtn.textContent = uiT('app.restarting');
       showToast(uiT('app.backupDoneRestart'), 'success');
       for (let i = 0; i < 30; i++) {
         await new Promise((r) => setTimeout(r, 2000));
@@ -4909,7 +4909,7 @@ function attachUpdateUpload() {
       }
       window.location.reload();
     } else if (finished) {
-      startBtn.textContent = uiT('app.error');
+      activeBtn.textContent = uiT('app.error');
       showToast(uiT('app.backupDoneError'), 'error');
       setTimeout(() => {
         startBtn.disabled = false;
@@ -4917,7 +4917,7 @@ function attachUpdateUpload() {
         startBtn.textContent = uiT('app.backupBtnUpdate');
       }, 3000);
     } else {
-      startBtn.textContent = uiT('app.restarting');
+      activeBtn.textContent = uiT('app.restarting');
       for (let i = 0; i < 30; i++) {
         await new Promise((r) => setTimeout(r, 2000));
         try {
@@ -4927,6 +4927,88 @@ function attachUpdateUpload() {
       }
       window.location.reload();
     }
+  }
+
+  // --- Проверка новой версии на GitHub + установка в один клик ---
+  const checkBtn = document.getElementById('update-check-btn');
+  const applyBtn = document.getElementById('update-apply-btn');
+  const checkStatus = document.getElementById('update-check-status');
+  let updateInfo = null;
+
+  async function runUpdateCheck(force) {
+    if (checkBtn) checkBtn.disabled = true;
+    if (applyBtn) applyBtn.style.display = 'none';
+    if (checkStatus) checkStatus.textContent = uiT('app.updateChecking');
+    try {
+      const r = await fetch('/api/operations/update-check' + (force ? '?force=1' : ''), { credentials: 'same-origin' });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok || !data.ok) throw new Error(data.error || ('HTTP ' + r.status));
+      updateInfo = data;
+      if (!checkStatus) return;
+      if (data.updateAvailable) {
+        checkStatus.textContent = uiTp('app.updateAvailable', { v: data.latestVersion }) + ' ';
+        if (data.releaseUrl) {
+          const link = document.createElement('a');
+          link.href = data.releaseUrl;
+          link.target = '_blank';
+          link.rel = 'noopener';
+          link.textContent = uiT('app.updateNotesLink');
+          checkStatus.appendChild(link);
+        }
+        if (applyBtn) {
+          applyBtn.textContent = uiTp('app.updateInstallBtn', { v: data.latestVersion });
+          applyBtn.style.display = '';
+          applyBtn.disabled = false;
+        }
+      } else {
+        checkStatus.textContent = uiTp('app.updateUpToDate', { v: data.currentVersion });
+      }
+    } catch (error) {
+      updateInfo = null;
+      if (checkStatus) checkStatus.textContent = uiT('app.updateCheckFail') + ': ' + error.message;
+    } finally {
+      if (checkBtn) checkBtn.disabled = false;
+    }
+  }
+
+  if (checkBtn) {
+    checkBtn.addEventListener('click', () => runUpdateCheck(true));
+    runUpdateCheck(false);
+  }
+
+  if (applyBtn) {
+    applyBtn.addEventListener('click', async () => {
+      if (!updateInfo || !updateInfo.updateAvailable) return;
+      if (!await confirmAction(uiTp('app.updateApplyConfirm', { v: updateInfo.latestVersion }))) return;
+
+      applyBtn.disabled = true;
+      if (checkBtn) checkBtn.disabled = true;
+      startBtn.disabled = true;
+      fileInput.disabled = true;
+      if (progressWrap) progressWrap.style.display = 'block';
+      if (progressBar) progressBar.style.width = '10%';
+      if (logPre) logPre.textContent = '';
+
+      try {
+        const csrf = getCsrfTokenFromPage();
+        const r = await fetch('/api/operations/update-apply', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json', ...(csrf ? { 'X-CSRF-Token': csrf } : {}) },
+          body: '{}'
+        });
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok || !data.ok) throw new Error(data.error || ('HTTP ' + r.status));
+        applyBtn.textContent = uiT('app.backupBtnUpdating');
+        pollUpdateLog(applyBtn);
+      } catch (error) {
+        showToast(uiT('app.backupStartFail') + ': ' + error.message, 'error');
+        applyBtn.disabled = false;
+        if (checkBtn) checkBtn.disabled = false;
+        startBtn.disabled = false;
+        fileInput.disabled = false;
+      }
+    });
   }
 }
 

@@ -31,6 +31,7 @@ import {
   getUpdateState, isUpdateTimedOut, readUpdateLog, appendUpdateLog,
   beginUpdate, endUpdate, runUpdateFromZip
 } from '../services/self-update.js';
+import { checkForUpdate, downloadUpdateAsset } from '../services/update-check.js';
 import {
   getUiCustomization, saveUiAsset, removeUiAsset, saveUiSettings,
   resetUiThemeColors, resetUiThemeSliders,
@@ -1709,21 +1710,35 @@ export function registerAdminRoutes(app, deps) {
     }
   });
 
-  app.post('/api/operations/update', requireAdminApi, express.raw({ type: '*/*', limit: '200mb' }), (req, res) => {
-    const updateLogLocale = resolveLocale(req);
-    /**
-     * Форматируем ключи из self-update.js в локализованные сообщения.
-     * Логика i18n остаётся в этом слое, сервис оперирует абстрактным «key + params».
-     */
-    const logLine = (key, params = {}) => {
-      runWithLocaleLang(updateLogLocale, () => {
-        const fullKey = `update.log.${key}`;
-        const line = Object.keys(params).length
-          ? tp(fullKey, { ...params, unit: t('common.unitMB') })
-          : t(fullKey);
-        appendUpdateLog(line);
+  /**
+   * Форматируем ключи из self-update.js в локализованные сообщения.
+   * Логика i18n остаётся в этом слое, сервис оперирует абстрактным «key + params».
+   */
+  const makeUpdateLogLine = (locale) => (key, params = {}) => {
+    runWithLocaleLang(locale, () => {
+      const fullKey = `update.log.${key}`;
+      const line = Object.keys(params).length
+        ? tp(fullKey, { ...params, unit: t('common.unitMB') })
+        : t(fullKey);
+      appendUpdateLog(line);
+    });
+  };
+
+  /** Перезапуск после успешного обновления (общий для upload и update-apply). */
+  const updateScheduleRestart = () => {
+    if (!process.env.INVOCATION_ID) {
+      const child = spawn(process.execPath, [path.join(config.rootDir, 'scripts', 'server-control.js'), 'restart'], {
+        cwd: config.rootDir, detached: true, stdio: 'ignore'
       });
-    };
+      child.unref();
+      gracefulExit();
+    } else {
+      gracefulExit(1);
+    }
+  };
+
+  app.post('/api/operations/update', requireAdminApi, express.raw({ type: '*/*', limit: '200mb' }), (req, res) => {
+    const logLine = makeUpdateLogLine(resolveLocale(req));
 
     const prev = getUpdateState();
     const wasTimedOut = prev.running && isUpdateTimedOut();
@@ -1746,17 +1761,62 @@ export function registerAdminRoutes(app, deps) {
       sysLog: (msg, meta = {}) => logSystemEvent('info', 'operations', msg, { ...meta, user: req.user.username }),
       sysLogError: (msg, meta = {}) => logSystemEvent('error', 'operations', msg, { ...meta, user: req.user.username }),
       username: req.user.username,
-      scheduleRestart: () => {
-        if (!process.env.INVOCATION_ID) {
-          const child = spawn(process.execPath, [path.join(config.rootDir, 'scripts', 'server-control.js'), 'restart'], {
-            cwd: config.rootDir, detached: true, stdio: 'ignore'
-          });
-          child.unref();
-          gracefulExit();
-        } else {
-          gracefulExit(1);
-        }
+      scheduleRestart: updateScheduleRestart
+    });
+  });
+
+  // --- Проверка новой версии на GitHub + установка в один клик ---
+
+  app.get('/api/operations/update-check', requireAdminApi, async (req, res) => {
+    try {
+      const result = await checkForUpdate({ force: req.query.force === '1' });
+      res.json({ ok: true, ...result });
+    } catch (error) {
+      apiFail(res, 502, ApiErrorCode.UPDATE_CHECK_FAILED, `${t('admin.update.checkFail')}: ${error.message}`);
+    }
+  });
+
+  app.post('/api/operations/update-apply', requireAdminApi, async (req, res) => {
+    let check;
+    try {
+      check = await checkForUpdate({ force: true });
+    } catch (error) {
+      return apiFail(res, 502, ApiErrorCode.UPDATE_CHECK_FAILED, `${t('admin.update.checkFail')}: ${error.message}`);
+    }
+    if (!check.updateAvailable || !check.assetUrl) {
+      return apiFail(res, 409, ApiErrorCode.UPDATE_CHECK_FAILED, t('admin.update.noUpdate'));
+    }
+    const prev = getUpdateState();
+    const wasTimedOut = prev.running && isUpdateTimedOut();
+    if (!beginUpdate()) {
+      return apiFail(res, 409, ApiErrorCode.UPDATE_RUNNING, t('admin.update.running'));
+    }
+    const logLine = makeUpdateLogLine(resolveLocale(req));
+    if (wasTimedOut) logLine('timeoutReset');
+    const username = req.user.username;
+    logSystemEvent('info', 'operations', 'update-apply started', { user: username, version: check.latestVersion });
+    res.json({ ok: true, message: t('admin.update.started'), version: check.latestVersion });
+
+    setImmediate(async () => {
+      let zipBuffer;
+      try {
+        logLine('downloadStart', { name: check.assetName });
+        zipBuffer = await downloadUpdateAsset(check.assetUrl);
+        logLine('downloadDone', { size: (zipBuffer.length / 1024 / 1024).toFixed(1) });
+      } catch (error) {
+        logLine('downloadFail', { message: error.message });
+        appendUpdateLog('[update:done] error');
+        logSystemEvent('error', 'operations', 'update download failed', { user: username, error: error.message });
+        endUpdate();
+        return;
       }
+      void runUpdateFromZip(zipBuffer, {
+        log: logLine,
+        sysLog: (msg, meta = {}) => logSystemEvent('info', 'operations', msg, { ...meta, user: username }),
+        sysLogError: (msg, meta = {}) => logSystemEvent('error', 'operations', msg, { ...meta, user: username }),
+        username,
+        scheduleRestart: updateScheduleRestart
+      });
     });
   });
 
