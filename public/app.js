@@ -29,16 +29,11 @@ function silenceSkippedViewTransitions() {
 }
 
 async function loadHomeRecommendationsProgressively(attempt = 0) {
-  const section = document.querySelector('[data-home-recommendations]');
-  if (!section || section.dataset.loaded === '1') return;
-  const gridMount = section.querySelector('[data-home-recommendations-grid]');
-  if (!gridMount) return;
+  const mount = document.querySelector('[data-home-recommendations]');
+  if (!mount || mount.dataset.loaded === '1') return;
   try {
-    const r = await fetch('/api/library/recommended?page=1&pageSize=8', { credentials: 'same-origin' });
-    if (!r.ok) {
-      section.remove();
-      return;
-    }
+    const r = await fetch('/api/library/recommended?page=1&pageSize=24', { credentials: 'same-origin' });
+    if (!r.ok) return;
     const data = await r.json();
     if (data.computing) {
       if (attempt < 10) {
@@ -53,8 +48,36 @@ async function loadHomeRecommendationsProgressively(attempt = 0) {
       return;
     }
     const items = Array.isArray(data?.items) ? data.items : [];
+    if (!items.length) return;
+    const total = Number(data?.total) || items.length;
+    const heroTmp = document.createElement('div');
+    heroTmp.innerHTML = renderPremiumHeroCarouselHtml(items, total);
+    const heroCard = heroTmp.firstElementChild;
+    if (!heroCard) return;
+    mount.dataset.loaded = '1';
+    heroCard.classList.add('home-reveal');
+    mount.replaceWith(heroCard);
+    attachCoverErrorFallback(heroCard);
+    if (items.length > 1) initHeroCarousel(heroCard, items);
+    else applyHeroBookAnnotation(items[0], heroCard);
+    revealHomeBlock(heroCard);
+  } catch { /* keep the welcome quote */ }
+}
+
+async function loadHomeContinueProgressively() {
+  const section = document.querySelector('[data-home-continue]');
+  if (!section || section.dataset.loaded === '1') return;
+  const gridMount = section.querySelector('[data-home-continue-grid]');
+  if (!gridMount) return;
+  try {
+    const r = await fetch('/api/library/continue?page=1&pageSize=8', { credentials: 'same-origin' });
+    if (!r.ok) {
+      section.remove();
+      return;
+    }
+    const data = await r.json();
+    const items = Array.isArray(data?.items) ? data.items : [];
     if (!items.length) {
-      gridMount.innerHTML = '';
       section.remove();
       return;
     }
@@ -75,29 +98,6 @@ async function loadHomeRecommendationsProgressively(attempt = 0) {
   } catch {
     section.remove();
   }
-}
-
-async function loadHomeContinueProgressively() {
-  const mount = document.querySelector('[data-home-continue]');
-  if (!mount || mount.dataset.loaded === '1') return;
-  try {
-    const r = await fetch('/api/library/continue?page=1&pageSize=24', { credentials: 'same-origin' });
-    if (!r.ok) return;
-    const data = await r.json();
-    const items = Array.isArray(data?.items) ? data.items : [];
-    if (!items.length) return;
-    const total = Number(data?.total) || items.length;
-    const heroTmp = document.createElement('div');
-    heroTmp.innerHTML = renderPremiumHeroCarouselHtml(items, total);
-    const heroCard = heroTmp.firstElementChild;
-    if (!heroCard) return;
-    heroCard.classList.add('home-reveal');
-    mount.replaceWith(heroCard);
-    attachCoverErrorFallback(heroCard);
-    if (items.length > 1) initHeroCarousel(heroCard, items);
-    else applyHeroBookAnnotation(items[0], heroCard);
-    revealHomeBlock(heroCard);
-  } catch { /* keep the welcome quote */ }
 }
 
 function revealHomeBlock(el) {
@@ -128,6 +128,12 @@ function renderHeroSlideInnerHtml(book, { eager = false, heading = 'h1', showKic
   const kicker = showKicker
     ? `<div class="hero-card-kicker">${escapeHtml(uiT('home.heroKicker'))}</div>`
     : '';
+  const progressHtml = progress > 0
+    ? `<div class="hero-card-progress">
+        <div class="hero-card-progress-bar" role="progressbar" aria-valuenow="${progress}" aria-valuemin="0" aria-valuemax="100"><div class="hero-card-progress-fill" style="width:${progress}%"></div></div>
+        <span class="hero-card-progress-label">${escapeHtml(uiTp('home.heroProgress', { pct: progress }))}</span>
+      </div>`
+    : '';
   return `
     <div class="hero-card-cover-side">
       <a class="hero-cover-link cover" href="${bookPagePath(book.id)}">
@@ -145,10 +151,7 @@ function renderHeroSlideInnerHtml(book, { eager = false, heading = 'h1', showKic
       <${headingTag} class="hero-card-title">${title}</${headingTag}>
       <div class="hero-card-author">${book.authors ? uiRenderAuthorLinks(book.authorsList, book.authors, `hero-a-${safeDomIdPart(book.id)}`) : escapeHtml(uiT('book.authorUnknown'))}</div>
       <p class="hero-card-annotation" data-hero-annotation hidden></p>
-      <div class="hero-card-progress">
-        <div class="hero-card-progress-bar" role="progressbar" aria-valuenow="${progress}" aria-valuemin="0" aria-valuemax="100"><div class="hero-card-progress-fill" style="width:${progress}%"></div></div>
-        <span class="hero-card-progress-label">${escapeHtml(uiTp('home.heroProgress', { pct: progress }))}</span>
-      </div>
+      ${progressHtml}
       <div class="hero-card-actions">
         <a class="button button-primary hero-read-btn" href="${readPagePath(book.id)}">${escapeHtml(uiT('home.heroReadBook'))}</a>
         <a class="button button-secondary hero-about-btn" href="${bookPagePath(book.id)}">${escapeHtml(uiT('home.heroAboutBook'))}</a>
@@ -162,11 +165,6 @@ function renderPremiumHeroCardHtml(book) {
   </section>`;
 }
 
-function renderHeroChevronSvg(dir) {
-  const points = dir === 'prev' ? 'M10.5 3.5 6 8l4.5 4.5' : 'M5.5 3.5 10 8 5.5 12.5';
-  return `<svg viewBox="0 0 16 16" width="18" height="18" aria-hidden="true"><path d="${points}" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
-}
-
 function renderPremiumHeroCarouselHtml(books, total) {
   if (!books.length) return '';
   if (books.length === 1) return renderPremiumHeroCardHtml(books[0]);
@@ -177,20 +175,16 @@ function renderPremiumHeroCarouselHtml(books, total) {
   const dots = books.map((_, index) => `
     <button type="button" class="hero-carousel-dot${index === 0 ? ' is-active' : ''}" data-hero-dot="${index}" aria-label="${escapeHtml(uiTp('home.heroGoTo', { n: index + 1 }))}" ${index === 0 ? 'aria-current="true"' : ''}></button>`).join('');
   const more = total > books.length
-    ? `<a class="hero-carousel-all" href="/library/continue">${escapeHtml(uiT('home.showAll'))}</a>`
+    ? `<a class="hero-carousel-all" href="/library/recommended">${escapeHtml(uiT('home.showAll'))}</a>`
     : '';
-  return `<section class="premium-hero-card hero-carousel" data-hero-carousel aria-roledescription="carousel" aria-label="${escapeHtml(uiT('home.shelfContinue'))}">
+  return `<section class="premium-hero-card hero-carousel" data-hero-carousel aria-roledescription="carousel" aria-label="${escapeHtml(uiT('home.shelfRecommended'))}">
     <div class="hero-carousel-head">
       <div class="hero-card-kicker">${escapeHtml(uiT('home.heroKicker'))}</div>
       <p class="hero-carousel-status" data-hero-status aria-live="polite">${escapeHtml(uiTp('home.heroSlide', { current: 1, total: books.length }))}</p>
       ${more}
     </div>
-    <div class="hero-carousel-frame">
-      <button type="button" class="hero-carousel-nav hero-carousel-prev" data-hero-prev aria-label="${escapeHtml(uiT('home.heroPrev'))}">${renderHeroChevronSvg('prev')}</button>
-      <div class="hero-carousel-viewport" data-hero-viewport tabindex="0">
-        <div class="hero-carousel-track" data-hero-track>${slides}</div>
-      </div>
-      <button type="button" class="hero-carousel-nav hero-carousel-next" data-hero-next aria-label="${escapeHtml(uiT('home.heroNext'))}">${renderHeroChevronSvg('next')}</button>
+    <div class="hero-carousel-viewport" data-hero-viewport tabindex="0">
+      <div class="hero-carousel-track" data-hero-track>${slides}</div>
     </div>
     <div class="hero-carousel-dots" data-hero-dots>${dots}</div>
   </section>`;
@@ -289,8 +283,6 @@ function initHeroCarousel(root, books) {
     }
   };
 
-  root.querySelector('[data-hero-prev]')?.addEventListener('click', () => go(index - 1));
-  root.querySelector('[data-hero-next]')?.addEventListener('click', () => go(index + 1));
   dots.forEach((dot) => {
     dot.addEventListener('click', () => go(Number(dot.dataset.heroDot) || 0));
   });

@@ -2097,6 +2097,19 @@ html[data-theme="light"] .premium-hero-card::before {
 
 .welcome-hero-banner {
   padding: 48px 40px;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  overflow: visible;
+}
+
+.welcome-hero-overlay {
+  display: none;
+}
+
+html[data-theme="light"] .welcome-hero-banner::before {
+  opacity: 0;
 }
 
 .welcome-hero-overlay,
@@ -2162,16 +2175,20 @@ html[data-theme="light"] .premium-hero-card::after {
   gap: 40px;
   align-items: center;
   padding: 32px 36px;
-  transition: box-shadow 0.4s var(--ease-premium), transform 0.4s var(--ease-premium);
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  overflow: visible;
+  transition: none;
 }
 
 .premium-hero-card::after {
-  content: '';
-  z-index: 0;
+  content: none;
 }
 
 .premium-hero-card:hover {
-  box-shadow: var(--shadow-lg);
+  box-shadow: none;
 }
 
 .hero-card-cover-side,
@@ -2228,7 +2245,8 @@ html[data-theme="light"] .premium-hero-card::after {
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  gap: 18px;
+  gap: 8px;
+  padding: 18px 22px 14px;
 }
 
 .hero-carousel-head {
@@ -2236,8 +2254,8 @@ html[data-theme="light"] .premium-hero-card::after {
   z-index: 1;
   display: flex;
   flex-wrap: wrap;
-  align-items: baseline;
-  gap: 10px 16px;
+  align-items: center;
+  gap: 8px 12px;
 }
 
 .hero-carousel-status {
@@ -2261,20 +2279,11 @@ html[data-theme="light"] .premium-hero-card::after {
   text-decoration: underline;
 }
 
-.hero-carousel-frame {
-  position: relative;
-  z-index: 1;
-  display: grid;
-  grid-template-columns: auto 1fr auto;
-  align-items: center;
-  gap: 8px;
-}
-
 .hero-carousel-viewport {
   overflow: hidden;
   min-width: 0;
   outline: none;
-  padding: 8px 0 20px;
+  padding: 4px 0 16px;
 }
 
 .hero-carousel-viewport:focus-visible {
@@ -2290,16 +2299,17 @@ html[data-theme="light"] .premium-hero-card::after {
 .hero-carousel-slide {
   flex: 0 0 100%;
   display: grid;
-  grid-template-columns: 200px 1fr;
-  gap: 40px;
+  grid-template-columns: 152px 1fr;
+  gap: 24px;
   align-items: center;
   min-width: 0;
-  padding: 8px 16px 48px;
-  clip-path: inset(-8px 0 -48px 0);
+  padding: 4px 4px 22px;
+  clip-path: inset(-6px 0 -22px 0);
 }
 
 .hero-carousel .hero-cover-link {
   z-index: 1;
+  max-width: 152px;
   transform-style: flat;
   perspective: none;
 }
@@ -2312,6 +2322,22 @@ html[data-theme="light"] .premium-hero-card::after {
   display: none;
 }
 
+.hero-carousel .hero-card-title {
+  font-size: clamp(22px, 2.5vw, 28px);
+}
+
+.hero-carousel .hero-card-info-side {
+  gap: 6px;
+}
+
+.hero-carousel .hero-card-annotation {
+  -webkit-line-clamp: 2;
+}
+
+.hero-carousel .hero-card-actions {
+  margin-top: 2px;
+}
+
 @media (hover: hover) and (pointer: fine) {
   .hero-carousel-slide:hover .hero-cover-link.cover {
     transform: translateY(-8px);
@@ -2319,35 +2345,12 @@ html[data-theme="light"] .premium-hero-card::after {
   }
 }
 
-.hero-carousel-nav {
-  width: 40px;
-  height: 40px;
-  padding: 0;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 999px;
-  border: 1px solid var(--border);
-  background: color-mix(in srgb, var(--surface) 88%, var(--bg) 12%);
-  color: var(--text);
-  box-shadow: var(--shadow-sm);
-  cursor: pointer;
-}
-
-.hero-carousel-nav:hover {
-  border-color: var(--button-border-hover);
-  background: var(--ui-glass-active-bg, var(--button-bg-hover));
-}
-
-.hero-carousel-nav:focus-visible {
-  box-shadow: var(--focus-ring);
-}
-
 .hero-carousel-dots {
   position: relative;
   z-index: 1;
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   justify-content: center;
   gap: 7px;
 }
@@ -7544,30 +7547,8 @@ html[data-theme="light"] .cover-fallback-overlay {
 
   .hero-carousel-slide {
     grid-template-columns: 1fr;
-    gap: 24px;
+    gap: 16px;
     text-align: center;
-  }
-
-  .hero-carousel-frame {
-    grid-template-columns: 1fr 1fr;
-    grid-template-areas:
-      "view view"
-      "prev next";
-    gap: 12px 10px;
-  }
-
-  .hero-carousel-viewport {
-    grid-area: view;
-  }
-
-  .hero-carousel-prev {
-    grid-area: prev;
-    justify-self: end;
-  }
-
-  .hero-carousel-next {
-    grid-area: next;
-    justify-self: start;
   }
 
   .hero-carousel-head {

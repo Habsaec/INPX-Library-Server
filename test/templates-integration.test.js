@@ -255,6 +255,8 @@ test('renderHome returns home page HTML', async () => {
     sections: {}
   });
   assert.ok(html.includes('<!doctype html>'));
+  assert.ok(!html.includes('data-home-continue'));
+  assert.ok(!html.includes('data-home-recommendations'));
   const withContinue = renderHome({
     user: { username: 'tester' },
     stats: { totalBooks: 100, totalAuthors: 50, totalSeries: 20, totalGenres: 10, totalLanguages: 2 },
@@ -262,8 +264,12 @@ test('renderHome returns home page HTML', async () => {
     sections: {},
     hasContinueData: true
   });
+  assert.ok(withContinue.includes('data-home-recommendations'));
+  assert.ok(!withContinue.includes('data-home-recommendations-grid'));
   assert.ok(withContinue.includes('data-home-continue'));
-  assert.ok(!withContinue.includes('data-home-continue-grid'));
+  assert.ok(withContinue.includes('data-home-continue-grid'));
+  assert.ok(withContinue.indexOf('data-home-recommendations') < withContinue.indexOf('data-home-continue'));
+  assert.ok(withContinue.indexOf('data-home-continue-grid') < withContinue.lastIndexOf('href="/library/recent"'));
 });
 
 test('renderBook returns book detail page', async () => {

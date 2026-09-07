@@ -26,26 +26,24 @@ import { pickHomeWelcomeQuote } from '../home-welcome-quotes.js';
 export function renderHome({ user, stats, indexStatus, history = [], favoriteAuthors = [], favoriteSeries = [], sections = {}, recommendations = [], homeSubtitle = '', csrfToken = '', readBookIds = null, hasContinueData = false, listView = false }) {
   const isAuthenticated = Boolean(user);
   const loginHint = tp('home.loginHint', { login: `<a href="/login">${escapeHtml(t('nav.login'))}</a>` });
-  const quoteInviting = !isAuthenticated || !hasContinueData;
+  const quoteInviting = !isAuthenticated;
   const welcomeQuote = pickHomeWelcomeQuote(getLocale(), { inviting: quoteInviting });
   const subtitleText = homeSubtitle === '-' ? '' : (homeSubtitle || t('home.subtitle'));
   const homeViewAttr = listView ? 'list' : 'grid';
-  const recommendationsShelf = isAuthenticated
-    ? (recommendations.length
-        ? renderHomeShelf({ title: t('home.shelfRecommended'), href: '/library/recommended', items: recommendations, type: 'books', isAuthenticated, showBatch: true, user, readBookIds, listView })
-        : `
-    <section class="library-shelf" data-home-recommendations data-home-view="${homeViewAttr}" data-loaded="0">
+  const recsAttr = isAuthenticated ? ' data-home-recommendations' : '';
+  const continueShelf = isAuthenticated && hasContinueData
+    ? `
+    <section class="library-shelf" data-home-continue data-home-view="${homeViewAttr}" data-loaded="0">
       <div class="section-title">
-        <h2>${escapeHtml(t('home.shelfRecommended'))}</h2>
-        <div class="actions"><a class="shelf-link" href="/library/recommended">${escapeHtml(t('home.showAll'))}</a></div>
+        <h2>${escapeHtml(t('home.shelfContinue'))}</h2>
+        <div class="actions"><a class="shelf-link" href="/library/continue">${escapeHtml(t('home.showAll'))}</a></div>
       </div>
-      <div data-home-recommendations-grid>${renderSkeletonGrid(8)}</div>
-    </section>`)
+      <div data-home-continue-grid>${renderSkeletonGrid(6)}</div>
+    </section>`
     : '';
-  const continueAttr = isAuthenticated && hasContinueData ? ' data-home-continue' : '';
   const content = `
     ${subtitleText ? `<header class="home-page-intro"><p class="home-page-subtitle">${escapeHtml(subtitleText)}</p></header>` : ''}
-    <section class="welcome-hero-banner home-reveal"${continueAttr}>
+    <section class="welcome-hero-banner home-reveal"${recsAttr}>
       <div class="welcome-hero-overlay"></div>
       <div class="welcome-hero-content">
         <blockquote class="welcome-hero-quote">${escapeHtml(welcomeQuote.quote)}</blockquote>
@@ -53,8 +51,8 @@ export function renderHome({ user, stats, indexStatus, history = [], favoriteAut
       </div>
     </section>
     ${!isAuthenticated ? `<div class="home-inline-note">${loginHint}</div>` : ''}
+    ${continueShelf}
     ${renderHomeShelf({ title: t('home.shelfNew'), href: '/library/recent', items: sections.newest || [], type: 'books', isAuthenticated, showBatch: false, user, readBookIds, listView })}
-    ${recommendationsShelf}
     `;
   return pageShell({ title: t('home.title'), content, user, stats, indexStatus, breadcrumbs: [{ label: t('nav.home') }], currentPath: '/', csrfToken, readBookIds });
 }
