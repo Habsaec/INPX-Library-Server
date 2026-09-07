@@ -85,7 +85,7 @@ async function loadHomeContinueProgressively() {
     const tmp = document.createElement('div');
     tmp.innerHTML = listMode
       ? `<div class="author-flibusta-list catalog-book-list home-reveal"><section class="author-flibusta-group catalog-book-list-group"><ul class="author-flibusta-books catalog-book-list-ul">${items.map((b) => renderListRowHtml(b)).join('')}</ul></section></div>`
-      : `<div class="grid home-reveal">${items.map((b) => renderCardHtml(b)).join('')}</div>`;
+      : `<div class="grid home-reveal">${items.map((b) => renderCardHtml(b, { readActions: true })).join('')}</div>`;
     const grid = tmp.firstElementChild;
     if (!grid) return;
     gridMount.replaceWith(grid);
@@ -3339,7 +3339,7 @@ function uiRenderSeriesLinks(seriesList, popoverId, firstAuthor) {
   return `<span class="series-visible">${visibleHtml}</span><button type="button" class="series-popover-trigger" popovertarget="${id}" style="anchor-name:${anchorName}">+${rest.length}</button><div id="${id}" popover="auto" class="series-popover" style="position-anchor:${anchorName}"><div class="series-popover-inner">${restHtml}</div></div>`;
 }
 
-function renderCardHtml(book, { batchSelect = false, seriesContext = null } = {}) {
+function renderCardHtml(book, { batchSelect = false, seriesContext = null, readActions = false } = {}) {
   const id = escapeHtml(book.id);
   const authors = escapeHtml(book.authors || '');
   const authorKey = book.authorsList?.[0] || book.authors?.split(',')[0]?.trim() || '';
@@ -3401,7 +3401,9 @@ function renderCardHtml(book, { batchSelect = false, seriesContext = null } = {}
       <div class="author">${book.authors ? uiRenderAuthorLinks(book.authorsList, book.authors, `ajax-a-${book.id}`) : escapeHtml(uiT('book.authorUnknown'))}</div>
       ${showSeries ? `<div class="card-series">${uiRenderSeriesLinks(book.seriesList, `ajax-s-${book.id}`, authorKey)}</div>` : ''}
       ${book.readProgress > 0 ? `<div class="card-read-progress"><div class="read-progress-bar" role="progressbar" aria-valuenow="${Math.round(book.readProgress)}" aria-valuemin="0" aria-valuemax="100"><div class="read-progress-fill" style="width:${Math.round(book.readProgress)}%"></div></div><span class="read-progress-label">${Math.round(book.readProgress)}%</span></div>` : ''}
-      ${downloadMenu ? `<div class="card-actions">${downloadMenu}</div>` : ''}
+      ${readActions
+        ? `<div class="card-actions card-actions-read"><a class="button button-primary download-menu-trigger-compact" href="${readPagePath(book.id)}">${escapeHtml(uiT('home.heroReadBook'))}</a><a class="button button-secondary download-menu-trigger-compact" href="${bookPagePath(book.id)}">${escapeHtml(uiT('home.heroAboutBook'))}</a></div>`
+        : downloadMenu ? `<div class="card-actions">${downloadMenu}</div>` : ''}
     </div>
   </article>`;
 }

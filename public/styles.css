@@ -2068,66 +2068,56 @@ textarea:focus-visible {
 .welcome-hero-banner,
 .premium-hero-card {
   position: relative;
+  isolation: isolate;
   margin-bottom: 28px;
-  border-radius: var(--radius-xl);
-  overflow: hidden;
-  border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
-  --hero-card-bg:
-    linear-gradient(145deg, color-mix(in srgb, var(--surface) 86%, var(--accent) 14%) 0%, var(--surface) 52%, color-mix(in srgb, var(--bg) 90%, #000 10%) 100%);
-  background: var(--hero-card-bg);
-  box-shadow: var(--shadow-md);
-}
-
-.welcome-hero-banner::before,
-.premium-hero-card::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  z-index: 0;
-  opacity: 0;
-}
-
-html[data-theme="light"] .welcome-hero-banner::before,
-html[data-theme="light"] .premium-hero-card::before {
-  opacity: 0.045;
-  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
-  background-size: 180px 180px;
-}
-
-.welcome-hero-banner {
-  padding: 48px 40px;
   border: none;
   border-radius: 0;
   background: transparent;
   box-shadow: none;
   overflow: visible;
+  --hero-card-bg:
+    linear-gradient(145deg, color-mix(in srgb, var(--surface) 86%, var(--accent) 14%) 0%, var(--surface) 52%, color-mix(in srgb, var(--bg) 90%, #000 10%) 100%);
+}
+
+/* Frameless gradient wash: same diagonal gradient as before, edges dissolve into the page */
+.welcome-hero-banner::before,
+.premium-hero-card::before {
+  content: '';
+  position: absolute;
+  inset: -24px -32px -8px;
+  pointer-events: none;
+  z-index: -1;
+  background: var(--hero-card-bg);
+  -webkit-mask-image:
+    linear-gradient(90deg, transparent 0%, #000 12%, #000 88%, transparent 100%),
+    linear-gradient(180deg, transparent 0%, #000 18%, #000 82%, transparent 100%);
+  -webkit-mask-composite: source-in;
+  mask-image:
+    linear-gradient(90deg, transparent 0%, #000 12%, #000 88%, transparent 100%),
+    linear-gradient(180deg, transparent 0%, #000 18%, #000 82%, transparent 100%);
+  mask-composite: intersect;
+}
+
+/* Hairline that fades at both ends separates the hero from the shelves */
+.welcome-hero-banner::after,
+.premium-hero-card::after {
+  content: '';
+  position: absolute;
+  left: 8%;
+  right: 8%;
+  bottom: -14px;
+  height: 1px;
+  pointer-events: none;
+  z-index: -1;
+  background: linear-gradient(90deg, transparent 0%, color-mix(in srgb, var(--accent) 34%, transparent) 50%, transparent 100%);
+}
+
+.welcome-hero-banner {
+  padding: 48px 40px;
 }
 
 .welcome-hero-overlay {
   display: none;
-}
-
-html[data-theme="light"] .welcome-hero-banner::before {
-  opacity: 0;
-}
-
-.welcome-hero-overlay,
-.premium-hero-card::after {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  z-index: 0;
-  background:
-    radial-gradient(ellipse 80% 60% at 10% 20%, color-mix(in srgb, var(--link) 10%, transparent) 0%, transparent 70%),
-    linear-gradient(180deg, transparent 60%, color-mix(in srgb, var(--bg) 25%, transparent) 100%);
-}
-
-html[data-theme="light"] .welcome-hero-overlay,
-html[data-theme="light"] .premium-hero-card::after {
-  background:
-    radial-gradient(ellipse 70% 55% at 12% 18%, color-mix(in srgb, var(--link) 6%, transparent) 0%, transparent 68%),
-    linear-gradient(180deg, transparent 62%, color-mix(in srgb, var(--bg) 12%, transparent) 100%);
 }
 
 .welcome-hero-content {
@@ -2175,20 +2165,6 @@ html[data-theme="light"] .premium-hero-card::after {
   gap: 40px;
   align-items: center;
   padding: 32px 36px;
-  border: none;
-  border-radius: 0;
-  background: transparent;
-  box-shadow: none;
-  overflow: visible;
-  transition: none;
-}
-
-.premium-hero-card::after {
-  content: none;
-}
-
-.premium-hero-card:hover {
-  box-shadow: none;
 }
 
 .hero-card-cover-side,
@@ -2476,34 +2452,40 @@ html[data-theme="light"] .premium-hero-card::after {
   margin-top: 8px;
 }
 
-.premium-hero-card .button-primary {
+.premium-hero-card .button-primary,
+.card-actions-read .button-primary {
   background: var(--link);
   border-color: var(--link);
   color: #1a1612;
   font-weight: 600;
 }
 
-.premium-hero-card .button-primary:hover {
+.premium-hero-card .button-primary:hover,
+.card-actions-read .button-primary:hover {
   background: var(--link-hover);
   border-color: var(--link-hover);
   color: #1a1612;
 }
 
-html[data-theme="light"] .premium-hero-card .button-primary {
+html[data-theme="light"] .premium-hero-card .button-primary,
+html[data-theme="light"] .card-actions-read .button-primary {
   color: #fffdf8;
 }
 
-html[data-theme="light"] .premium-hero-card .button-primary:hover {
+html[data-theme="light"] .premium-hero-card .button-primary:hover,
+html[data-theme="light"] .card-actions-read .button-primary:hover {
   color: #fffdf8;
 }
 
-.premium-hero-card .button-secondary {
+.premium-hero-card .button-secondary,
+.card-actions-read .button-secondary {
   background: transparent;
   border-color: var(--border);
   color: var(--text);
 }
 
-.premium-hero-card .button-secondary:hover {
+.premium-hero-card .button-secondary:hover,
+.card-actions-read .button-secondary:hover {
   background: var(--ui-glass-active-bg, var(--button-bg-hover));
   border-color: var(--button-border-hover);
 }
@@ -3536,6 +3518,11 @@ html[data-theme="light"] .cover-fallback-overlay {
 
 .card-actions-favorites {
   gap: 8px;
+  flex-wrap: wrap;
+}
+
+.card-actions-read {
+  gap: 6px;
   flex-wrap: wrap;
 }
 

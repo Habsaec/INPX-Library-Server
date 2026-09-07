@@ -269,7 +269,7 @@ test('renderHome returns home page HTML', async () => {
   assert.ok(withContinue.includes('data-home-continue'));
   assert.ok(withContinue.includes('data-home-continue-grid'));
   assert.ok(withContinue.indexOf('data-home-recommendations') < withContinue.indexOf('data-home-continue'));
-  assert.ok(withContinue.indexOf('data-home-continue-grid') < withContinue.lastIndexOf('href="/library/recent"'));
+  assert.ok(withContinue.lastIndexOf('href="/library/recent"') < withContinue.indexOf('data-home-continue-grid'));
 });
 
 test('renderBook returns book detail page', async () => {
